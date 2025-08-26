@@ -1,0 +1,39 @@
+# MW'05 (Xbox 360) — XenonRecomp main config
+# Update the save/restore helper addresses at the bottom before running a full recompile.
+
+[main]
+# Your XEX (uses forward slashes so TOML doesn't need escaping)
+file_path = 'F:\XBox\ISO\MWEurope\default.xex'
+
+# Optional: if you have a Title Update (.xexp), set patch_file_path and keep patched_file_path as below.
+# patch_file_path = "F:/XBox/ISO/CDMWEuropeGer - English ver/NfsMWEuropeGerMilestone.xexp"
+patched_file_path = 'F:\XBox\ISO\CDMWEuropeGer - English ver\NfsMWEurope.xex'
+
+# Where the generated C++ will go (make sure this exists before running)
+out_directory_path = "F:/XBox/Recomp/MW05/ppc"
+
+# Switch tables TOML produced by XenonAnalyse
+switch_table_file_path = "F:/XBox/Recomp/MW05/mw05_switch_tables.toml"
+
+# Leave these conservative until you have a clean pass
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# === Required helper entrypoints (FILL THESE IN from the XEX) ===
+# Look for the compiler-generated save/restore prolog/epilog helpers.
+# Typical names in literature: savegprlr_14 / restgprlr_14, savefpr_14 / restfpr_14,
+# savevmx_14 / restvmx_14, savevmx_64 / restvmx_64 (symbols not present in XEX, so use patterns).
+restgprlr_14_address = 0x826BDD80
+savegprlr_14_address = 0x826BDD30
+restfpr_14_address   = 0x826BED3C
+savefpr_14_address   = 0x826BECF0
+restvmx_14_address   = 0x826BEA58
+savevmx_14_address   = 0x826BE7C0
+restvmx_64_address   = 0x826BEAEC
+savevmx_64_address   = 0x826BE854

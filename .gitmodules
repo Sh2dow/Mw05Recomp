@@ -7,9 +7,10 @@
 [submodule "tools/XenosRecomp"]
 	path = tools/XenosRecomp
 	url = https://github.com/hedge-dev/XenosRecomp.git
-[submodule "UnleashedRecompResources"]
-	path = UnleashedRecompResources
-	url = https://github.com/hedge-dev/UnleashedRecompResources.git
+[submodule "Mw05RecompResources"]
+	path = Mw05RecompResources
+	url = https://github.com/Sh2dow/Mw05RecompResources.git
+	branch = main
 [submodule "thirdparty/msdf-atlas-gen"]
 	path = thirdparty/msdf-atlas-gen
 	url = https://github.com/Chlumsky/msdf-atlas-gen.git
@@ -46,9 +47,6 @@
 [submodule "thirdparty/json"]
 	path = thirdparty/json
 	url = https://github.com/nlohmann/json
-[submodule "UnleashedRecomp/api"]
-	path = UnleashedRecomp/api
-	url = https://github.com/hedge-dev/SWA.git
 [submodule "thirdparty/MoltenVK/MoltenVK"]
 	path = thirdparty/MoltenVK/MoltenVK
 	url = https://github.com/KhronosGroup/MoltenVK.git
@@ -58,3 +56,6 @@
 [submodule "thirdparty/plume"]
 	path = thirdparty/plume
 	url = https://github.com/renderbag/plume.git
+[submodule "Mw05Recomp/api"]
+	path = Mw05Recomp/api
+	url = https://github.com/Sh2dow/SWA.git

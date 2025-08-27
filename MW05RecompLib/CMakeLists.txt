@@ -1,4 +1,4 @@
-project("mw05RecompLib")
+project("Mw05RecompLib")
 
 add_compile_options(
     -fno-strict-aliasing
@@ -38,14 +38,14 @@ add_custom_command(
     USES_TERMINAL
 )
 
-add_custom_command(
-    OUTPUT
-        "${CMAKE_CURRENT_SOURCE_DIR}/private/shader_decompressed.ar"
-    COMMAND
-        $<TARGET_FILE:x_decompress> "${CMAKE_CURRENT_SOURCE_DIR}/private/shader.ar" "${CMAKE_CURRENT_SOURCE_DIR}/private/shader_decompressed.ar"
-    DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/private/shader.ar"
-)
+# add_custom_command(
+#     OUTPUT
+#         "${CMAKE_CURRENT_SOURCE_DIR}/private/shader_decompressed.ar"
+#     COMMAND
+#         $<TARGET_FILE:x_decompress> "${CMAKE_CURRENT_SOURCE_DIR}/private/shader.ar" "${CMAKE_CURRENT_SOURCE_DIR}/private/shader_decompressed.ar"
+#     DEPENDS
+#         "${CMAKE_CURRENT_SOURCE_DIR}/private/shader.ar"
+# )
 
 set(XENOS_RECOMP_ROOT "${MW05_RECOMP_TOOLS_ROOT}/XenosRecomp/XenosRecomp")
 set(XENOS_RECOMP_INCLUDE "${XENOS_RECOMP_ROOT}/shader_common.h")
@@ -75,12 +75,12 @@ add_custom_command(
     USES_TERMINAL
 )
 
-add_library(mw05RecompLib 
+add_library(Mw05RecompLib 
     ${MW05_RECOMP_PPC_RECOMPILED_SOURCES}
     "shader/shader_cache.h"
     "shader/shader_cache.cpp"
 )
 
-target_include_directories(mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
-target_precompile_headers(mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
+target_include_directories(Mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(Mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
+target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")

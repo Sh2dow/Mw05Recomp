@@ -1,6 +1,2 @@
-cmake -S . -B build ^
-  -G "Visual Studio 17 2022" ^
-  -T ClangCL ^
-  -A x64 ^
-  -DCMAKE_BUILD_TYPE=Release
-  -DUSE_VCPKG=OFF
+cmake -S . -B build_vs -G "Visual Studio 17 2022" -A x64 -T ClangCL
+cmake --build build_vs --config Release

@@ -1,12 +1,16 @@
 cmake_minimum_required (VERSION 3.20)
 
-option(USE_VCPKG "Use vcpkg toolchain" OFF)
-
-if(USE_VCPKG)
-  if(NOT DEFINED ENV{VCPKG_ROOT})
-    message(FATAL_ERROR "VCPKG_ROOT is not defined!")
+# Try to infer VCPKG_ROOT if the toolchain file points to vcpkg
+if(NOT DEFINED ENV{VCPKG_ROOT})
+  if(DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg.cmake")
+    get_filename_component(_vcpkg_bs "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)        # .../scripts/buildsystems
+    get_filename_component(_vcpkg_root "${_vcpkg_bs}/../.." ABSOLUTE)
+    set(ENV{VCPKG_ROOT} "${_vcpkg_root}")
   endif()
-  set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
+endif()
+
+if(NOT DEFINED ENV{VCPKG_ROOT})
+  message(FATAL_ERROR "VCPKG_ROOT is not defined! Set it or pass -DCMAKE_TOOLCHAIN_FILE=<...>/vcpkg.cmake")
 endif()
 
 set(MW05_RECOMP_THIRDPARTY_ROOT ${CMAKE_SOURCE_DIR}/thirdparty)
@@ -22,7 +26,7 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project("mw05Recomp-ALL")
+project("Mw05Recomp-ALL")
 
 if (APPLE)
     enable_language(OBJC OBJCXX)
@@ -49,5 +53,5 @@ add_subdirectory(${MW05_RECOMP_THIRDPARTY_ROOT})
 add_subdirectory(${MW05_RECOMP_TOOLS_ROOT})
 
 # Include sub-projects.
-add_subdirectory("mw05RecompLib")
-add_subdirectory("mw05Recomp")
+add_subdirectory("Mw05RecompLib")
+add_subdirectory("Mw05Recomp")

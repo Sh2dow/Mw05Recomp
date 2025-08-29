@@ -9,7 +9,7 @@
 	url = https://github.com/hedge-dev/XenosRecomp.git
 [submodule "Mw05RecompResources"]
 	path = Mw05RecompResources
-	url = https://github.com/sh2dow/Mw05RecompResources.git
+	url = https://github.com/Sh2dow/Mw05RecompResources.git
 [submodule "thirdparty/msdf-atlas-gen"]
 	path = thirdparty/msdf-atlas-gen
 	url = https://github.com/Chlumsky/msdf-atlas-gen.git

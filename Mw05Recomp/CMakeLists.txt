@@ -344,6 +344,7 @@ endif()
 
 # Propagate feature defines
 target_compile_definitions(Mw05Recomp PRIVATE
+    SDL_ENABLE_OLD_NAMES=1
     MW05_ENABLE_UNLEASHED=$<BOOL:${MW05_ENABLE_UNLEASHED}>
     MW05_ENABLE_IMPLOT=$<BOOL:${MW05_ENABLE_IMPLOT}>)
 

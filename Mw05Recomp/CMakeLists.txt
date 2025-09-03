@@ -72,6 +72,7 @@ set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/xdm.cpp"
     "kernel/heap.cpp"
     "kernel/memory.cpp"
+    "kernel/trace.cpp"
     "kernel/xam.cpp"
     "kernel/io/file_system.cpp"
 )
@@ -114,14 +115,13 @@ set(MW05_RECOMP_CPU_CXX_SOURCES
 set(MW05_RECOMP_GPU_CXX_SOURCES
     "gpu/video.cpp"
     "gpu/imgui/imgui_common.cpp"
-    "gpu/imgui/imgui_font_builder.cpp"
     "gpu/imgui/imgui_snapshot.cpp"
 )
 
 set(MW05_RECOMP_APU_CXX_SOURCES
     "apu/audio.cpp"
     "apu/embedded_player.cpp"
-    "apu/driver/sdl2_driver.cpp"
+    "apu/driver/sdl_driver.cpp"
 )
 
 set(MW05_RECOMP_HID_CXX_SOURCES
@@ -129,54 +129,44 @@ set(MW05_RECOMP_HID_CXX_SOURCES
     "hid/driver/sdl_hid.cpp"
 )
 
+# Remove SWA/Hedgehog-specific patches from build
 set(MW05_RECOMP_PATCHES_CXX_SOURCES
-    "patches/aspect_ratio_patches.cpp"
-    "patches/audio_patches.cpp"
-    "patches/camera_patches.cpp"
-    "patches/CGameModeStageTitle_patches.cpp"
-    "patches/CHudPause_patches.cpp"
-    "patches/CTitleStateIntro_patches.cpp"
-    "patches/CTitleStateMenu_patches.cpp"
-    "patches/fps_patches.cpp"
-    "patches/frontend_listener.cpp"
-    "patches/input_patches.cpp"
-    "patches/inspire_patches.cpp"
-    "patches/misc_patches.cpp"
-    "patches/object_patches.cpp"
-    "patches/player_patches.cpp"
-    "patches/resident_patches.cpp"
-    "patches/video_patches.cpp"
 )
 
 set(MW05_RECOMP_UI_CXX_SOURCES
-    "ui/achievement_menu.cpp"
     "ui/achievement_overlay.cpp"
+    "ui/achievement_menu_stub.cpp"
     "ui/black_bar.cpp"
     "ui/button_guide.cpp"
     "ui/fader.cpp"
     "ui/game_window.cpp"
     "ui/imgui_utils.cpp"
     "ui/installer_wizard.cpp"
-    "ui/message_window.cpp"
-    "ui/options_menu.cpp"
-    "ui/options_menu_thumbnails.cpp"
+    "ui/message_window_stub.cpp"
+    "ui/options_menu_stub.cpp"
     "ui/tv_static.cpp"
 )
 
-set(MW05_RECOMP_INSTALL_CXX_SOURCES
-    "install/installer.cpp"
-    "install/iso_file_system.cpp"
-    "install/update_checker.cpp"
-    "install/xcontent_file_system.cpp"
-    "install/hashes/apotos_shamar.cpp"
-    "install/hashes/chunnan.cpp"
-    "install/hashes/empire_city_adabat.cpp"
-    "install/hashes/game.cpp"
-    "install/hashes/holoska.cpp"
-    "install/hashes/mazuri.cpp"
-    "install/hashes/spagonia.cpp"
-    "install/hashes/update.cpp"
-)
+option(MW05_ENABLE_INSTALLER "Build the installer wizard UI" OFF)
+if (MW05_ENABLE_INSTALLER)
+    add_compile_definitions(MW05_ENABLE_INSTALLER)
+    set(MW05_RECOMP_INSTALL_CXX_SOURCES
+        "install/installer.cpp"
+        "install/iso_file_system.cpp"
+        "install/update_checker.cpp"
+        "install/xcontent_file_system.cpp"
+        "install/hashes/apotos_shamar.cpp"
+        "install/hashes/chunnan.cpp"
+        "install/hashes/empire_city_adabat.cpp"
+        "install/hashes/game.cpp"
+        "install/hashes/holoska.cpp"
+        "install/hashes/mazuri.cpp"
+        "install/hashes/spagonia.cpp"
+        "install/hashes/update.cpp"
+    )
+else()
+    set(MW05_RECOMP_INSTALL_CXX_SOURCES)
+endif()
 
 set(MW05_RECOMP_USER_CXX_SOURCES
     "user/achievement_data.cpp"
@@ -188,28 +178,32 @@ set(MW05_RECOMP_USER_CXX_SOURCES
     "user/persistent_storage_manager.cpp"
 )
 
-set(MW05_RECOMP_MOD_CXX_SOURCES
-    "mod/mod_loader.cpp"
-)
+# Disable Unleashed-specific mod loader
+set(MW05_RECOMP_MOD_CXX_SOURCES)
 
+# Use the SDL3 backend for ImGui
+# (Just list the correct file; don't try list(REMOVE_ITEM) inside set())
+option(MW05_ENABLE_IMPLOT "Build ImPlot support" OFF)
+option(MW05_ENABLE_UNLEASHED "Enable Unleashed/SWA integration" OFF)
 set(MW05_RECOMP_THIRDPARTY_SOURCES
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/backends/imgui_impl_sdl2.cpp"
+    "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/backends/imgui_impl_sdl3.cpp"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/imgui.cpp"
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/imgui_demo.cpp"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/imgui_draw.cpp"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/imgui_tables.cpp"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui/imgui_widgets.cpp"
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot.cpp"
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot_demo.cpp"
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot_items.cpp"
     "${MW05_RECOMP_TOOLS_ROOT}/XenosRecomp/thirdparty/smol-v/source/smolv.cpp"
 )
+if (MW05_ENABLE_IMPLOT)
+    list(APPEND MW05_RECOMP_THIRDPARTY_SOURCES
+        "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot.cpp"
+        "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot_demo.cpp"
+        "${MW05_RECOMP_THIRDPARTY_ROOT}/implot/implot_items.cpp")
+endif()
 
 set(MW05_RECOMP_THIRDPARTY_INCLUDES
     "${MW05_RECOMP_THIRDPARTY_ROOT}/concurrentqueue"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/ddspp"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/imgui"
-    "${MW05_RECOMP_THIRDPARTY_ROOT}/implot"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/json/include"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/magic_enum/include"
     "${MW05_RECOMP_THIRDPARTY_ROOT}/stb"
@@ -217,6 +211,9 @@ set(MW05_RECOMP_THIRDPARTY_INCLUDES
     "${MW05_RECOMP_TOOLS_ROOT}/bc_diff"
     "${MW05_RECOMP_TOOLS_ROOT}/XenosRecomp/thirdparty/smol-v/source"
 )
+if (MW05_ENABLE_IMPLOT)
+    list(APPEND MW05_RECOMP_THIRDPARTY_INCLUDES "${MW05_RECOMP_THIRDPARTY_ROOT}/implot")
+endif()
 
 set_source_files_properties(${MW05_RECOMP_THIRDPARTY_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
@@ -308,7 +305,7 @@ elseif (APPLE)
     set_target_properties(Mw05Recomp PROPERTIES
         OUTPUT_NAME "Mw05 Recompiled"
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/res/macos/MacOSXBundleInfo.plist.in
-        MACOSX_BUNDLE_GUI_IDENTIFIER hedge-dev.Mw05Recomp
+        MACOSX_BUNDLE_GUI_IDENTIFIER sh2dow.Mw05Recomp
         MACOSX_BUNDLE_BUNDLE_NAME "Mw05 Recompiled"
         MACOSX_BUNDLE_BUNDLE_VERSION ${MACOS_BUNDLE_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${MACOS_BUNDLE_VERSION}
@@ -344,6 +341,11 @@ elseif (APPLE)
 else()
     add_executable(Mw05Recomp ${MW05_RECOMP_CXX_SOURCES})
 endif()
+
+# Propagate feature defines
+target_compile_definitions(Mw05Recomp PRIVATE
+    MW05_ENABLE_UNLEASHED=$<BOOL:${MW05_ENABLE_UNLEASHED}>
+    MW05_ENABLE_IMPLOT=$<BOOL:${MW05_ENABLE_IMPLOT}>)
 
 if (MW05_RECOMP_FLATPAK)
     target_compile_definitions(Mw05Recomp PRIVATE 
@@ -394,14 +396,24 @@ target_link_libraries(Mw05Recomp PRIVATE
     nfd::nfd
     o1heap
     XenonUtils
-    SDL2::SDL2-static
-    SDL2_mixer
+    SDL3::SDL3-static            # <- was SDL2::SDL2-static
+    SDL3_mixer::SDL3_mixer       # <- was SDL2_mixer
     tomlplusplus::tomlplusplus
     Mw05RecompLib
     xxHash::xxhash
     CURL::libcurl
     plume
 )
+
+## SWA is removed; no SWA-specific compile definitions
+
+if (MW05_ENABLE_INSTALLER)
+    target_compile_definitions(Mw05Recomp PRIVATE MW05_ENABLE_INSTALLER)
+endif()
+
+if (MW05_ENABLE_UI)
+    target_compile_definitions(Mw05Recomp PRIVATE MW05_ENABLE_UI)
+endif()
 
 target_include_directories(Mw05Recomp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -415,7 +427,10 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     target_link_libraries(Mw05Recomp PRIVATE ${X11_LIBRARIES})
 endif()
 
-target_precompile_headers(Mw05Recomp PUBLIC ${MW05_RECOMP_PRECOMPILED_HEADERS})
+option(MW05_SKIP_APP_PCH "Disable PCH for Mw05Recomp target" OFF)
+if (NOT MW05_SKIP_APP_PCH)
+    target_precompile_headers(Mw05Recomp PUBLIC ${MW05_RECOMP_PRECOMPILED_HEADERS})
+endif()
 
 function(compile_shader FILE_PATH TARGET_NAME)
     set(FILE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/gpu/shader/${FILE_PATH}.hlsl)
@@ -478,7 +493,7 @@ BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/font/im_font_a
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/achievements_menu/trophy.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/achievements_menu/trophy.dds" ARRAY_NAME "g_trophy" COMPRESSION_TYPE "zstd")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/controller.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/controller.dds" ARRAY_NAME "g_controller" COMPRESSION_TYPE "zstd")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/general_window.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/general_window.dds" ARRAY_NAME "g_general_window" COMPRESSION_TYPE "zstd")
-BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/hedge-dev.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/hedge-dev.dds" ARRAY_NAME "g_hedgedev" COMPRESSION_TYPE "zstd")
+BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/mw05recomp.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/mw05recomp.dds" ARRAY_NAME "g_hedgedev" COMPRESSION_TYPE "zstd")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/kbm.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/kbm.dds" ARRAY_NAME "g_kbm" COMPRESSION_TYPE "zstd")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/select.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/select.dds" ARRAY_NAME "g_select" COMPRESSION_TYPE "zstd")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/common/light.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/common/light.dds" ARRAY_NAME "g_light" COMPRESSION_TYPE "zstd")
@@ -554,6 +569,10 @@ BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/options
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/options_menu/options_static_flash.dds" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/options_menu/options_static_flash.dds" ARRAY_NAME "g_options_static_flash" COMPRESSION_TYPE "zstd")
 
 ## Game Icon ##
+## SWA removed
+option(MW05_ENABLE_INSTALLER "Enable installer UI and content flow" ON)
+option(MW05_ENABLE_UI "Enable app UI (menus/overlays)" ON)
+
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/game_icon.bmp" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/game_icon.bmp" ARRAY_NAME "g_game_icon")
 BIN2C(TARGET_OBJ Mw05Recomp SOURCE_FILE "${RESOURCES_SOURCE_PATH}/images/game_icon_night.bmp" DEST_FILE "${RESOURCES_OUTPUT_PATH}/images/game_icon_night.bmp" ARRAY_NAME "g_game_icon_night")
 

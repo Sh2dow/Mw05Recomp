@@ -1,5 +1,6 @@
 #include "imgui_utils.h"
 #include <patches/aspect_ratio_patches.h>
+#include <cmath>
 #include <app.h>
 #include <decompressor.h>
 #include <version.h>
@@ -218,14 +219,14 @@ void DrawPauseHeaderContainer(ImVec2 min, ImVec2 max, float alpha)
     drawList->AddImage(g_texGeneralWindow.get(), { max.x - commonWidth, min.y }, max, GET_UV_COORDS(right), colour);
 }
 
-void DrawTextBasic(const ImFont* font, float fontSize, const ImVec2& pos, ImU32 colour, const char* text)
+void DrawTextBasic(ImFont* font, float fontSize, const ImVec2& pos, ImU32 colour, const char* text)
 {
     auto drawList = ImGui::GetBackgroundDrawList();
 
     drawList->AddText(font, fontSize, pos, colour, text, nullptr);
 }
 
-void DrawTextWithMarquee(const ImFont* font, float fontSize, const ImVec2& position, const ImVec2& min, const ImVec2& max, ImU32 color, const char* text, double time, double delay, double speed)
+void DrawTextWithMarquee(ImFont* font, float fontSize, const ImVec2& position, const ImVec2& min, const ImVec2& max, ImU32 color, const char* text, double time, double delay, double speed)
 {
     auto drawList = ImGui::GetBackgroundDrawList();
     auto rectWidth = max.x - min.x;
@@ -279,7 +280,7 @@ void DrawTextWithMarquee(const ImFont* font, float fontSize, const ImVec2& posit
     drawList->PopClipRect();
 }
 
-void DrawTextWithMarqueeShadow(const ImFont* font, float fontSize, const ImVec2& pos, const ImVec2& min, const ImVec2& max, ImU32 colour, const char* text, double time, double delay, double speed, float offset, float radius, ImU32 shadowColour)
+void DrawTextWithMarqueeShadow(ImFont* font, float fontSize, const ImVec2& pos, const ImVec2& min, const ImVec2& max, ImU32 colour, const char* text, double time, double delay, double speed, float offset, float radius, ImU32 shadowColour)
 {
     auto drawList = ImGui::GetBackgroundDrawList();
     auto rectWidth = max.x - min.x;
@@ -302,13 +303,13 @@ void DrawTextWithOutline(const ImFont* font, float fontSize, const ImVec2& pos, 
     auto drawList = ImGui::GetBackgroundDrawList();
 
     SetOutline(outlineSize);
-    drawList->AddText(font, fontSize, pos, outlineColor, text);
+    drawList->AddText(const_cast<ImFont*>(font), fontSize, pos, outlineColor, text);
     ResetOutline();
 
     if (shaderModifier != IMGUI_SHADER_MODIFIER_NONE)
         SetShaderModifier(shaderModifier);
 
-    drawList->AddText(font, fontSize, pos, color, text);
+    drawList->AddText(const_cast<ImFont*>(font), fontSize, pos, color, text);
 
     if (shaderModifier != IMGUI_SHADER_MODIFIER_NONE)
         SetShaderModifier(IMGUI_SHADER_MODIFIER_NONE);
@@ -327,10 +328,10 @@ void DrawTextWithShadow(const ImFont* font, float fontSize, const ImVec2& pos, I
     }
 
     SetOutline(radius);
-    drawList->AddText(font, fontSize, { pos.x + offset, pos.y + offset }, shadowColour, text);
+    drawList->AddText(const_cast<ImFont*>(font), fontSize, { pos.x + offset, pos.y + offset }, shadowColour, text);
     ResetOutline();
 
-    drawList->AddText(font, fontSize, pos, colour, text, nullptr);
+    drawList->AddText(const_cast<ImFont*>(font), fontSize, pos, colour, text, nullptr);
 }
 
 float CalcWidestTextSize(const ImFont* font, float fontSize, std::span<std::string> strs)
@@ -338,7 +339,7 @@ float CalcWidestTextSize(const ImFont* font, float fontSize, std::span<std::stri
     auto result = 0.0f;
 
     for (auto& str : strs)
-        result = std::max(result, font->CalcTextSizeA(fontSize, FLT_MAX, 0, str.c_str()).x);
+        result = std::max(result, const_cast<ImFont*>(font)->CalcTextSizeA(fontSize, FLT_MAX, 0, str.c_str()).x);
 
     return result;
 }
@@ -457,7 +458,7 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
     std::vector<std::string> result;
     float textWidth = 0.0f;
     float lineWidth = 0.0f;
-    const float scale = fontSize / font->FontSize;
+    const float scale = fontSize / ImGui::GetFontSize();
     const char *str = strStart;
     const char *strEnd = strStart + strlen(strStart);
     const char *lineStart = strStart;
@@ -471,7 +472,13 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
         if (c < 0x80)
             tempStr += 1;
         else
-            tempStr += ImTextCharFromUtf8(&c, tempStr, strEnd);
+            {
+                // minimal UTF-8 decoder
+                if ((*tempStr & 0xE0) == 0xC0) { c = ((*tempStr & 0x1F) << 6) | (tempStr[1] & 0x3F); tempStr += 2; }
+                else if ((*tempStr & 0xF0) == 0xE0) { c = ((*tempStr & 0x0F) << 12) | ((tempStr[1] & 0x3F) << 6) | (tempStr[2] & 0x3F); tempStr += 3; }
+                else if ((*tempStr & 0xF8) == 0xF0) { c = 0xFFFD; tempStr += 4; }
+                else { ++tempStr; }
+            }
 
         // Basic CJK and CJK Extension A
         return (c >= 0x4E00 && c <= 0x9FBF) || (c >= 0x3400 && c <= 0x4DBF);
@@ -483,7 +490,7 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
         {
             if (wordWrapEOL == nullptr)
             {
-                wordWrapEOL = CalcWordWrapPositionA(font, scale, str, strEnd, maxWidth - lineWidth);
+                wordWrapEOL = CalcWordWrapPositionA(const_cast<ImFont*>(font), scale, str, strEnd, maxWidth - lineWidth);
             }
 
             if (str >= wordWrapEOL)
@@ -504,7 +511,7 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
                 lineWidth = 0.0f;
                 wordWrapEOL = nullptr;
 
-                while (str < strEnd && ImCharIsBlankA(*str))
+                while (str < strEnd && (*str == ' ' || *str == '\t'))
                     str++;
 
                 if (*str == '\n')
@@ -525,7 +532,12 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
         if (c < 0x80)
             str += 1;
         else
-            str += ImTextCharFromUtf8(&c, str, strEnd);
+            {
+                if ((*str & 0xE0) == 0xC0) { c = ((*str & 0x1F) << 6) | (str[1] & 0x3F); str += 2; }
+                else if ((*str & 0xF0) == 0xE0) { c = ((*str & 0x0F) << 12) | ((str[1] & 0x3F) << 6) | (str[2] & 0x3F); str += 3; }
+                else if ((*str & 0xF8) == 0xF0) { c = 0xFFFD; str += 4; }
+                else { ++str; }
+            }
 
         if (c < 32)
         {
@@ -533,7 +545,7 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
             {
                 result.emplace_back(lineStart, str - 1);
                 lineStart = str;
-                textWidth = ImMax(textWidth, lineWidth);
+                textWidth = std::max(textWidth, lineWidth);
                 lineWidth = 0.0f;
                 continue;
             }
@@ -545,7 +557,13 @@ std::vector<std::string> Split(const char* strStart, const ImFont* font, float f
             }
         }
 
-        const float charWidth = ((int)c < font->IndexAdvanceX.Size ? font->IndexAdvanceX.Data[c] : font->FallbackAdvanceX) * scale;
+        // Estimate width for this codepoint using CalcTextSizeA
+        char cpbuf[5] = {0}; int len = 0;
+        if (c < 0x80) { cpbuf[0] = (char)c; len = 1; }
+        else if (c <= 0x7FF) { cpbuf[0] = (char)(0xC0 | ((c >> 6) & 0x1F)); cpbuf[1] = (char)(0x80 | (c & 0x3F)); len = 2; }
+        else if (c <= 0xFFFF) { cpbuf[0] = (char)(0xE0 | ((c >> 12) & 0x0F)); cpbuf[1] = (char)(0x80 | ((c >> 6) & 0x3F)); cpbuf[2] = (char)(0x80 | (c & 0x3F)); len = 3; }
+        else { cpbuf[0] = '?'; len = 1; }
+        const float charWidth = const_cast<ImFont*>(font)->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, cpbuf, cpbuf + len).x;
         if (lineWidth + charWidth >= maxWidth)
         {
             str = prevStr;
@@ -652,7 +670,7 @@ ImVec2 MeasureCentredParagraph(const ImFont* font, float fontSize, float lineMar
 
     for (size_t i = 0; i < annotationRemovedLines.size(); i++)
     {
-        auto textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, annotationRemovedLines[i].c_str());
+        auto textSize = const_cast<ImFont*>(font)->CalcTextSizeA(fontSize, FLT_MAX, 0, annotationRemovedLines[i].c_str());
 
         x = std::max(x, textSize.x);
         y += textSize.y + Scale(lineMargin);
@@ -700,8 +718,8 @@ void DrawRubyAnnotatedText(const ImFont* font, float fontSize, float maxWidth, c
     {
         const auto annotationRemovedLine = RemoveAnnotationFromParagraphLine(annotatedLine);
 
-        auto textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, annotationRemovedLine.c_str());
-        auto annotationSize = font->CalcTextSizeA(annotationFontSize, FLT_MAX, 0, "");
+        auto textSize = const_cast<ImFont*>(font)->CalcTextSizeA(fontSize, FLT_MAX, 0, annotationRemovedLine.c_str());
+        auto annotationSize = const_cast<ImFont*>(font)->CalcTextSizeA(annotationFontSize, FLT_MAX, 0, "");
         auto textX = pos.x;
         auto textY = pos.y + offsetY;
 
@@ -716,11 +734,11 @@ void DrawRubyAnnotatedText(const ImFont* font, float fontSize, float maxWidth, c
 
         for (const auto& segment : annotatedLine)
         {
-            textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, segment.text.c_str());
+            textSize = const_cast<ImFont*>(font)->CalcTextSizeA(fontSize, FLT_MAX, 0, segment.text.c_str());
 
             if (segment.annotated)
             {
-                annotationSize = font->CalcTextSizeA(annotationFontSize, FLT_MAX, 0, segment.annotation.c_str());
+                annotationSize = const_cast<ImFont*>(font)->CalcTextSizeA(annotationFontSize, FLT_MAX, 0, segment.annotation.c_str());
                 float annotationX = textX + (textSize.x - annotationSize.x) / 2.0f;
 
                 annotationDrawMethod(segment.annotation.c_str(), annotationFontSize, { annotationX, textY - annotationFontSize });
@@ -772,7 +790,7 @@ ImU32 ColourLerp(ImU32 c0, ImU32 c1, float t)
     return ImGui::ColorConvertFloat4ToU32(result);
 }
 
-void DrawVersionString(const ImFont* font, const ImU32 col)
+void DrawVersionString(ImFont* font, const ImU32 col)
 {
     auto drawList = ImGui::GetBackgroundDrawList();
     auto& res = ImGui::GetIO().DisplaySize;
@@ -895,7 +913,12 @@ const char* CalcWordWrapPositionA(const ImFont* font, float scale, const char* t
         if (c < 0x80)
             next_s = s + 1;
         else
-            next_s = s + ImTextCharFromUtf8(&c, s, text_end);
+        {
+            if ((s[0] & 0xE0) == 0xC0) { next_s = s + 2; }
+            else if ((s[0] & 0xF0) == 0xE0) { next_s = s + 3; }
+            else if ((s[0] & 0xF8) == 0xF0) { next_s = s + 4; }
+            else { next_s = s + 1; }
+        }
 
         if (c < 32)
         {
@@ -913,8 +936,15 @@ const char* CalcWordWrapPositionA(const ImFont* font, float scale, const char* t
             }
         }
 
-        const float char_width = ((int)c < font->IndexAdvanceX.Size ? font->IndexAdvanceX.Data[c] : font->FallbackAdvanceX);
-        if (ImCharIsBlankW(c) || c == 0x200B)
+        // Measure width of this codepoint at effective size
+        float effSize = ImGui::GetFontSize() * scale;
+        char cp[5] = {0}; int clen = 0;
+        if (c < 0x80) { cp[0] = (char)c; clen = 1; }
+        else if (c <= 0x7FF) { cp[0] = (char)(0xC0 | ((c >> 6) & 0x1F)); cp[1] = (char)(0x80 | (c & 0x3F)); clen = 2; }
+        else if (c <= 0xFFFF) { cp[0] = (char)(0xE0 | ((c >> 12) & 0x0F)); cp[1] = (char)(0x80 | ((c >> 6) & 0x3F)); cp[2] = (char)(0x80 | (c & 0x3F)); clen = 3; }
+        else { cp[0] = '?'; clen = 1; }
+        const float char_width = const_cast<ImFont*>(font)->CalcTextSizeA(effSize, FLT_MAX, 0.0f, cp, cp + clen).x;
+        if (c == ' ' || c == '\t' || c == 0x200B)
         {
             if (inside_word)
             {

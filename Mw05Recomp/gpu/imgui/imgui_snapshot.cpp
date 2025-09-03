@@ -1,11 +1,13 @@
 #include "imgui_snapshot.h"
 
 #include <locale/locale.h>
-#include <res/font/im_font_atlas.bin.h>
 #include <user/config.h>
-#include <decompressor.h>
 #include <kernel/xdbf.h>
 #include <app.h>
+
+#ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
+#include <res/font/im_font_atlas.bin.h>
+#include <decompressor.h>
 
 template<typename T1, typename T2>
 void ImFontAtlasSnapshot::SnapPointer(size_t offset, const T1& value, const T2& ptr, size_t count)
@@ -42,29 +44,9 @@ void ImFontAtlasSnapshot::Traverse(size_t offset, const T& value)
     {
         SnapPointer(offset, value, value, 1);
     }
-    else if constexpr (std::is_same_v<T, ImFontAtlas>)
+    else
     {
-        SnapPointer(offset, value, value.ConfigData.Data, value.ConfigData.Size);
-        SnapPointer(offset, value, value.CustomRects.Data, value.CustomRects.Size);
-        SnapPointer(offset, value, value.Fonts.Data, value.Fonts.Size);
-    }
-    else if constexpr (std::is_same_v<T, ImFont>)
-    {
-        SnapPointer(offset, value, value.IndexAdvanceX.Data, value.IndexAdvanceX.Size);
-        SnapPointer(offset, value, value.IndexLookup.Data, value.IndexLookup.Size);
-        SnapPointer(offset, value, value.Glyphs.Data, value.Glyphs.Size);
-        SnapPointer(offset, value, value.FallbackGlyph, 1);
-        SnapPointer(offset, value, value.ContainerAtlas, 1);
-        SnapPointer(offset, value, value.ConfigData, value.ConfigDataCount);
-    }
-    else if constexpr (std::is_same_v<T, ImFontAtlasCustomRect>)
-    {
-        SnapPointer(offset, value, value.Font, 1);
-    }  
-    else if constexpr (std::is_same_v<T, ImFontConfig>)
-    {
-        SnapPointer(offset, value, value.GlyphRanges, value.GlyphRanges != nullptr ? wcslen(reinterpret_cast<const wchar_t*>(value.GlyphRanges)) + 1 : 0);
-        SnapPointer(offset, value, value.DstFont, 1);
+        // Unsupported when snapshotting is disabled
     }
 }
 
@@ -89,6 +71,7 @@ struct ImFontAtlasSnapshotHeader
 
 void ImFontAtlasSnapshot::Snap()
 {
+#ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
     data.resize(sizeof(ImFontAtlasSnapshotHeader));
     size_t dataOffset = Snap(*ImGui::GetIO().Fonts);
 
@@ -104,6 +87,12 @@ void ImFontAtlasSnapshot::Snap()
     header->dataOffset = dataOffset;
     header->offsetCount = offsets.size();
     header->offsetsOffset = offsetsOffset;
+#else
+    // Snapshot disabled; provide a no-op with a consistent symbol.
+    data.clear();
+    offsets.clear();
+    objects.clear();
+#endif
 }
 
 static std::unique_ptr<uint8_t[]> g_imFontAtlas;
@@ -124,16 +113,45 @@ ImFontAtlas* ImFontAtlasSnapshot::Load()
 
     return reinterpret_cast<ImFontAtlas*>(g_imFontAtlas.get() + header->dataOffset);
 }
+#endif // ENABLE_IM_FONT_ATLAS_SNAPSHOT
 
+
+static int Utf8CharFromBytes(unsigned int* out_char, const char* in_text, const char* in_text_end)
+{
+    if (in_text >= in_text_end || !in_text)
+        return 0;
+    const unsigned char c = (unsigned char)*in_text;
+    if (c < 0x80) { *out_char = c; return 1; }
+    if ((c >> 5) == 0x6) {
+        if (in_text + 1 >= in_text_end) { *out_char = 0xFFFD; return 1; }
+        *out_char = ((c & 0x1F) << 6) | ((unsigned char)in_text[1] & 0x3F);
+        return 2;
+    }
+    if ((c >> 4) == 0xE) {
+        if (in_text + 2 >= in_text_end) { *out_char = 0xFFFD; return 1; }
+        *out_char = ((c & 0x0F) << 12) | (((unsigned char)in_text[1] & 0x3F) << 6) | ((unsigned char)in_text[2] & 0x3F);
+        return 3;
+    }
+    if ((c >> 3) == 0x1E) {
+        if (in_text + 3 >= in_text_end) { *out_char = 0xFFFD; return 1; }
+        *out_char = ((c & 0x07) << 18) | (((unsigned char)in_text[1] & 0x3F) << 12) | (((unsigned char)in_text[2] & 0x3F) << 6) | ((unsigned char)in_text[3] & 0x3F);
+        return 4;
+    }
+    *out_char = 0xFFFD;
+    return 1;
+}
 
 static void GetGlyphs(std::set<ImWchar>& glyphs, const std::string_view& value)
 {
     const char* cur = value.data();
-    while (cur < value.data() + value.size())
+    const char* end = value.data() + value.size();
+    while (cur < end)
     {
         unsigned int c;
-        cur += ImTextCharFromUtf8(&c, cur, value.data() + value.size());
-        glyphs.emplace(c);
+        int consumed = Utf8CharFromBytes(&c, cur, end);
+        if (consumed <= 0) break;
+        cur += consumed;
+        glyphs.emplace((ImWchar)c);
     }
 }
 
@@ -189,19 +207,7 @@ void ImFontAtlasSnapshot::GenerateGlyphRanges()
 
 ImFont* ImFontAtlasSnapshot::GetFont(const char* name)
 {
+    // On-demand: try to load the font from file with the computed glyph ranges
     auto fontAtlas = ImGui::GetIO().Fonts;
-    for (auto& configData : fontAtlas->ConfigData)
-    {
-        if (strstr(configData.Name, name) != nullptr)
-        {
-            assert(configData.DstFont != nullptr);
-            return configData.DstFont;
-        }
-    }
-
-#ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
-    assert(false && "Unable to locate equivalent font in the atlas file.");
-#endif
-
     return fontAtlas->AddFontFromFileTTF(name, 24.0f, nullptr, g_glyphRanges.data());
 }

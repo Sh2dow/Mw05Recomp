@@ -3,7 +3,9 @@
 #include <kernel/xam.h>
 #include <kernel/xdm.h>
 #include <kernel/function.h>
+#if MW05_ENABLE_UNLEASHED
 #include <mod/mod_loader.h>
+#endif
 #include <os/logger.h>
 #include <user/config.h>
 #include <stdafx.h>
@@ -49,12 +51,17 @@ struct FindHandle : KernelObject
 
             for (size_t i = 0; ; i++)
             {
+            #if MW05_ENABLE_UNLEASHED
                 auto* includeDirs = ModLoader::GetIncludeDirectories(i);
                 if (includeDirs == nullptr)
                     break;
 
                 for (auto& includeDir : *includeDirs)
                     addDirectory(includeDir / pathStr);
+            #else
+                (void)i; // mods disabled
+                break;
+            #endif
             }
         }
 
@@ -365,11 +372,19 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
 {
     if (checkForMods)
     {
+        #if MW05_ENABLE_UNLEASHED
         std::filesystem::path resolvedPath = ModLoader::ResolvePath(path);
+        #else
+        std::filesystem::path resolvedPath = std::filesystem::path(path);
+        #endif
 
         if (!resolvedPath.empty())
         {
+            #if MW05_ENABLE_UNLEASHED
             if (ModLoader::s_isLogTypeConsole)
+            #else
+            if (false)
+            #endif
                 LOGF_IMPL(Utility, "Mod Loader", "Loading file: \"{}\"", reinterpret_cast<const char*>(resolvedPath.u8string().c_str()));
 
             return resolvedPath;

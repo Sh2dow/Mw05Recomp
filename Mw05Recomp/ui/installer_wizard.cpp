@@ -1,4 +1,10 @@
+#ifndef MW05_ENABLE_INSTALLER
+#define MW05_ENABLE_INSTALLER 0
+#endif
+
+#if MW05_ENABLE_INSTALLER
 #include "installer_wizard.h"
+#if MW05_ENABLE_INSTALLER
 
 #include <nfd.h>
 
@@ -17,7 +23,7 @@
 #include <exports.h>
 #include <sdl_listener.h>
 
-#include <res/images/common/hedge-dev.dds.h>
+#include <res/images/common/mw05recomp.dds.h>
 #include <res/images/installer/install_001.dds.h>
 #include <res/images/installer/install_002.dds.h>
 #include <res/images/installer/install_003.dds.h>
@@ -176,7 +182,7 @@ public:
             return false;
 
         bool noModals = g_currentMessagePrompt.empty() && !g_currentPickerVisible;
-        if (event->type == SDL_QUIT && g_currentPage == WizardPage::Installing)
+        if (event->type == SDL_EVENT_QUIT && g_currentPage == WizardPage::Installing)
         {
             // Pretend the back button was pressed if the user tried quitting during installation.
             // This condition is above the rest of the event processing as we want to block the exit
@@ -197,9 +203,9 @@ public:
 
         switch (event->type)
         {
-            case SDL_KEYDOWN:
+            case SDL_EVENT_KEY_DOWN:
             {
-                switch (event->key.keysym.scancode)
+                switch (event->key.scancode)
                 {
                     case SDL_SCANCODE_LEFT:
                     case SDL_SCANCODE_RIGHT:
@@ -221,26 +227,26 @@ public:
                 break;
             }
 
-            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             {
-                switch (event->cbutton.button)
+                switch (event->gbutton.button)
                 {
-                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
                         tapDirection = { -1.0f, 0.0f };
                         break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
                         tapDirection = { 1.0f, 0.0f };
                         break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                    case SDL_GAMEPAD_BUTTON_DPAD_UP:
                         tapDirection = { 0.0f, -1.0f };
                         break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
                         tapDirection = { 0.0f, 1.0f };
                         break;
-                    case SDL_CONTROLLER_BUTTON_A:
+                    case SDL_GAMEPAD_BUTTON_SOUTH:
                         g_currentCursorAccepted = (g_currentCursorIndex >= 0);
                         break;
-                    case SDL_CONTROLLER_BUTTON_B:
+                    case SDL_GAMEPAD_BUTTON_EAST:
                         g_currentCursorBack = true;
                         break;
                 }
@@ -248,20 +254,20 @@ public:
                 break;
             }
 
-            case SDL_CONTROLLERAXISMOTION:
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
             {
-                if (event->caxis.axis < 2)
+                if (event->gaxis.axis < 2)
                 {
-                    float newAxisValue = event->caxis.value / AxisValueRange;
-                    bool sameDirection = (newAxisValue * g_joypadAxis[event->caxis.axis]) > 0.0f;
-                    bool wasInRange = abs(g_joypadAxis[event->caxis.axis]) > AxisTapRange;
+                    float newAxisValue = event->gaxis.value / AxisValueRange;
+                    bool sameDirection = (newAxisValue * g_joypadAxis[event->gaxis.axis]) > 0.0f;
+                    bool wasInRange = abs(g_joypadAxis[event->gaxis.axis]) > AxisTapRange;
                     bool isInRange = abs(newAxisValue) > AxisTapRange;
                     if (sameDirection && !wasInRange && isInRange)
                     {
-                        tapDirection[event->caxis.axis] = newAxisValue;
+                        tapDirection[event->gaxis.axis] = newAxisValue;
                     }
 
-                    g_joypadAxis[event->caxis.axis] = newAxisValue;
+                    g_joypadAxis[event->gaxis.axis] = newAxisValue;
                 }
 
                 break;
@@ -810,8 +816,8 @@ static void DrawDescriptionContainer()
     {
         auto descTextSize = MeasureCentredParagraph(g_seuratFont, fontSize, lineWidth, lineMargin, descriptionText);
 
-        auto hedgeDevStr = "hedge-dev";
-        auto hedgeDevTextSize = g_seuratFont->CalcTextSizeA(fontSize, FLT_MAX, 0, hedgeDevStr);
+        auto mw05DevStr = "sh2dow";
+        auto hedgeDevTextSize = g_seuratFont->CalcTextSizeA(fontSize, FLT_MAX, 0, mw05DevStr);
         auto hedgeDevTextMarginX = Scale(15);
 
         auto colWhite = IM_COL32(255, 255, 255, 255 * textAlpha);
@@ -851,7 +857,7 @@ static void DrawDescriptionContainer()
             fontSize,
             { /* X */ imageMax.x + hedgeDevTextMarginX, /* Y */ imageMin.y + (imageScale / 2) - (hedgeDevTextSize.y / 2) },
             colWhite,
-            hedgeDevStr
+            mw05DevStr
         );
 
         SetHorizontalMarqueeFade(marqueeTextMin, marqueeTextMax, Scale(32));
@@ -1810,6 +1816,11 @@ void InstallerWizard::Draw()
     }
 }
 
+#else
+// If installer is disabled, provide empty Draw to satisfy references when compiled.
+void InstallerWizard::Draw() {}
+#endif
+
 void InstallerWizard::Shutdown()
 {
     // Wait for and erase the threads.
@@ -1887,3 +1898,5 @@ bool InstallerWizard::Run(std::filesystem::path installPath, bool skipGame)
 
     return !g_isQuitting;
 }
+
+#endif // MW05_ENABLE_INSTALLER

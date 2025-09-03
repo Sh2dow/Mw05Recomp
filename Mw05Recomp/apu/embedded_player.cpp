@@ -25,7 +25,7 @@ enum class EmbeddedSound
 
 struct EmbeddedSoundData
 {
-    Mix_Chunk* chunk{};
+    MIX_Audio* audio{};
 };
 
 static std::array<EmbeddedSoundData, size_t(EmbeddedSound::Count)> g_embeddedSoundData = {};
@@ -40,12 +40,19 @@ static const std::unordered_map<std::string_view, EmbeddedSound> g_embeddedSound
     { "sys_actstg_pausewinopen", EmbeddedSound::SysActStgPauseWinOpen },
 };
 
-static size_t g_channelIndex;
+static MIX_Mixer* g_mixer = nullptr;
+static MIX_Track* g_musicTrack = nullptr;
+
+static void OnSfxStopped(void* userdata, MIX_Track* track)
+{
+    (void)userdata;
+    MIX_DestroyTrack(track);
+}
 
 static void PlayEmbeddedSound(EmbeddedSound s)
 {
     EmbeddedSoundData &data = g_embeddedSoundData[size_t(s)];
-    if (data.chunk == nullptr)
+    if (data.audio == nullptr)
     {
         // The sound hasn't been created yet, create it and pick it.
         const void *soundData = nullptr;
@@ -85,20 +92,30 @@ static void PlayEmbeddedSound(EmbeddedSound s)
             return;
         }
 
-        data.chunk = Mix_LoadWAV_RW(SDL_RWFromConstMem(soundData, soundDataSize), 1);
+        SDL_IOStream* io = SDL_IOFromConstMem(soundData, soundDataSize);
+        data.audio = MIX_LoadAudio_IO(g_mixer, io, true, true);
     }
-    
-    Mix_VolumeChunk(data.chunk, Config::MasterVolume * Config::EffectsVolume * MIX_MAX_VOLUME);
-    Mix_PlayChannel(g_channelIndex % MIX_CHANNELS, data.chunk, 0);
-    ++g_channelIndex;
+
+    MIX_Track* track = MIX_CreateTrack(g_mixer);
+    if (!track)
+        return;
+    MIX_SetTrackAudio(track, data.audio);
+    MIX_SetTrackGain(track, Config::MasterVolume * Config::EffectsVolume);
+    MIX_SetTrackStoppedCallback(track, OnSfxStopped, nullptr);
+    MIX_PlayTrack(track, 0);
 }
 
-static Mix_Music* g_installerMusic;
+static MIX_Audio* g_installerMusic;
 
 void EmbeddedPlayer::Init() 
 {
-    Mix_OpenAudio(XAUDIO_SAMPLES_HZ, AUDIO_F32SYS, 2, 4096);
-    g_installerMusic = Mix_LoadMUS_RW(SDL_RWFromConstMem(g_installer_music, sizeof(g_installer_music)), 1);
+    if (!g_mixer)
+    {
+        g_mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
+    }
+
+    SDL_IOStream* io = SDL_IOFromConstMem(g_installer_music, sizeof(g_installer_music));
+    g_installerMusic = MIX_LoadAudio_IO(g_mixer, io, true, true);
 
     s_isActive = true;
 }
@@ -118,32 +135,62 @@ void EmbeddedPlayer::Play(const char *name)
 
 void EmbeddedPlayer::PlayMusic()
 {
-    if (!Mix_PlayingMusic())
-    {
-        Mix_PlayMusic(g_installerMusic, INT_MAX);
-        Mix_VolumeMusic(Config::MasterVolume * Config::MusicVolume * MUSIC_VOLUME * MIX_MAX_VOLUME);
-    }
+    if (g_musicTrack && MIX_TrackPlaying(g_musicTrack))
+        return;
+
+    if (!g_musicTrack)
+        g_musicTrack = MIX_CreateTrack(g_mixer);
+
+    MIX_SetTrackAudio(g_musicTrack, g_installerMusic);
+    MIX_SetTrackGain(g_musicTrack, Config::MasterVolume * Config::MusicVolume * MUSIC_VOLUME);
+
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetNumberProperty(props, MIX_PROP_PLAY_LOOPS_NUMBER, -1);
+    MIX_PlayTrack(g_musicTrack, props);
+    SDL_DestroyProperties(props);
 }
 
 void EmbeddedPlayer::FadeOutMusic()
 {
-    if (Mix_PlayingMusic())
-        Mix_FadeOutMusic(1000);
+    if (g_musicTrack && MIX_TrackPlaying(g_musicTrack))
+    {
+        SDL_AudioSpec spec{};
+        if (!MIX_GetMixerFormat(g_mixer, &spec))
+            return;
+        Sint64 frames = MIX_MSToFrames(spec.freq, 1000);
+        MIX_StopTrack(g_musicTrack, frames);
+    }
 }
 
 void EmbeddedPlayer::Shutdown() 
 {
     for (EmbeddedSoundData &data : g_embeddedSoundData)
     {
-        if (data.chunk != nullptr)
-            Mix_FreeChunk(data.chunk);
+        if (data.audio != nullptr)
+        {
+            MIX_DestroyAudio(data.audio);
+            data.audio = nullptr;
+        }
     }
 
-    Mix_HaltMusic();
-    Mix_FreeMusic(g_installerMusic);
+    if (g_musicTrack)
+    {
+        MIX_DestroyTrack(g_musicTrack);
+        g_musicTrack = nullptr;
+    }
 
-    Mix_CloseAudio();
-    Mix_Quit();
+    if (g_installerMusic)
+    {
+        MIX_DestroyAudio(g_installerMusic);
+        g_installerMusic = nullptr;
+    }
+
+    if (g_mixer)
+    {
+        MIX_DestroyMixer(g_mixer);
+        g_mixer = nullptr;
+    }
+    MIX_Quit();
 
     s_isActive = false;
 }

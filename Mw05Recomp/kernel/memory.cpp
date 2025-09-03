@@ -26,11 +26,13 @@ Memory::Memory()
     mprotect(base, 4096, PROT_NONE);
 #endif
 
+#if MW05_ENABLE_UNLEASHED
     for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
     {
         if (PPCFuncMappings[i].host != nullptr)
             InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
     }
+#endif
 }
 
 void* MmGetHostAddress(uint32_t ptr)

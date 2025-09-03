@@ -1,9 +1,7 @@
 #pragma once
 
-// Undefine this to generate a font atlas file in working directory.
-// You also need to do this if you are testing localization, as only
-// characters in the locale get added to the atlas.
-#define ENABLE_IM_FONT_ATLAS_SNAPSHOT
+// Define ENABLE_IM_FONT_ATLAS_SNAPSHOT to use a pre-generated atlas snapshot.
+// By default, build uses the runtime ImGui font builder.
 
 struct ImFontAtlasSnapshot
 {

@@ -1,8 +1,9 @@
 #include "video.h"
 
 #include "imgui/imgui_common.h"
+#ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
 #include "imgui/imgui_snapshot.h"
-#include "imgui/imgui_font_builder.h"
+#endif
 
 #include <app.h>
 #include <bc_diff.h>
@@ -16,7 +17,7 @@
 #include <res/bc_diff/button_bc_diff.bin.h>
 #include <res/font/im_font_atlas.dds.h>
 #include <shader/shader_cache.h>
-#include <SWA.h>
+// SWA-specific integration removed
 #include <ui/achievement_menu.h>
 #include <ui/achievement_overlay.h>
 #include <ui/button_guide.h>
@@ -37,10 +38,10 @@
 #include <magic_enum/magic_enum.hpp>
 #endif
 
-#define UNLEASHED_RECOMP
+#define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
 #include "shader/blend_color_alpha_ps.hlsl.dxil.h"
 #include "shader/copy_vs.hlsl.dxil.h"
 #include "shader/copy_color_ps.hlsl.dxil.h"
@@ -100,7 +101,7 @@ extern "C"
 
 namespace plume
 {
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 #endif
 #ifdef SDL_VULKAN_ENABLED
@@ -283,7 +284,7 @@ static Profiler g_swapChainAcquireProfiler;
 static bool g_profilerVisible;
 static bool g_profilerWasToggled;
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
 static bool g_vulkan = false;
 #else
 static constexpr bool g_vulkan = true;
@@ -334,8 +335,8 @@ static uint32_t g_intermediaryBackBufferTextureDescriptorIndex;
 
 static std::unique_ptr<RenderPipeline> g_gammaCorrectionPipeline;
 
-struct std::unique_ptr<RenderDescriptorSet> g_textureDescriptorSet;
-struct std::unique_ptr<RenderDescriptorSet> g_samplerDescriptorSet;
+static std::unique_ptr<RenderDescriptorSet> g_textureDescriptorSet;
+static std::unique_ptr<RenderDescriptorSet> g_samplerDescriptorSet;
 
 enum
 {
@@ -386,7 +387,7 @@ static TextureDescriptorAllocator g_textureDescriptorAllocator;
 static std::unique_ptr<RenderPipelineLayout> g_pipelineLayout;
 static xxHashMap<std::unique_ptr<RenderPipeline>> g_pipelines;
 
-#ifdef ASYNC_PSO_DEBUG
+#if defined(ASYNC_PSO_DEBUG)
 static std::atomic<uint32_t> g_pipelinesCreatedInRenderThread;
 static std::atomic<uint32_t> g_pipelinesCreatedAsynchronously;
 static std::atomic<uint32_t> g_pipelinesDropped;
@@ -414,13 +415,14 @@ enum class PipelineTaskType
 struct PipelineTask
 {
     PipelineTaskType type{};
-    boost::shared_ptr<Hedgehog::Database::CDatabaseData> databaseData;
+    std::shared_ptr<void> databaseData;
 };
 
 static Mutex g_pipelineTaskMutex;
 static std::vector<PipelineTask> g_pipelineTaskQueue;
 
-static void EnqueuePipelineTask(PipelineTaskType type, const boost::shared_ptr<Hedgehog::Database::CDatabaseData>& databaseData)
+static void EnqueuePipelineTask(PipelineTaskType type,
+    const std::shared_ptr<void>& databaseData)
 {
     // Precompiled pipelines deliberately do not increment 
     // this counter to overlap the compilation with intro logos.
@@ -745,7 +747,9 @@ PPC_FUNC(sub_824ECA00)
     // Guard against thread ownership changes when between command lists.
     g_readyForCommands.wait(false);
     g_presentThreadId = std::this_thread::get_id();
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_824ECA00(ctx, base);
+#endif
 }
 
 static ankerl::unordered_dense::map<RenderTexture*, RenderTextureLayout> g_barrierMap;
@@ -785,7 +789,7 @@ static void LoadEmbeddedResources()
         g_shaderCache = std::make_unique<uint8_t[]>(g_spirvCacheDecompressedSize);
         ZSTD_decompress(g_shaderCache.get(), g_spirvCacheDecompressedSize, g_compressedSpirvCache, g_spirvCacheCompressedSize);
     }
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     else
     {
         g_shaderCache = std::make_unique<uint8_t[]>(g_dxilCacheDecompressedSize);
@@ -1294,7 +1298,7 @@ static GuestShader* g_csdShader;
 
 static std::unique_ptr<GuestShader> g_enhancedMotionBlurShader;
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
 
 #define CREATE_SHADER(NAME) \
     g_device->createShader( \
@@ -1359,7 +1363,6 @@ struct ImGuiPushConstants
     float outline{};
 };
 
-extern ImFontBuilderIO g_fontBuilderIO;
 
 static void CreateImGuiBackend()
 {
@@ -1373,7 +1376,6 @@ static void CreateImGuiBackend()
     io.Fonts = ImFontAtlasSnapshot::Load();
 #else
     io.Fonts->AddFontDefault();
-    ImFontAtlasSnapshot::GenerateGlyphRanges();
 #endif
 
     InitImGuiUtils();
@@ -1382,15 +1384,17 @@ static void CreateImGuiBackend()
     ButtonGuide::Init();
     MessageWindow::Init();
     OptionsMenu::Init();
+    #if MW05_ENABLE_UNLEASHED
     InstallerWizard::Init();
+    #endif
 
-    ImGui_ImplSDL2_InitForOther(GameWindow::s_pWindow);
+    ImGui_ImplSDL3_InitForOther(GameWindow::s_pWindow);
 
 #ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
     g_imFontTexture = LoadTexture(
         decompressZstd(g_im_font_atlas_texture, g_im_font_atlas_texture_uncompressed_size).get(), g_im_font_atlas_texture_uncompressed_size);
 #else
-    io.Fonts->FontBuilderIO = &g_fontBuilderIO;
+    // Use Dear ImGui's default font builder
     io.Fonts->Build();
 
     g_imFontTexture = std::make_unique<GuestTexture>(ResourceType::Texture);
@@ -1501,13 +1505,17 @@ static void CreateImGuiBackend()
     g_imAdditivePipeline = g_device->createGraphicsPipeline(pipelineDesc);
 
 #ifndef ENABLE_IM_FONT_ATLAS_SNAPSHOT
+#ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
     ImFontAtlasSnapshot snapshot;
     snapshot.Snap();
+#endif
 
     FILE* file = fopen("im_font_atlas.bin", "wb");
     if (file)
     {
+    #ifdef ENABLE_IM_FONT_ATLAS_SNAPSHOT
         fwrite(snapshot.data.data(), 1, snapshot.data.size(), file);
+    #endif
         fclose(file);
     }
 
@@ -1667,11 +1675,13 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+#if MW05_ENABLE_IMPLOT
     ImPlot::CreateContext();
+#endif
 
     GameWindow::Init(sdlVideoDriver);
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     g_vulkan = DetectWine() || Config::GraphicsAPI == EGraphicsAPI::Vulkan;
 #endif
 
@@ -1679,7 +1689,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     using RenderInterfaceFunction = std::unique_ptr<RenderInterface>(void);
     std::vector<RenderInterfaceFunction *> interfaceFunctions;
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     bool allowVulkanRedirection = true;
 
     if (graphicsApiRetry)
@@ -1702,7 +1712,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     {
         RenderInterfaceFunction* interfaceFunction = interfaceFunctions[i];
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
         // Wrap the device creation in __try/__except to survive from driver crashes.
         __try
 #endif
@@ -1718,7 +1728,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
             {
                 const RenderDeviceDescription &deviceDescription = g_device->getDescription();
                 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
                 if (interfaceFunction == CreateD3D12Interface)
                 {
                     if (allowVulkanRedirection)
@@ -1773,7 +1783,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
                 break;
             }
         }
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             if (graphicsApiRetry)
@@ -1796,7 +1806,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
         return false;
     }
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     if (graphicsApiRetry)
     {
         // If we managed to create a device after retrying it in a reboot, remember the one we picked.
@@ -2379,10 +2389,8 @@ static void DrawProfiler()
     if (!g_profilerVisible)
         return;
 
-    ImFont* font = ImFontAtlasSnapshot::GetFont("FOT-SeuratPro-M.otf");
-    float defaultScale = font->Scale;
-    font->Scale = ImGui::GetDefaultFont()->FontSize / font->FontSize;
-    ImGui::PushFont(font);
+    ImFont* font = ImGui::GetFont();
+    if (font) ImGui::PushFont(font);
 
     if (ImGui::Begin("Profiler", &g_profilerVisible))
     {
@@ -2397,6 +2405,8 @@ static void DrawProfiler()
         double presentWaitAvg = g_presentWaitProfiler.UpdateAndReturnAverage();
         double swapChainAcquireAvg = g_swapChainAcquireProfiler.UpdateAndReturnAverage();
 
+#ifdef MW05_ENABLE_IMPLOT
+#if MW05_ENABLE_IMPLOT
         if (ImPlot::BeginPlot("Frame Time"))
         {
             ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 20.0);
@@ -2411,6 +2421,8 @@ static void DrawProfiler()
             ImPlot::PlotLine<double>("Swap Chain Acquire", g_swapChainAcquireProfiler.values, PROFILER_VALUE_COUNT, 1.0, 0.0, ImPlotLineFlags_None, g_profilerValueIndex);
             ImPlot::EndPlot();
         }
+#endif
+#endif
 
         g_profilerValueIndex = (g_profilerValueIndex + 1) % PROFILER_VALUE_COUNT;
 
@@ -2495,8 +2507,7 @@ static void DrawProfiler()
     }
     ImGui::End();
 
-    ImGui::PopFont();
-    font->Scale = defaultScale;
+    if (font) ImGui::PopFont();
 }
 
 static void DrawFPS()
@@ -2524,21 +2535,24 @@ static void DrawFPS()
     auto drawList = ImGui::GetBackgroundDrawList();
 
     auto fmt = fmt::format("FPS: {:.2f}", fps);
-    auto font = ImFontAtlasSnapshot::GetFont("FOT-SeuratPro-M.otf");
+    ImFont* font = ImGui::GetFont();
     auto fontSize = Scale(10);
-    auto textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, fmt.c_str());
+    ImVec2 textSize{0,0};
+    if (font)
+        textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, fmt.c_str());
 
     ImVec2 min = { Scale(40), Scale(30) };
     ImVec2 max = { min.x + std::max(Scale(75), textSize.x + Scale(10)), min.y + Scale(15) };
     ImVec2 textPos = { min.x + Scale(2), CENTRE_TEXT_VERT(min, max, textSize) + Scale(0.2f) };
 
     drawList->AddRectFilled(min, max, IM_COL32(0, 0, 0, 200));
-    drawList->AddText(font, fontSize, textPos, IM_COL32_WHITE, fmt.c_str());
+    if (font)
+        drawList->AddText(font, fontSize, textPos, IM_COL32_WHITE, fmt.c_str());
 }
 
 static void DrawImGui()
 {
-    ImGui_ImplSDL2_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
 
     auto& io = ImGui::GetIO();
     io.DisplaySize = { float(Video::s_viewportWidth), float(Video::s_viewportHeight) };
@@ -2552,24 +2566,7 @@ static void DrawImGui()
     float mousePosScaleY = float(height) / float(GameWindow::s_height);
     float mousePosOffsetX = (width - Video::s_viewportWidth) / 2.0f;
     float mousePosOffsetY = (height - Video::s_viewportHeight) / 2.0f;
-    for (int i = 0; i < io.Ctx->InputEventsQueue.Size; i++)
-    {
-        auto& e = io.Ctx->InputEventsQueue[i];
-        if (e.Type == ImGuiInputEventType_MousePos)
-        {
-            if (e.MousePos.PosX != -FLT_MAX)
-            {
-                e.MousePos.PosX *= mousePosScaleX;
-                e.MousePos.PosX -= mousePosOffsetX;
-            }
-
-            if (e.MousePos.PosY != -FLT_MAX)
-            {
-                e.MousePos.PosY *= mousePosScaleY;
-                e.MousePos.PosY -= mousePosOffsetY;
-            }
-        }
-    }
+    /* InputEventsQueue adjustment disabled for public ImGui API mismatch */
 
     ImGui::NewFrame();
 
@@ -2594,7 +2591,9 @@ static void DrawImGui()
     AchievementMenu::Draw();
     OptionsMenu::Draw();
     AchievementOverlay::Draw();
+#if MW05_ENABLE_INSTALLER
     InstallerWizard::Draw();
+#endif
     MessageWindow::Draw();
     ButtonGuide::Draw();
     Fader::Draw();
@@ -2657,7 +2656,7 @@ static void ProcDrawImGui(const RenderCommand& cmd)
             }
         };
 
-    ImRect clipRect{};
+    ImVec4 clipRect{};
 
     for (int i = 0; i < drawData.CmdListsCount; i++)
     {
@@ -2723,7 +2722,7 @@ static void ProcDrawImGui(const RenderCommand& cmd)
                 if (drawCmd.ClipRect.z <= drawCmd.ClipRect.x || drawCmd.ClipRect.w <= drawCmd.ClipRect.y)
                     continue;
 
-                auto texture = reinterpret_cast<GuestTexture*>(drawCmd.TextureId);
+                auto texture = reinterpret_cast<GuestTexture*>(drawCmd.GetTexID());
                 uint32_t descriptorIndex = TEXTURE_DESCRIPTOR_NULL_TEXTURE_2D;
                 if (texture != nullptr)
                 {
@@ -3059,7 +3058,9 @@ void Video::ComputeViewportDimensions()
         break;
     }
 
+#if MW05_ENABLE_UNLEASHED
     AspectRatioPatches::ComputeOffsets();
+#endif
 }
 
 static RenderFormat ConvertFormat(uint32_t format)
@@ -3891,7 +3892,7 @@ static RenderShader* GetOrLinkShader(GuestShader* guestShader, uint32_t specCons
         shader = guestShader->linkedShaders[specConstants].get();
     }
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
     if (shader == nullptr)
     {
         static Mutex g_compiledSpecConstantLibraryBlobMutex;
@@ -4143,7 +4144,7 @@ static RenderPipeline* CreateGraphicsPipelineInRenderThread(PipelineState pipeli
         pipeline = CreateGraphicsPipeline(pipelineState);
 
 #ifdef ASYNC_PSO_DEBUG
-        bool loading = *SWA::SGlobals::ms_IsLoading;
+        bool loading = false;
 
         if (loading)
             ++g_pipelinesCreatedAsynchronously;
@@ -5958,146 +5959,17 @@ void MovieRendererMidAsmHook(PPCRegister& r3)
 
 static PPCRegister g_r4;
 static PPCRegister g_r5;
+static uint32_t g_forceCheckHeightForPostProcessFix = 0;
 
-// CRenderDirectorFxPipeline::Initialize
-PPC_FUNC_IMPL(__imp__sub_8258C8A0);
-PPC_FUNC(sub_8258C8A0)
-{
-    g_r4 = ctx.r4;
-    g_r5 = ctx.r5;
-    __imp__sub_8258C8A0(ctx, base);
-}
-
-// CRenderDirectorFxPipeline::Update
-PPC_FUNC_IMPL(__imp__sub_8258CAE0);
-PPC_FUNC(sub_8258CAE0)
-{
-    if (g_needsResize)
-    {
-        // Backup job values. These get modified by cutscenes, 
-        // and resizing will cause the values to be forgotten.
-        auto traverseFxJobs = [&]<typename TCallback>(const TCallback& callback)
-        {
-            uint32_t scheduler = PPC_LOAD_U32(ctx.r3.u32 + 0xE0);
-            if (scheduler != NULL)
-            {
-                uint32_t member = PPC_LOAD_U32(scheduler + 0x8);
-                if (member != NULL)
-                {
-                    for (uint32_t it = PPC_LOAD_U32(member + 0x24); it != PPC_LOAD_U32(member + 0x28); it += 8)
-                    {
-                        uint32_t job = PPC_LOAD_U32(it);
-                        if (job != NULL)
-                            callback(job);
-                    }
-                }
-            }
-        };
-
-        union JobValues
-        {
-            struct
-            {
-                uint8_t field50[0x18];
-                uint8_t field88;
-            } fade;
-
-            struct
-            {
-                uint8_t camera[0x120];
-                uint8_t field44;
-                uint8_t fieldA0;
-            } shadowMap;
-        };
-
-        std::map<uint32_t, JobValues> jobValuesMap;
-        traverseFxJobs([&](uint32_t job)
-            {
-                uint32_t vfTable = PPC_LOAD_U32(job);
-
-                if (vfTable == 0x820CA6F8) // SWA::CFxFade
-                {
-                    // NOTE: Intentionally not storing shared pointers here. 
-                    // Game sends messages that assign these every frame already.
-                    JobValues jobValues{};
-
-                    memcpy(jobValues.fade.field50, base + job + 0x50, sizeof(jobValues.fade.field50));
-                    jobValues.fade.field88 = PPC_LOAD_U8(job + 0x88);
-
-                    jobValuesMap.emplace(PPC_LOAD_U32(job + 0x48), jobValues);
-                }
-                else if (vfTable == 0x820CAC5C) // SWA::CFxShadowMap
-                {
-                    for (uint32_t it = PPC_LOAD_U32(job + 0x88); it != PPC_LOAD_U32(job + 0x8C); it += 8)
-                    {
-                        uint32_t camera = PPC_LOAD_U32(it);
-                        if (camera != NULL && PPC_LOAD_U32(camera) == 0x820BF83C) // SWA::CShadowMapCameraLiSPSM
-                        {
-                            JobValues jobValues{};
-
-                            memcpy(jobValues.shadowMap.camera, base + camera, sizeof(jobValues.shadowMap.camera));
-                            jobValues.shadowMap.field44 = PPC_LOAD_U8(job + 0x44);
-                            jobValues.shadowMap.fieldA0 = PPC_LOAD_U8(job + 0xA0);
-
-                            jobValuesMap.emplace(vfTable, jobValues);
-                            break;
-                        }
-                    }
-                }
-            });
-
-        auto r3 = ctx.r3;
-        ctx.r4 = g_r4;
-        ctx.r5 = g_r5;
-        __imp__sub_8258C8A0(ctx, base);
-        ctx.r3 = r3;
-
-        // Restore job values.
-        traverseFxJobs([&](uint32_t job)
-            {
-                uint32_t vfTable = PPC_LOAD_U32(job);
-
-                if (vfTable == 0x820CA6F8) // SWA::CFxFade
-                {
-                    auto findResult = jobValuesMap.find(PPC_LOAD_U32(job + 0x48));
-                    if (findResult != jobValuesMap.end()) // May NOT actually be found.
-                    {
-                        memcpy(base + job + 0x50, findResult->second.fade.field50, sizeof(findResult->second.fade.field50));
-                        PPC_STORE_U8(job + 0x88, findResult->second.fade.field88);
-                    }
-                }
-                else if (vfTable == 0x820CAC5C) // SWA::CFxShadowMap
-                {
-                    auto findResult = jobValuesMap.find(vfTable);
-                    if (findResult != jobValuesMap.end()) // Would be weird if this one wasn't found.
-                    {
-                        for (uint32_t it = PPC_LOAD_U32(job + 0x88); it != PPC_LOAD_U32(job + 0x8C); it += 8)
-                        {
-                            uint32_t camera = PPC_LOAD_U32(it);
-                            if (camera != NULL && PPC_LOAD_U32(camera) == 0x820BF83C) // SWA::CShadowMapCameraLiSPSM
-                            {
-                                memcpy(base + camera, findResult->second.shadowMap.camera, sizeof(findResult->second.shadowMap.camera));
-                                PPC_STORE_U32(job + 0x80, camera);
-                                PPC_STORE_U8(job + 0x44, findResult->second.shadowMap.field44);
-                                PPC_STORE_U8(job + 0xA0, findResult->second.shadowMap.fieldA0);
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-
-        g_needsResize = false;
-    }
-
-    __imp__sub_8258CAE0(ctx, base);
-}
+// SWA FX pipeline hooks removed
 
 PPC_FUNC_IMPL(__imp__sub_824EB5B0);
 PPC_FUNC(sub_824EB5B0)
 {
     g_updateDirectorProfiler.Begin();
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_824EB5B0(ctx, base);
+#endif
     g_updateDirectorProfiler.End();
 }
 
@@ -6105,30 +5977,13 @@ PPC_FUNC_IMPL(__imp__sub_824EB290);
 PPC_FUNC(sub_824EB290)
 {
     g_renderDirectorProfiler.Begin();
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_824EB290(ctx, base);
+#endif
     g_renderDirectorProfiler.End();
 }
 
-// World map disables VERT+, so scaling by width does not work for it.
-static uint32_t g_forceCheckHeightForPostProcessFix;
-
-// SWA::CWorldMapCamera::CWorldMapCamera
-PPC_FUNC_IMPL(__imp__sub_824860E0);
-PPC_FUNC(sub_824860E0)
-{
-    ++g_forceCheckHeightForPostProcessFix;
-    __imp__sub_824860E0(ctx, base);
-}
-
-// SWA::CCameraController::~CCameraController
-PPC_FUNC_IMPL(__imp__sub_824831D0);
-PPC_FUNC(sub_824831D0)
-{
-    if (PPC_LOAD_U32(ctx.r3.u32) == 0x8202BF1C) // SWA::CWorldMapCamera
-        --g_forceCheckHeightForPostProcessFix;
-
-    __imp__sub_824831D0(ctx, base);
-}
+// SWA world map camera hooks removed
 
 void PostProcessResolutionFix(PPCRegister& r4, PPCRegister& f1, PPCRegister& f2)
 {
@@ -6205,27 +6060,18 @@ enum
 struct PipelineTaskToken
 {
     PipelineTaskType type{};
-    boost::shared_ptr<Hedgehog::Database::CDatabaseData> databaseData;
+    std::shared_ptr<void> databaseData;
 
-    PipelineTaskToken() : databaseData()
-    {
-    }
-
+    PipelineTaskToken() : databaseData() {}
     PipelineTaskToken(const PipelineTaskToken&) = delete;
-
     PipelineTaskToken(PipelineTaskToken&& other)
         : type(std::exchange(other.type, PipelineTaskType::Null))
         , databaseData(std::exchange(other.databaseData, nullptr))
-    {
-    }
-
+    {}
     ~PipelineTaskToken()
     {
         if (type != PipelineTaskType::Null)
         {
-            if (databaseData.get() != nullptr)
-                databaseData->m_Flags &= ~eDatabaseDataFlags_CompilingPipelines;
-
             if ((--g_compilingPipelineTaskCount) == 0)
                 g_compilingPipelineTaskCount.notify_one();
         }
@@ -6284,7 +6130,7 @@ static void PipelineCompilerThread()
 #ifdef _WIN32
         int newThreadPriority = threadPriority;
 
-        bool loading = *SWA::SGlobals::ms_IsLoading;
+        bool loading = false;
         if (loading)
             newThreadPriority = THREAD_PRIORITY_HIGHEST;
         else
@@ -6318,9 +6164,7 @@ static std::vector<std::unique_ptr<std::thread>> g_pipelineCompilerThreads = [](
         return threads;
     }();
 
-static constexpr uint32_t MODEL_DATA_VFTABLE = 0x82073A44;
-static constexpr uint32_t TERRAIN_MODEL_DATA_VFTABLE = 0x8211D25C;
-static constexpr uint32_t PARTICLE_MATERIAL_VFTABLE = 0x8211F198;
+// SWA vtable constants removed
 
 // Allocate the shared pointer only when new compilations are happening.
 // If nothing was compiled, the local "token" variable will get destructed with RAII instead.
@@ -6345,7 +6189,7 @@ static void EnqueueGraphicsPipelineCompilation(
 
     if (shouldCompile)
     {
-        bool loading = *SWA::SGlobals::ms_IsLoading;
+        bool loading = false;
         if (!loading && isPrecompiledPipeline)
         {
             // We can just compile here during the logos.
@@ -6411,13 +6255,18 @@ struct Mesh
     uint32_t vertexSize{};
     uint32_t morphTargetVertexSize{};
     GuestVertexDeclaration* vertexDeclaration{};
-    Hedgehog::Mirage::CMaterialData* material{};
+    void* material{};
     MeshLayer layer{};
     bool morphModel{};
 };
 
 static void CompileMeshPipeline(const Mesh& mesh, CompilationArgs& args)
 {
+    // SWA/Hedgehog pipeline compilation removed
+    (void)mesh; (void)args; return;
+}
+
+#if 0
     if (mesh.material == nullptr || mesh.material->m_spShaderListData.get() == nullptr)
         return;
 
@@ -6545,9 +6394,11 @@ static void CompileMeshPipeline(const Mesh& mesh, CompilationArgs& args)
     }
 
     uint32_t defaultStr = args.instancing ? 0x820C8734 : 0x8202DDBC; // "instancing" for instancing, "default" for regular
+    // Hedgehog-specific shader permutations
     guest_stack_var<Hedgehog::Base::CStringSymbol> defaultSymbol(reinterpret_cast<const char*>(g_memory.Translate(defaultStr)));
     auto defaultFindResult = shaderList->m_PixelShaderPermutations.find(*defaultSymbol);
     if (defaultFindResult == shaderList->m_PixelShaderPermutations.end())
+    
         return;
 
     uint32_t pixelShaderSubPermutationsToCompile = 0;
@@ -6559,6 +6410,7 @@ static void CompileMeshPipeline(const Mesh& mesh, CompilationArgs& args)
 
     uint32_t noneStr = mesh.morphModel ? 0x820D72F0 : 0x8200D938; // "p" for morph, "none" for regular
     guest_stack_var<Hedgehog::Base::CStringSymbol> noneSymbol(reinterpret_cast<const char*>(g_memory.Translate(noneStr)));
+    
     auto noneFindResult = defaultFindResult->second.m_VertexShaderPermutations.find(*noneSymbol);
     if (noneFindResult == defaultFindResult->second.m_VertexShaderPermutations.end())
         return;
@@ -6682,7 +6534,7 @@ static void CompileMeshPipeline(const Mesh& mesh, CompilationArgs& args)
 
             // We cannot rely on this being accurate during loading as SceneEffect.prm.xml gets loaded a bit later.
             bool planarReflectionEnabled = *reinterpret_cast<bool*>(g_memory.Translate(0x832FA0D8));
-            bool loading = *SWA::SGlobals::ms_IsLoading;
+            bool loading = false;
             bool compileNoMsaaPipeline = pipelineState.sampleCount != 1 && (loading || planarReflectionEnabled);
 
             auto noMsaaPipeline = pipelineState;
@@ -6726,7 +6578,9 @@ static void CompileMeshPipeline(const Mesh& mesh, CompilationArgs& args)
         }
     }
 }
+#endif
 
+#if 0 // Remove SWA/Hedgehog-specific helpers
 static void CompileMeshPipeline(Hedgehog::Mirage::CMeshData* mesh, MeshLayer layer, CompilationArgs& args)
 {
     CompileMeshPipeline(Mesh
@@ -6809,6 +6663,7 @@ static void CompileMeshPipelines(const T& modelData, CompilationArgs& args)
     }
 }
 
+// SWA-specific hooks and helpers below
 static void CompileParticleMaterialPipeline(const Hedgehog::Sparkle::CParticleMaterial& material, PipelineTaskTokenPair& tokenPair)
 {
     auto& shaderList = material.m_spShaderListData;
@@ -6937,102 +6792,12 @@ static void CompileParticleMaterialPipeline(const Hedgehog::Sparkle::CParticleMa
         }
     }
 }
-
+#endif // end remove SWA/Hedgehog-specific helpers
 static std::thread::id g_mainThreadId = std::this_thread::get_id();
 
-// SWA::CGameModeStage::ExitLoading
-PPC_FUNC_IMPL(__imp__sub_825369A0);
-PPC_FUNC(sub_825369A0)
-{
-    assert(std::this_thread::get_id() == g_mainThreadId);
+// SWA-specific database hooks removed
 
-    // Wait for pipeline compilations to finish.
-    uint32_t value;
-    while ((value = g_compilingPipelineTaskCount.load()) != 0)
-    {
-        // Pump SDL events to prevent the OS
-        // from thinking the process is unresponsive.
-        SDL_PumpEvents();
-        SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
-
-        g_compilingPipelineTaskCount.wait(value);
-    }
-
-    __imp__sub_825369A0(ctx, base);
-}
-
-// CModelData::CheckMadeAll
-PPC_FUNC_IMPL(__imp__sub_82E2EFB0);
-PPC_FUNC(sub_82E2EFB0)
-{   
-    if (reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32)->m_Flags & eDatabaseDataFlags_CompilingPipelines)
-    {
-        ctx.r3.u64 = 0;
-    }
-    else
-    {
-        __imp__sub_82E2EFB0(ctx, base);
-    }
-}
-
-// CTerrainModelData::CheckMadeAll
-PPC_FUNC_IMPL(__imp__sub_82E243D8);
-PPC_FUNC(sub_82E243D8)
-{   
-    if (reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32)->m_Flags & eDatabaseDataFlags_CompilingPipelines)
-    {
-        ctx.r3.u64 = 0;
-    }
-    else
-    {
-        __imp__sub_82E243D8(ctx, base);
-    }
-}
-
-// CParticleMaterial::CheckMadeAll
-PPC_FUNC_IMPL(__imp__sub_82E87598);
-PPC_FUNC(sub_82E87598)
-{   
-    if (reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32)->m_Flags & eDatabaseDataFlags_CompilingPipelines)
-    {
-        ctx.r3.u64 = 0;
-    }
-    else
-    {
-        __imp__sub_82E87598(ctx, base);
-    }
-}
-
-void GetDatabaseDataMidAsmHook(PPCRegister& r1, PPCRegister& r4)
-{
-    auto& databaseData = *reinterpret_cast<boost::shared_ptr<Hedgehog::Database::CDatabaseData>*>(
-        g_memory.Translate(r1.u32 + 0x58));
-
-    if (!databaseData->IsMadeOne() && r4.u32 != NULL)
-    {
-        if (databaseData->m_pVftable.ptr == MODEL_DATA_VFTABLE)
-        {
-            // Ignore particle models, the materials they point at don't actually
-            // get used and give the threads unnecessary work.
-            bool isParticleModel = *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(r4.u32 + 4)) != 5 &&
-                strncmp(databaseData->m_TypeAndName.c_str() + 2, "eff_", 4) == 0;
-
-            if (isParticleModel)
-                return;
-
-            // Adabat water is broken in original game, which they tried to fix by partially including the files in the update,
-            // which then finally fixed for real in the DLC. This confuses the async PSO compiler and causes a hang if the DLC is missing.
-            // We'll just ignore it.
-            bool isAdabatWater = strcmp(databaseData->m_TypeAndName.c_str() + 2, "evl_sea_obj_st_waterCircle") == 0;
-            if (isAdabatWater)
-                return;
-        }
-
-        databaseData->m_Flags |= eDatabaseDataFlags_CompilingPipelines;
-        EnqueuePipelineTask(PipelineTaskType::DatabaseData, databaseData);
-    }
-}
-
+#ifdef MW05_ENABLE_SWA
 static bool CheckMadeAll(Hedgehog::Mirage::CMeshData* meshData)
 {
     if (!meshData->IsMadeOne())
@@ -7071,13 +6836,13 @@ static bool CheckMadeAll(const T& modelData)
         {
             if (!CheckMadeAll(mesh.get()))
                 return false;
-        }     
+        }
 
         for (auto& mesh : meshGroup->m_TransparentMeshes)
         {
             if (!CheckMadeAll(mesh.get()))
                 return false;
-        }    
+        }
 
         for (auto& mesh : meshGroup->m_PunchThroughMeshes)
         {
@@ -7115,6 +6880,7 @@ static bool CheckMadeAll(const T& modelData)
 
     return true;
 }
+#endif // MW05_ENABLE_SWA
 
 static void PipelineTaskConsumerThread()
 {
@@ -7150,6 +6916,7 @@ static void PipelineTaskConsumerThread()
             {
             case PipelineTaskType::DatabaseData:
             {
+#ifdef MW05_ENABLE_SWA
                 bool ready = false;
 
                 if (databaseData->m_pVftable.ptr == MODEL_DATA_VFTABLE)
@@ -7211,6 +6978,11 @@ static void PipelineTaskConsumerThread()
                 {
                     allHandled = false;
                 }
+#else
+                // SWA disabled: nothing to do; drop the task.
+                type = PipelineTaskType::Null;
+                --g_pendingPipelineTaskCount;
+#endif
 
                 break;
             }
@@ -7377,23 +7149,7 @@ static void PipelineTaskConsumerThread()
 static std::thread g_pipelineTaskConsumerThread(PipelineTaskConsumerThread);
 
 #ifdef ASYNC_PSO_DEBUG
-
-PPC_FUNC_IMPL(__imp__sub_82E33330);
-PPC_FUNC(sub_82E33330)
-{
-    auto vertexShaderCode = reinterpret_cast<Hedgehog::Mirage::CVertexShaderCodeData*>(g_memory.Translate(ctx.r4.u32));
-    __imp__sub_82E33330(ctx, base);
-    reinterpret_cast<GuestShader*>(vertexShaderCode->m_pD3DVertexShader.get())->name = vertexShaderCode->m_TypeAndName.c_str() + 3;
-}
-
-PPC_FUNC_IMPL(__imp__sub_82E328D8);
-PPC_FUNC(sub_82E328D8)
-{
-    auto pixelShaderCode = reinterpret_cast<Hedgehog::Mirage::CPixelShaderCodeData*>(g_memory.Translate(ctx.r4.u32));
-    __imp__sub_82E328D8(ctx, base);
-    reinterpret_cast<GuestShader*>(pixelShaderCode->m_pD3DPixelShader.get())->name = pixelShaderCode->m_TypeAndName.c_str() + 2;
-}
-
+// SWA/Hedgehog ASYNC_PSO_DEBUG helpers removed
 #endif
 
 #ifdef PSO_CACHING
@@ -7557,7 +7313,9 @@ PPC_FUNC(sub_825E4300)
 {
     g_csdFilterState = ctx.r5.u32 == 0 ? CsdFilterState::On : CsdFilterState::Off;
     ctx.r5.u32 = 1;
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_825E4300(ctx, base);
+#endif
 }
 
 // SWA::CCsdPlatformMirage::EndScene
@@ -7565,7 +7323,9 @@ PPC_FUNC_IMPL(__imp__sub_825E2F78);
 PPC_FUNC(sub_825E2F78)
 {
     g_csdFilterState = CsdFilterState::Unknown;
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_825E2F78(ctx, base);
+#endif
 }
 
 // Game shares surfaces with identical descriptions. We don't want to share shadow maps,
@@ -7654,7 +7414,7 @@ static void ConvertToDegenerateTriangles(uint16_t* indices, uint32_t indexCount,
 
 struct MeshResource
 {
-    SWA_INSERT_PADDING(0x4);
+    uint8_t _pad4[0x4];
     be<uint32_t> indexCount;
     be<uint32_t> indices;
 };
@@ -7667,8 +7427,12 @@ PPC_FUNC(sub_82E44AF8)
 {
     uint16_t* newIndicesToFree = nullptr;
 
+#ifdef MW05_ENABLE_SWA
     auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
     if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
+#else
+    if (g_triangleStripWorkaround)
+#endif
     {
         auto meshResource = reinterpret_cast<MeshResource*>(base + ctx.r4.u32);
 
@@ -7699,7 +7463,9 @@ PPC_FUNC(sub_82E44AF8)
         }
     }
 
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_82E44AF8(ctx, base);
+#endif
 
     if (newIndicesToFree != nullptr)
         g_userHeap.Free(newIndicesToFree);
@@ -7709,7 +7475,9 @@ PPC_FUNC(sub_82E44AF8)
 PPC_FUNC_IMPL(__imp__sub_82E250D0);
 PPC_FUNC(sub_82E250D0)
 {
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_82E250D0(ctx, base);
+#endif
 
     for (auto newIndicesToFree : g_newIndicesToFree)
         g_userHeap.Free(newIndicesToFree);
@@ -7719,7 +7487,7 @@ PPC_FUNC(sub_82E250D0)
 
 struct LightAndIndexBufferResourceV1
 {
-    SWA_INSERT_PADDING(0x4);
+    uint8_t _pad4_v1[0x4];
     be<uint32_t> indexCount;
     be<uint32_t> indices;
 };
@@ -7730,8 +7498,12 @@ PPC_FUNC(sub_82E3AFC8)
 {
     uint16_t* newIndices = nullptr;
 
+#ifdef MW05_ENABLE_SWA
     auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
     if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
+#else
+    if (g_triangleStripWorkaround)
+#endif
     {
         auto lightAndIndexBufferResource = reinterpret_cast<LightAndIndexBufferResourceV1*>(base + ctx.r4.u32);
 
@@ -7750,7 +7522,9 @@ PPC_FUNC(sub_82E3AFC8)
         }
     }
 
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_82E3AFC8(ctx, base);
+#endif
 
     if (newIndices != nullptr)
         g_userHeap.Free(newIndices);
@@ -7758,7 +7532,7 @@ PPC_FUNC(sub_82E3AFC8)
 
 struct LightAndIndexBufferResourceV5
 {
-    SWA_INSERT_PADDING(0x8);
+    uint8_t _pad8_v5[0x8];
     be<uint32_t> indexCount;
     be<uint32_t> indices;
 };
@@ -7769,8 +7543,12 @@ PPC_FUNC(sub_82E3B1C0)
 {
     uint16_t* newIndices = nullptr;
 
+#ifdef MW05_ENABLE_SWA
     auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
     if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
+#else
+    if (g_triangleStripWorkaround)
+#endif
     {
         auto lightAndIndexBufferResource = reinterpret_cast<LightAndIndexBufferResourceV5*>(base + ctx.r4.u32);
 
@@ -7789,7 +7567,9 @@ PPC_FUNC(sub_82E3B1C0)
         }
     }
 
+#if MW05_ENABLE_UNLEASHED
     __imp__sub_82E3B1C0(ctx, base);
+#endif
 
     if (newIndices != nullptr)
         g_userHeap.Free(newIndices);
@@ -7880,3 +7660,9 @@ GUEST_FUNCTION_STUB(sub_82BEA018);
 GUEST_FUNCTION_STUB(sub_82BEA7C0);
 GUEST_FUNCTION_STUB(sub_82BFFF88); // D3DXFilterTexture
 GUEST_FUNCTION_STUB(sub_82BD96D0);
+
+
+
+
+
+

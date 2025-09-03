@@ -1,21 +1,21 @@
 #include <windows.h>
 
-#define UNLEASHED_RECOMP_VERSION_BIN @WIN32_VERSION_BINARY@
-#define UNLEASHED_RECOMP_VERSION_STR "@WIN32_VERSION_STRING@"
+#define MW05_RECOMP_VERSION_BIN @WIN32_VERSION_BINARY@
+#define MW05_RECOMP_VERSION_STR "@WIN32_VERSION_STRING@"
 
 #ifdef _DEBUG
-#define UNLEASHED_RECOMP_FILE_FLAGS VS_FF_DEBUG
+#define MW05_RECOMP_FILE_FLAGS VS_FF_DEBUG
 #else
-#define UNLEASHED_RECOMP_FILE_FLAGS 0
+#define MW05_RECOMP_FILE_FLAGS 0
 #endif
 
 IDI_ICON1 ICON "@WIN32_ICON_PATH@"
 
 VS_VERSION_INFO VERSIONINFO
-    FILEVERSION    UNLEASHED_RECOMP_VERSION_BIN
-    PRODUCTVERSION UNLEASHED_RECOMP_VERSION_BIN
+    FILEVERSION    MW05_RECOMP_VERSION_BIN
+    PRODUCTVERSION MW05_RECOMP_VERSION_BIN
     FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
-    FILEFLAGS      UNLEASHED_RECOMP_FILE_FLAGS
+    FILEFLAGS      MW05_RECOMP_FILE_FLAGS
     FILEOS         VOS_NT_WINDOWS32
     FILETYPE       VFT_APP
     FILESUBTYPE    VFT2_UNKNOWN
@@ -24,12 +24,12 @@ BEGIN
     BEGIN
         BLOCK "080904B0" // English (UK), Unicode
         BEGIN
-            VALUE "ProductName",      "Unleashed Recompiled"
-            VALUE "FileDescription",  "Unleashed Recompiled"
-            VALUE "CompanyName",      "hedge-dev"
-            VALUE "FileVersion",      UNLEASHED_RECOMP_VERSION_STR
-            VALUE "ProductVersion",   UNLEASHED_RECOMP_VERSION_STR
-            VALUE "InternalName",     "UnleashedRecomp"
+            VALUE "ProductName",      "Most Wanted Recompiled"
+            VALUE "FileDescription",  "Most Wanted Recompiled"
+            VALUE "CompanyName",      "X360 Recomp"
+            VALUE "FileVersion",      MW05_RECOMP_VERSION_STR
+            VALUE "ProductVersion",   MW05_RECOMP_VERSION_STR
+            VALUE "InternalName",     "Mw05Recomp"
             VALUE "OriginalFilename", "SWA.exe"
         END
     END

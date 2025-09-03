@@ -13,7 +13,7 @@ using Microsoft::WRL::ComPtr;
 #include <pwd.h>
 #endif
 
-#ifdef UNLEASHED_RECOMP_D3D12
+#ifdef MW05_RECOMP_D3D12
 #include <dxcapi.h>
 #endif
 
@@ -35,12 +35,10 @@ using Microsoft::WRL::ComPtr;
 #include <zstd.h>
 #include <stb_image.h>
 #include <blockingconcurrentqueue.h>
-#include <SDL.h>
-#include <SDL_mixer.h>
+#include <SDL3/SDL.h>
+#include <SDL3_mixer/SDL_mixer.h>
 #include <imgui.h>
-#include <imgui_internal.h>
-#include <implot.h>
-#include <backends/imgui_impl_sdl2.h>
+#include <backends/imgui_impl_sdl3.h>
 #include <o1heap.h>
 #include <cstddef>
 #include <smolv.h>
@@ -53,6 +51,9 @@ using Microsoft::WRL::ComPtr;
 
 #include "framework.h"
 #include "mutex.h"
+
+// MW shims for guest calls (alloc/free etc.)
+#include <api/mw_guest.h>
 
 #ifndef _WIN32
 #include <sys/mman.h>

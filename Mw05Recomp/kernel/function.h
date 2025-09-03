@@ -4,6 +4,7 @@
 #include <array>
 #include "xbox.h"
 #include "memory.h"
+#include "trace.h"
 
 template <typename R, typename... T>
 constexpr std::tuple<T...> function_args(R(*)(T...)) noexcept
@@ -349,7 +350,7 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
 }
 
 #define GUEST_FUNCTION_HOOK(subroutine, function) \
-    PPC_FUNC(subroutine) { HostToGuestFunction<function>(ctx, base); }
+    PPC_FUNC(subroutine) { KernelTraceImport(#subroutine, ctx); HostToGuestFunction<function>(ctx, base); }
 
 #define GUEST_FUNCTION_STUB(subroutine) \
     PPC_FUNC(subroutine) { }

@@ -1,6 +1,10 @@
 #pragma once
 
+#ifdef MW05_ENABLE_SWA
 #include <api/SWA.h>
+#else
+namespace SWA { enum EMenuType { eMenuType_WorldMap = 0 }; }
+#endif
 
 class OptionsMenu
 {

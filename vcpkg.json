@@ -1,5 +1,5 @@
 {
-    "builtin-baseline": "b322364f06308bdd24823f9d8f03fe0cc86fd46f",
+    "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
     "dependencies": [
         {
             "name": "directx-headers",

@@ -8,12 +8,12 @@
       Correct:
       This is a string that contains a brand name like
       Xbox 360, which is one of the few consoles to have a port of
-      Sonic Unleashed.
+      Sonic Mw05.
 
       Incorrect:
       This is a string that contains a brand name like Xbox
       360, which is one of the few consoles to have a port of Sonic
-      Unleashed.
+      Mw05.
 
     - Ensure your locale is added in the correct order following the language enum.
 

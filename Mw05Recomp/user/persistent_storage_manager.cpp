@@ -22,7 +22,11 @@ bool PersistentStorageManager::ShouldDisplayDLCMessage(bool setOffendingDLCFlag)
 
     for (auto& pair : flags)
     {
-        if (!Data.DLCFlags[(int)pair.first] && Installer::checkDLCInstall(GetGamePath(), pair.second))
+        if (!Data.DLCFlags[(int)pair.first]
+#if MW05_ENABLE_INSTALLER
+            && Installer::checkDLCInstall(GetGamePath(), pair.second)
+#endif
+        )
         {
             if (setOffendingDLCFlag)
                 Data.DLCFlags[(int)pair.first] = true;

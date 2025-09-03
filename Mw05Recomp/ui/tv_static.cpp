@@ -265,13 +265,9 @@ static void AddImageGradient(ImDrawList* DrawList, ImTextureID user_texture_id, 
     if (((col_upr_left | col_upr_right | col_bot_right | col_bot_left) & IM_COL32_A_MASK) == 0)
         return;
 
-    const bool push_texture_id = user_texture_id && (user_texture_id != DrawList->_CmdHeader.TextureId);
-    if (push_texture_id)
-        DrawList->PushTextureID(user_texture_id);
-
     DrawList->PrimReserve(6, 4);
 
-    const ImVec2 uv = DrawList->_Data->TexUvWhitePixel;
+    const ImVec2 uv = ImGui::GetIO().Fonts->TexUvWhitePixel;
 
     PrimRectUVColorCorners(DrawList, p_min, p_max,
         user_texture_id ? uv_min : uv,
@@ -279,8 +275,7 @@ static void AddImageGradient(ImDrawList* DrawList, ImTextureID user_texture_id, 
         col_upr_left, col_upr_right, col_bot_right, col_bot_left,
         reverse_order);
 
-    if (push_texture_id)
-        DrawList->PopTextureID();
+    // No manual texture push/pop for ImGui 1.92 batching
 }
 
 static void DrawStatic(const ImVec2& center, const ImVec2& resolution, float time)
@@ -313,7 +308,7 @@ static void DrawStatic(const ImVec2& center, const ImVec2& resolution, float tim
     // Top Left
     AddImageGradient(
         drawList, 
-        g_noiseTexture.get(),
+        (ImTextureID)g_noiseTexture.get(),
         min, 
         center,
         ImVec2(UV_0 * UV_MAX.x, 0.0f * UV_MAX.y),
@@ -327,7 +322,7 @@ static void DrawStatic(const ImVec2& center, const ImVec2& resolution, float tim
     // Top Right
     AddImageGradient(
         drawList, 
-        g_noiseTexture.get(),
+        (ImTextureID)g_noiseTexture.get(),
         topCenter, 
         centerRight,
         ImVec2(0.5f * UV_MAX.x, 0.0f * UV_MAX.y),
@@ -341,7 +336,7 @@ static void DrawStatic(const ImVec2& center, const ImVec2& resolution, float tim
     // Bottom Right
     AddImageGradient(
         drawList, 
-        g_noiseTexture.get(),
+        (ImTextureID)g_noiseTexture.get(),
         center,
         max,
         ImVec2(0.5f * UV_MAX.x, 0.5f * UV_MAX.y),
@@ -355,7 +350,7 @@ static void DrawStatic(const ImVec2& center, const ImVec2& resolution, float tim
     // Bottom Left
     AddImageGradient(
         drawList,
-        g_noiseTexture.get(),
+        (ImTextureID)g_noiseTexture.get(),
         centerLeft, 
         bottomCenter,
         ImVec2(UV_0 * UV_MAX.x, 0.5f * UV_MAX.y),

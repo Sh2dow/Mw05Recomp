@@ -596,7 +596,7 @@ PPC_FUNC(sub_82E0CC38)
     char* prefixedArFilePath = reinterpret_cast<char*>(base + ctx.r3.u32);
 
     *reinterpret_cast<be<uint32_t>*>(prefixedArFilePath) = 1;
-    strcpy(prefixedArFilePath + 0x4, "/UnleashedRecomp/");
+    strcpy(prefixedArFilePath + 0x4, "/Mw05Recomp/");
     strcpy(prefixedArFilePath + 0x15, arFilePath);
 
     ctx.r1.u32 -= 0x10;
@@ -643,7 +643,7 @@ PPC_FUNC(sub_82E0B500)
 
     uint32_t prefixedArFilePath = PPC_LOAD_U32(ctx.r5.u32);
     std::u8string_view arFilePathU8(reinterpret_cast<const char8_t*>(base + prefixedArFilePath));
-    if (!arFilePathU8.starts_with(u8"/UnleashedRecomp/"))
+    if (!arFilePathU8.starts_with(u8"/Mw05Recomp/"))
     {
         __imp__sub_82E0B500(ctx, base);
         return;

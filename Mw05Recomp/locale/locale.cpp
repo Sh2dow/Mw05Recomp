@@ -9,12 +9,12 @@
       Correct:
       This is a string that contains a brand name like
       Xbox 360, which is one of the few consoles to have a port of
-      Sonic Unleashed.
+      Sonic Mw05.
 
       Incorrect:
       This is a string that contains a brand name like Xbox
       360, which is one of the few consoles to have a port of Sonic
-      Unleashed.
+      Mw05.
 
     - Ensure your locale is added in the correct order following the language enum.
 
@@ -303,12 +303,12 @@ std::unordered_map<std::string_view, std::unordered_map<ELanguage, std::string>>
         // Japanese Notes: This localization should include furigana.
         "Installer_Page_Introduction",
         {
-            { ELanguage::English,  "Welcome to\nUnleashed Recompiled!\n\nYou'll need an Xbox 360 copy\nof Sonic Unleashed in order to proceed with the installation." },
-            { ELanguage::Japanese, "Unleashed Recompiledへようこそ！\nインストールには\n[北米版:ほくべいばん]またはEU[版:ばん]のXbox 360[用:よう]\n「SONIC UNLEASHED」が[必要:ひつよう]です" },
-            { ELanguage::German,   "Willkommen zu\nUnleashed Recompiled!\nEs wird eine Xbox 360 Kopie von Sonic Unleashed benötigt um mit der Installation fortfahren zu können." },
-            { ELanguage::French,   "Bienvenue sur\nUnleashed Recompiled !\n\nVous aurez besoin d'une copie de Sonic Unleashed pour Xbox\n360 pour procéder à l'installation." },
-            { ELanguage::Spanish,  "¡Bienvenido a\nUnleashed Recompiled!\n\nNecesitas una copia de\nSonic Unleashed de Xbox 360\npara continuar con la instalación." },
-            { ELanguage::Italian,  "Benvenuto a\nUnleashed Recompiled!\n\nDovrai avere una copia di\nSonic Unleashed per la Xbox 360\nper proseguire con l'installazione." }
+            { ELanguage::English,  "Welcome to\nMw05 Recompiled!\n\nYou'll need an Xbox 360 copy\nof Sonic Mw05 in order to proceed with the installation." },
+            { ELanguage::Japanese, "Mw05 Recompiledへようこそ！\nインストールには\n[北米版:ほくべいばん]またはEU[版:ばん]のXbox 360[用:よう]\n「SONIC MW05」が[必要:ひつよう]です" },
+            { ELanguage::German,   "Willkommen zu\nMw05 Recompiled!\nEs wird eine Xbox 360 Kopie von Sonic Mw05 benötigt um mit der Installation fortfahren zu können." },
+            { ELanguage::French,   "Bienvenue sur\nMw05 Recompiled !\n\nVous aurez besoin d'une copie de Sonic Mw05 pour Xbox\n360 pour procéder à l'installation." },
+            { ELanguage::Spanish,  "¡Bienvenido a\nMw05 Recompiled!\n\nNecesitas una copia de\nSonic Mw05 de Xbox 360\npara continuar con la instalación." },
+            { ELanguage::Italian,  "Benvenuto a\nMw05 Recompiled!\n\nDovrai avere una copia di\nSonic Mw05 per la Xbox 360\nper proseguire con l'installazione." }
         }
     },
     {
@@ -695,12 +695,12 @@ std::unordered_map<std::string_view, std::unordered_map<ELanguage, std::string>>
     {
         "System_Win32_MissingDLLs",
         {
-            { ELanguage::English,  "The module \"%s\" could not be found.\n\nPlease make sure that:\n\n- You extracted this copy of Unleashed Recompiled fully and not just the *.exe file.\n- You are not running Unleashed Recompiled from a *.zip file." },
-            { ELanguage::Japanese, "モジュール\"%s\"が見つかりませんでした\n\n次の点を確認してください：\n\n※Unleashed Recompiledの*.exeファイルだけを抽出していなく、 コピーを完全に抽出してること\n※Unleashed Recompiledを*.zipファイルから実行していないこと" },
-            { ELanguage::German,   "Das Modul \"%s\" konnte nicht gefunden werden.\n\nBitte stelle sicher, dass:\n\n- Diese Kopie von Unleashed Recompiled vollständig entpackt wurde und nicht nur die *.exe-Datei.\n- Unleashed Recompiled nicht direkt aus einer *.zip-Datei ausgeführt wird." },
-            { ELanguage::French,   "Le module \"%s\" n'a pas pu être trouvé.\n\nVeuillez vous assurer que :\n\n- Vous avez extrait Unleashed Recompiled dans son entièreté et pas seulement le fichier *.exe.\n- Vous n'exécutez pas Unleashed Recompiled à partir d'un fichier *.zip." },
-            { ELanguage::Spanish,  "No se pudo encontrar el módulo \"%s\".\n\nAsegúrese de que:\n\n- Ha extraido esta copia de Unleashed Recompiled por completo y no solo el archivo *.exe.\n- No está ejecutando Unleashed Recompiled desde un archivo *.zip." },
-            { ELanguage::Italian,  "Impossibile trovare il modulo \"%s\".\n\nAssicurati che:\n\n- Hai estratto questa copia di Unleashed Recompiled correttamente e non solo il file *.exe.\n- Non stai eseguendo Unleashed Recompiled da un file *.zip." }
+            { ELanguage::English,  "The module \"%s\" could not be found.\n\nPlease make sure that:\n\n- You extracted this copy of Mw05 Recompiled fully and not just the *.exe file.\n- You are not running Mw05 Recompiled from a *.zip file." },
+            { ELanguage::Japanese, "モジュール\"%s\"が見つかりませんでした\n\n次の点を確認してください：\n\n※Mw05 Recompiledの*.exeファイルだけを抽出していなく、 コピーを完全に抽出してること\n※Mw05 Recompiledを*.zipファイルから実行していないこと" },
+            { ELanguage::German,   "Das Modul \"%s\" konnte nicht gefunden werden.\n\nBitte stelle sicher, dass:\n\n- Diese Kopie von Mw05 Recompiled vollständig entpackt wurde und nicht nur die *.exe-Datei.\n- Mw05 Recompiled nicht direkt aus einer *.zip-Datei ausgeführt wird." },
+            { ELanguage::French,   "Le module \"%s\" n'a pas pu être trouvé.\n\nVeuillez vous assurer que :\n\n- Vous avez extrait Mw05 Recompiled dans son entièreté et pas seulement le fichier *.exe.\n- Vous n'exécutez pas Mw05 Recompiled à partir d'un fichier *.zip." },
+            { ELanguage::Spanish,  "No se pudo encontrar el módulo \"%s\".\n\nAsegúrese de que:\n\n- Ha extraido esta copia de Mw05 Recompiled por completo y no solo el archivo *.exe.\n- No está ejecutando Mw05 Recompiled desde un archivo *.zip." },
+            { ELanguage::Italian,  "Impossibile trovare il modulo \"%s\".\n\nAssicurati che:\n\n- Hai estratto questa copia di Mw05 Recompiled correttamente e non solo il file *.exe.\n- Non stai eseguendo Mw05 Recompiled da un file *.zip." }
         }
     },
     {

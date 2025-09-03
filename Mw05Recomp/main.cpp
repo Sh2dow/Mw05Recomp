@@ -18,21 +18,25 @@
 #include <user/persistent_storage_manager.h>
 #include <user/registry.h>
 #include <kernel/xdbf.h>
+#if MW05_ENABLE_UNLEASHED
 #include <install/installer.h>
 #include <install/update_checker.h>
+#endif
 #include <os/logger.h>
 #include <os/process.h>
 #include <os/registry.h>
 #include <ui/game_window.h>
+#if MW05_ENABLE_UNLEASHED
 #include <ui/installer_wizard.h>
 #include <mod/mod_loader.h>
+#endif
 #include <preload_executable.h>
 
 #ifdef _WIN32
 #include <timeapi.h>
 #endif
 
-#if defined(_WIN32) && defined(UNLEASHED_RECOMP_D3D12)
+#if defined(_WIN32) && defined(MW05_RECOMP_D3D12)
 static std::array<std::string_view, 3> g_D3D12RequiredModules =
 {
     "D3D12/D3D12Core.dll",
@@ -184,7 +188,7 @@ void init()
         printf("[*] CPU does not support the AVX instruction set.\n");
 
 #ifdef _WIN32
-        MessageBoxA(nullptr, "Your CPU does not meet the minimum system requirements.", "Unleashed Recompiled", MB_ICONERROR);
+        MessageBoxA(nullptr, "Your CPU does not meet the minimum system requirements.", "Mw05 Recompiled", MB_ICONERROR);
 #endif
 
         std::_Exit(1);
@@ -243,6 +247,7 @@ int main(int argc, char *argv[])
 
     if (forceInstallationCheck)
     {
+    #if MW05_ENABLE_UNLEASHED
         // Create the console to show progress to the user, otherwise it will seem as if the game didn't boot at all.
         os::process::ShowConsole();
 
@@ -292,9 +297,13 @@ int main(int argc, char *argv[])
 
         SDL_ShowSimpleMessageBox(messageBoxStyle, GameWindow::GetTitle(), resultText, GameWindow::s_pWindow);
         std::_Exit(int(journal.lastResult));
+    #else
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, GameWindow::GetTitle(), "Install integrity check is disabled.", GameWindow::s_pWindow);
+        std::_Exit(0);
+    #endif
     }
 
-#if defined(_WIN32) && defined(UNLEASHED_RECOMP_D3D12)
+#if defined(_WIN32) && defined(MW05_RECOMP_D3D12)
     for (auto& dll : g_D3D12RequiredModules)
     {
         if (!std::filesystem::exists(g_executableRoot / dll))
@@ -313,8 +322,10 @@ int main(int argc, char *argv[])
     double timeDifferenceSeconds = difftime(timeNow, Config::LastChecked);
     if (timeDifferenceSeconds > TimeBetweenUpdateChecksInSeconds)
     {
+    #if MW05_ENABLE_UNLEASHED
         UpdateChecker::initialize();
         UpdateChecker::start();
+    #endif
         Config::LastChecked = timeNow;
         Config::Save();
     }
@@ -325,10 +336,17 @@ int main(int argc, char *argv[])
     HostStartup();
 
     std::filesystem::path modulePath;
-    bool isGameInstalled = Installer::checkGameInstall(GetGamePath(), modulePath);
-    bool runInstallerWizard = forceInstaller || forceDLCInstaller || !isGameInstalled;
+    bool isGameInstalled = true;
+    bool runInstallerWizard = false;
+#if MW05_ENABLE_UNLEASHED
+    isGameInstalled = Installer::checkGameInstall(GetGamePath(), modulePath);
+    runInstallerWizard = forceInstaller || forceDLCInstaller || !isGameInstalled;
+#else
+    modulePath = GetGamePath() / "Mw05.xex";
+#endif
     if (runInstallerWizard)
     {
+    #if MW05_ENABLE_UNLEASHED
         if (!Video::CreateHostDevice(sdlVideoDriver, graphicsApiRetry))
         {
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), Localise("Video_BackendError").c_str(), GameWindow::s_pWindow);
@@ -339,9 +357,12 @@ int main(int argc, char *argv[])
         {
             std::_Exit(0);
         }
+    #endif
     }
 
+    #if MW05_ENABLE_UNLEASHED
     ModLoader::Init();
+    #endif
 
     if (!PersistentStorageManager::LoadBinary())
         LOGFN_ERROR("Failed to load persistent storage binary... (status code {})", (int)PersistentStorageManager::BinStatus);

@@ -1,3 +1,4 @@
+#include <stdafx.h>
 #include "preload_executable.h"
 #include <os/logger.h>
 

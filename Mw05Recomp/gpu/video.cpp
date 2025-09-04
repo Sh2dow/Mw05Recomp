@@ -41,6 +41,9 @@
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
 
+// Prevent using GPU resources before initialization completes
+static bool g_rendererReady = false;
+
 #ifdef MW05_RECOMP_D3D12
 #include "shader/blend_color_alpha_ps.hlsl.dxil.h"
 #include "shader/copy_vs.hlsl.dxil.h"
@@ -1537,6 +1540,8 @@ static void CreateImGuiBackend()
 
 static void CheckSwapChain()
 {
+    if (!g_swapChain)
+        return;
     g_swapChain->setVsyncEnabled(Config::VSync);
     g_swapChainValid &= !g_swapChain->needsResize();
 
@@ -1717,6 +1722,18 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
         __try
 #endif
         {
+#ifdef _WIN32
+            if (GameWindow::s_renderWindow == nullptr)
+            {
+                if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
+                {
+                    printf("[boot][error] Missing renderWindow; delaying renderer init\n");
+                    fflush(stdout);
+                }
+                g_rendererReady = false;
+                return false; // Exit Video::Init() cleanly; will retry after window is ready
+            }
+#endif
             g_interface = interfaceFunction();
             if (g_interface == nullptr)
             {
@@ -1780,6 +1797,19 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
                 // restart indices cause triangles to be culled incorrectly. Converting them to degenerate triangles fixes it.
                 g_triangleStripWorkaround = (deviceDescription.vendor == RenderDeviceVendor::AMD);
 
+                // Mark renderer ready and log adapter + API
+                g_rendererReady = true;
+                if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
+                {
+#ifdef SDL_VULKAN_ENABLED
+                    const char* apiName = (interfaceFunction == CreateVulkanInterfaceWrapper) ? "Vulkan" : "D3D12";
+#else
+                    const char* apiName = g_vulkan ? "Vulkan" : "D3D12";
+#endif
+                    printf("[boot] Renderer initialized: %s on %s\n", apiName, deviceDescription.name.c_str());
+                    fflush(stdout);
+                }
+
                 break;
             }
         }
@@ -1789,6 +1819,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
             if (graphicsApiRetry)
             {
                 // If we were retrying, and this also failed, then we'll show the user neither of the graphics APIs succeeded.
+                g_rendererReady = false;
                 return false;
             }
             else
@@ -1803,6 +1834,7 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     if (g_device == nullptr)
     {
+        g_rendererReady = false;
         return false;
     }
 
@@ -2552,6 +2584,12 @@ static void DrawFPS()
 
 static void DrawImGui()
 {
+    // Skip if ImGui not initialized yet
+    if (!ImGui::GetCurrentContext())
+        return;
+    if (ImGui::GetIO().BackendPlatformUserData == nullptr)
+        return;
+
     ImGui_ImplSDL3_NewFrame();
 
     auto& io = ImGui::GetIO();
@@ -2560,8 +2598,18 @@ static void DrawImGui()
     // ImGui doesn't know that we center the screen for specific aspect ratio
     // settings, which causes mouse events to not work correctly. To fix this, 
     // we can adjust the mouse events before ImGui processes them.
-    uint32_t width = g_swapChain->getWidth();
-    uint32_t height = g_swapChain->getHeight();
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (g_swapChain)
+    {
+        width = g_swapChain->getWidth();
+        height = g_swapChain->getHeight();
+    }
+    else
+    {
+        width = GameWindow::s_width;
+        height = GameWindow::s_height;
+    }
     float mousePosScaleX = float(width) / float(GameWindow::s_width);
     float mousePosScaleY = float(height) / float(GameWindow::s_height);
     float mousePosOffsetX = (width - Video::s_viewportWidth) / 2.0f;
@@ -2618,6 +2666,8 @@ static void SetFramebuffer(GuestSurface *renderTarget, GuestSurface *depthStenci
 
 static void ProcDrawImGui(const RenderCommand& cmd)
 {
+    if (!g_imPipelineLayout || !g_imPipeline || !g_commandLists[g_frame])
+        return;
     // Make sure the backbuffer is the current target.
     AddBarrier(g_backBuffer, RenderTextureLayout::COLOR_WRITE);
     FlushBarriers();
@@ -2789,6 +2839,9 @@ static std::atomic<bool> g_executedCommandList;
 
 void Video::Present() 
 {
+    // Avoid any work until renderer is initialized
+    if (!g_rendererReady || !g_device || !g_queue)
+        return;
     g_readyForCommands = false;
 
     RenderCommand cmd;
@@ -2810,7 +2863,7 @@ void Video::Present()
     g_executedCommandList.wait(false);
     g_executedCommandList = false;
 
-    if (g_swapChainValid)
+    if (g_swapChainValid && g_swapChain)
     {
         if (g_pendingWaitOnSwapChain)
         {
@@ -2847,7 +2900,8 @@ void Video::Present()
     g_triangleFanIndexData.reset();
     g_quadIndexData.reset();
 
-    CheckSwapChain();
+    if (g_swapChain)
+        CheckSwapChain();
 
     cmd.type = RenderCommandType::BeginCommandList;
     g_renderQueue.enqueue(cmd);

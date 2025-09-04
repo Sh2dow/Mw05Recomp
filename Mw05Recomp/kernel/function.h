@@ -58,7 +58,16 @@ struct ArgTranslator
             }
         }
 
-        return *reinterpret_cast<be<uint32_t>*>(base + ctx.r1.u32 + 0x54 + ((arg - 8) * 8));
+        // Fallback to stack for arguments beyond GPRs (r3..r10).
+        // Be defensive early in boot: validate the guest stack address before dereferencing.
+        const size_t offset = ctx.r1.u32 + 0x54 + ((arg - 8) * 8);
+        // First page is intentionally PAGE_NOACCESS; also ensure within guest memory.
+        if (offset < 4096 || (offset + sizeof(be<uint32_t>)) > PPC_MEMORY_SIZE)
+        {
+            return 0; // Avoid host AV; caller typically treats missing extra args as zero.
+        }
+
+        return *reinterpret_cast<be<uint32_t>*>(base + offset);
     }
 
     static double GetPrecisionArgumentValue(const PPCContext& ctx, uint8_t* base, size_t arg) noexcept
@@ -151,7 +160,13 @@ struct ArgTranslator
             return nullptr;
         }
 
-        return reinterpret_cast<T>(base + static_cast<uint32_t>(v));
+        const uint32_t off = static_cast<uint32_t>(v);
+        if (off < 4096 || off >= PPC_MEMORY_SIZE)
+        {
+            return nullptr;
+        }
+
+        return reinterpret_cast<T>(base + off);
     }
 
     template<typename T>
@@ -324,9 +339,21 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
     SetPPCContext(newCtx);
 
     if constexpr (std::is_function_v<TFunction>)
+    {
         func(newCtx, g_memory.base);
+    }
     else
-        g_memory.FindFunction(func)(newCtx, g_memory.base);
+    {
+        if (auto guestFunc = g_memory.FindFunction(func))
+        {
+            guestFunc(newCtx, g_memory.base);
+        }
+        else
+        {
+            fprintf(stderr, "[boot][error] Guest function 0x%08X not found.\n", func);
+            // Return default value for T; leave context updated minimally.
+        }
+    }
 
     currentCtx.fpscr = newCtx.fpscr;
     SetPPCContext(currentCtx);

@@ -3,6 +3,8 @@
 param(
   [ValidateSet('all','0','configure','1','codegen','2','genlist','3','lib','4','app','5')]
   [string]$Stage,
+  [ValidateSet('Debug','Release','RelWithDebInfo','MinSizeRel')]
+  [string]$Config = 'Release',
   [switch]$Clean,
   [switch]$DisableAppPch
 )
@@ -49,7 +51,10 @@ $RC    = (Join-Path $root "bin\$latestSdk\x64\rc.exe") -replace '\\','/'
 $MT    = (Join-Path $LLVM "llvm-mt.exe")               -replace '\\','/'
 $D3D12 = (Join-Path $root "Lib\$latestSdk\um\x64\d3d12.lib") -replace '\\','/'
 $toolchain = "D:/Repos/Games/MW05Recomp/thirdparty/vcpkg/scripts/buildsystems/vcpkg.cmake"
-$exe = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/tools/XenonRecomp/XenonRecomp/XenonRecomp.exe'
+# Derive preset/build dir from configuration
+$preset = "x64-Clang-$Config"
+$buildDir = "D:/Repos/Games/MW05Recomp/out/build/$preset"
+$exe = "D:/Repos/Games/MW05Recomp/out/build/$preset/tools/XenonRecomp/XenonRecomp/XenonRecomp.exe"
 # clean outputs so Ninja MUST run the rule
 $ppc = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/ppc'
 $patched = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default_patched.xex'
@@ -59,7 +64,7 @@ if ($Clean) {
   Get-ChildItem -Path $ppc -Force -File -Filter 'ppc_recomp.*.cpp' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   if (Test-Path $patched) { Remove-Item -Force $patched }
   # Also clear app PCH so it rebuilds under current toolset
-  $appPchDir = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/CMakeFiles/Mw05Recomp.dir'
+  $appPchDir = "D:/Repos/Games/MW05Recomp/out/build/$preset/Mw05Recomp/CMakeFiles/Mw05Recomp.dir"
   Get-ChildItem -Path $appPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*' | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
@@ -95,16 +100,18 @@ function Invoke-Configure {
   if ($DisableAppPch) { 
     $pchArg += '-D'; $pchArg += 'MW05_SKIP_APP_PCH=ON'
   }
-  cmake --preset x64-Clang-Release @freshArgs `
+  cmake --preset $preset @freshArgs `
     -D CMAKE_C_COMPILER="$LLVM/clang-cl.exe" `
     -D CMAKE_CXX_COMPILER="$LLVM/clang-cl.exe" `
     -D CMAKE_TOOLCHAIN_FILE="$toolchain" `
     -D VCPKG_TARGET_TRIPLET="x64-windows-static" `
-    -D CMAKE_BUILD_TYPE=Release `
+    -D CMAKE_BUILD_TYPE=$Config `
     -D CMAKE_SYSTEM_VERSION="$latestSdk" `
     -D CMAKE_RC_COMPILER="$RC" `
     -D CMAKE_MT="$MT" `
     -D CMAKE_SH=CMAKE_SH-NOTFOUND `
+    -D XENON_RECOMP_HEADER_FILE_PATH="D:/Repos/Games/MW05Recomp/tools/XenonRecomp/XenonUtils/ppc_context.h" `
+    -D XENON_RECOMP_CONFIG_FILE_PATH="D:/Repos/Games/MW05Recomp/Mw05RecompLib/config/MW05.toml" `
     -D MW05_XEX="D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex" `
     -D MW05_RECOMP_SKIP_CODEGEN=OFF `
     -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
@@ -112,12 +119,39 @@ function Invoke-Configure {
 }
 
 # Helper tasks
-function Invoke-Codegen { cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target PPCCodegen -j1 -v }
-function Invoke-GenList { cmake -P "D:/Repos/Games/MW05Recomp/Mw05RecompLib/cmake/gen_ppc_list.cmake"; cmake --preset x64-Clang-Release }
-function Build-Lib    { cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target Mw05RecompLib -j1 -v }
+function Invoke-Codegen {
+  Write-Host "[Stage] Codegen (PPC)" -ForegroundColor Cyan
+  $xex = "D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex"
+  if (-not (Test-Path $xex)) {
+    Write-Host "Missing XEX: $xex" -ForegroundColor Red
+    Write-Host "Place the game XEX there or pass -Stage configure to set paths." -ForegroundColor Yellow
+    exit 1
+  }
+  $size = (Get-Item $xex).Length
+  if ($size -lt 65536) {
+    Write-Host "Suspicious XEX size ($size bytes): $xex" -ForegroundColor Yellow
+  }
+  Write-Host "Using XEX: $xex" -ForegroundColor Gray
+  Write-Host "Using TOML: D:/Repos/Games/MW05Recomp/Mw05RecompLib/config/MW05.toml" -ForegroundColor Gray
+  cmake --build "$buildDir" --target PPCCodegen -j1 -v
+}
+function Invoke-GenList {
+  Write-Host "[Stage] Generate PPC file list" -ForegroundColor Cyan
+  $ppcDir = "D:/Repos/Games/MW05Recomp/Mw05RecompLib/ppc"
+  # Produce generated_sources.cmake only if PPC files exist
+  cmake -P "D:/Repos/Games/MW05Recomp/Mw05RecompLib/cmake/gen_ppc_list.cmake" | Out-Host
+  $havePpc = @(Get-ChildItem $ppcDir -ErrorAction SilentlyContinue -Filter 'ppc_recomp.*.cpp').Count -gt 0
+  if ($havePpc) {
+    # Re-run configure with full toolchain args to pick up the new file list
+    Invoke-Configure
+  } else {
+    Write-Host "No generated PPC sources yet; using fallback list. Skipping reconfigure." -ForegroundColor Yellow
+  }
+}
+function Build-Lib    { cmake --build "$buildDir" --target Mw05RecompLib -j1 -v }
 function Build-App    {
   # Ensure app PCH is rebuilt with the current toolset
-  $appPchDir = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/CMakeFiles/Mw05Recomp.dir'
+  $appPchDir = "D:/Repos/Games/MW05Recomp/out/build/$preset/Mw05Recomp/CMakeFiles/Mw05Recomp.dir"
   $removedPch = $false
   $toRemove = Get-ChildItem -Path $appPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*'
   if ($toRemove) {
@@ -127,11 +161,11 @@ function Build-App    {
   # If we removed or if cmake_pch.cxx is missing, re-run configure to regenerate it
   $pchSource = Join-Path $appPchDir 'cmake_pch.cxx'
   if ($removedPch -or -not (Test-Path $pchSource)) {
-    cmake --preset x64-Clang-Release | Out-Host
+    cmake --preset $preset | Out-Host
   }
 
-  cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target Mw05Recomp -j1 -v
-  $app = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/Mw05Recomp.exe'
+  cmake --build "$buildDir" --target Mw05Recomp -j1 -v
+  $app = "D:/Repos/Games/MW05Recomp/out/build/$preset/Mw05Recomp/Mw05Recomp.exe"
   if (Test-Path $app) {
     Write-Host ("App built: {0}" -f $app) -ForegroundColor Green
     Write-Host ("Run: `"{0}`"" -f $app)

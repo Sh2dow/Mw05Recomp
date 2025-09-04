@@ -21,7 +21,8 @@ bool m_isResizing = false;
 // SDL3: event watch callback must return bool
 bool Window_OnSDLEvent(void*, SDL_Event* event)
 {
-    if (ImGui::GetIO().BackendPlatformUserData != nullptr)
+    // ImGui context may not be created yet during early SDL events.
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().BackendPlatformUserData != nullptr)
         ImGui_ImplSDL3_ProcessEvent(event);
 
     for (auto listener : GetEventListeners())
@@ -157,6 +158,10 @@ void GameWindow::Init(const char* sdlVideoDriver)
     if (sdlVideoDriver && *sdlVideoDriver)
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, sdlVideoDriver);
     SDL_InitSubSystem(SDL_INIT_VIDEO);
+    // Verbose boot marker
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[boot] SDL video subsystem initialized\n"); fflush(stdout);
+    }
 
     auto videoDriverName = SDL_GetCurrentVideoDriver();
 
@@ -164,6 +169,9 @@ void GameWindow::Init(const char* sdlVideoDriver)
         LOGFN("SDL video driver: \"{}\"", videoDriverName);
 
     SDL_AddEventWatch(Window_OnSDLEvent, s_pWindow);
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[boot] SDL event watch registered\n"); fflush(stdout);
+    }
 
 #ifdef _WIN32
     SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
@@ -182,6 +190,28 @@ void GameWindow::Init(const char* sdlVideoDriver)
 
     // SDL3: CreateWindow no longer takes x/y. Set position afterwards.
     s_pWindow = SDL_CreateWindow("Most Wanted Recompiled", s_width, s_height, GetWindowFlags());
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        int w=0,h=0; SDL_GetWindowSize(s_pWindow,&w,&h);
+        printf("[boot] Window created %dx%d\n", w, h); fflush(stdout);
+    }
+
+    if (!s_pWindow) {                                                                                                                                                                                                                                                                                                                                               
+        printf("[boot][error] SDL_CreateWindow failed: %s\n", SDL_GetError());                                                                                                                                                                                                                                                                                      
+        fflush(stdout);                                                                                                                                                                                                                                                                                                                                             
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), SDL_GetError(), nullptr);                                                                                                                                                                                                                                                            
+        std::_Exit(1);                                                                                                                                                                                                                                                                                                                                              
+    }
+
+#if defined(_WIN32)
+    // SDL3: fetch Win32 HWND from window properties for D3D12 backend
+    SDL_PropertiesID props = SDL_GetWindowProperties(s_pWindow);
+    void* hwndPtr = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    HWND hwnd = (HWND)hwndPtr;
+    s_renderWindow = hwnd;
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[boot] Win32 HWND=%p\n", hwnd); fflush(stdout);
+    }
+#endif
     if (s_pWindow) SDL_SetWindowPosition(s_pWindow, s_x, s_y);
 
     if (IsFullscreen())

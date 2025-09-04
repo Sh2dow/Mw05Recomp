@@ -17,7 +17,6 @@ target_compile_definitions(XenonRecomp PRIVATE
 set(MW05_RECOMP_PPC_RECOMPILED_SOURCES 
     "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_config.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_context.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp_shared.h"
 )
 
@@ -25,11 +24,23 @@ set(MW05_RECOMP_PPC_RECOMPILED_SOURCES
 set(_MW05_PPC_LIST "${CMAKE_CURRENT_SOURCE_DIR}/ppc/generated_sources.cmake")
 if (EXISTS ${_MW05_PPC_LIST})
     include(${_MW05_PPC_LIST})
+    # Ensure mapping table TU is included even when using generated list
+    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
 else()
-    # Fallback: conservative range for first pass
-    foreach(i RANGE 0 334)
-        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.${i}.cpp")
-    endforeach()
+    # No generated list. If there are already generated files in-tree, use them.
+    file(GLOB _ppc_existing "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.*.cpp")
+    list(LENGTH _ppc_existing _ppc_existing_len)
+    if (_ppc_existing_len GREATER 0)
+        list(SORT _ppc_existing)
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES ${_ppc_existing})
+    else()
+        # True first pass: use a safe minimal fallback range. This avoids
+        # requesting files that won’t exist yet and lets PPCCodegen run.
+        foreach(i RANGE 0 255)
+            list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.${i}.cpp")
+        endforeach()
+    endif()
+    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
 endif()
 
 add_custom_command(

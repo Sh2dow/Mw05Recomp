@@ -1,5 +1,6 @@
 #include <stdafx.h>
 #include "memory.h"
+#include <ppc/ppc_context.h>
 
 Memory::Memory()
 {
@@ -12,8 +13,12 @@ Memory::Memory()
     if (base == nullptr)
         return;
 
-    DWORD oldProtect;
-    VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect);
+    // Historically we marked the first page as PAGE_NOACCESS to catch bad
+    // guest pointer use early. During bring-up this causes host AVs inside
+    // recompiled guest code before imports can sanitize. Leave it RW so
+    // stray reads yield zeros instead of crashing.
+    //DWORD oldProtect;
+    //VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect);
 #else
     base = (uint8_t*)mmap((void*)0x100000000ull, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 
@@ -23,19 +28,34 @@ Memory::Memory()
     if (base == nullptr)
         return;
 
-    mprotect(base, 4096, PROT_NONE);
+    // See Windows comment above; avoid guard page during early bring-up.
+    //mprotect(base, 4096, PROT_NONE);
 #endif
 
-#if MW05_ENABLE_UNLEASHED
-    for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
+    // Populate recompiled guest->host function mappings if available.
+    // Do not gate on SWA/UNLEASHED; MW05 uses its own generated mappings too.
+    extern PPCFuncMapping PPCFuncMappings[];
+    if (PPCFuncMappings != nullptr)
     {
-        if (PPCFuncMappings[i].host != nullptr)
-            InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
+        for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
+        {
+            if (PPCFuncMappings[i].host != nullptr)
+                InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
+        }
     }
-#endif
 }
 
 void* MmGetHostAddress(uint32_t ptr)
 {
     return g_memory.Translate(ptr);
+}
+
+extern "C" uint8_t* MmGetGuestBase()
+{
+    return g_memory.base;
+}
+
+extern "C" uint64_t MmGetGuestLimit()
+{
+    return PPC_MEMORY_SIZE;
 }

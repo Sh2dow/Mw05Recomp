@@ -207,7 +207,11 @@ void ImFontAtlasSnapshot::GenerateGlyphRanges()
 
 ImFont* ImFontAtlasSnapshot::GetFont(const char* name)
 {
-    // On-demand: try to load the font from file with the computed glyph ranges
-    auto fontAtlas = ImGui::GetIO().Fonts;
-    return fontAtlas->AddFontFromFileTTF(name, 24.0f, nullptr, g_glyphRanges.data());
+    // Prefer default font when the requested file is missing to avoid startup failure
+    auto& io = ImGui::GetIO();
+    auto fontAtlas = io.Fonts;
+    if (name && std::filesystem::exists(name))
+        return fontAtlas->AddFontFromFileTTF(name, 24.0f, nullptr, g_glyphRanges.data());
+
+    return fontAtlas->AddFontDefault();
 }

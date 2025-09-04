@@ -129,9 +129,18 @@ set(MW05_RECOMP_HID_CXX_SOURCES
     "hid/driver/sdl_hid.cpp"
 )
 
-# Remove SWA/Hedgehog-specific patches from build
+# Optional SWA/Hedgehog integration (off by default)
+option(MW05_ENABLE_SWA "Enable SWA/Hedgehog API bindings" OFF)
+
+# Patches compiled in this app
 set(MW05_RECOMP_PATCHES_CXX_SOURCES
+    "patches/inspire_patches.cpp"
 )
+if (MW05_ENABLE_SWA)
+    list(APPEND MW05_RECOMP_PATCHES_CXX_SOURCES
+        "patches/aspect_ratio_patches.cpp"
+    )
+endif()
 
 set(MW05_RECOMP_UI_CXX_SOURCES
     "ui/achievement_overlay.cpp"
@@ -242,6 +251,25 @@ set(MW05_RECOMP_CXX_SOURCES
     ${MW05_RECOMP_THIRDPARTY_SOURCES}
 )
 
+# Optional: auto-generate import stubs for __imp__ functions
+option(MW05_GEN_IMPORT_STUBS "Generate import stubs from PPC mapping" OFF)
+if (MW05_GEN_IMPORT_STUBS)
+    set(PPC_MAP "${CMAKE_SOURCE_DIR}/Mw05RecompLib/ppc/ppc_func_mapping.cpp")
+    set(IMPORTS_CPP "${CMAKE_CURRENT_SOURCE_DIR}/kernel/imports.cpp")
+    set(GEN_STUBS_CPP "${CMAKE_CURRENT_BINARY_DIR}/imports_autostubs.cpp")
+    add_custom_command(
+        OUTPUT ${GEN_STUBS_CPP}
+        COMMAND ${CMAKE_COMMAND}
+                -DPPC_MAP=${PPC_MAP}
+                -DIMPORTS_CPP=${IMPORTS_CPP}
+                -DOUT_CPP=${GEN_STUBS_CPP}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_import_stubs.cmake
+        DEPENDS ${PPC_MAP} ${IMPORTS_CPP} ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_import_stubs.cmake
+        VERBATIM
+    )
+    list(APPEND MW05_RECOMP_CXX_SOURCES ${GEN_STUBS_CPP})
+endif()
+
 include("version.cmake")
 
 set(VERSION_TXT "${PROJECT_SOURCE_DIR}/res/version.txt")
@@ -289,7 +317,7 @@ if (WIN32)
     if (${CMAKE_BUILD_TYPE} MATCHES "Release")
         target_link_options(Mw05Recomp PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
     endif()
-elseif (APPLE)
+    elseif (APPLE)
     # Create version number for app bundle.
     CreateVersionString(
         VERSION_TXT ${VERSION_TXT}
@@ -340,6 +368,12 @@ elseif (APPLE)
     add_dependencies(Mw05Recomp CopyMoltenVK)
 else()
     add_executable(Mw05Recomp ${MW05_RECOMP_CXX_SOURCES})
+endif()
+
+# Link against the core recompiled library and expose its headers
+if (TARGET Mw05Recomp)
+    target_link_libraries(Mw05Recomp PRIVATE Mw05RecompLib)
+    target_include_directories(Mw05Recomp PRIVATE ${CMAKE_SOURCE_DIR}/Mw05RecompLib)
 endif()
 
 # Propagate feature defines

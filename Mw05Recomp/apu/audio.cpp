@@ -21,7 +21,14 @@ uint32_t XAudioRegisterRenderDriverClient(be<uint32_t>* callback, be<uint32_t>* 
 #endif
 
     *driver = AUDIO_DRIVER_KEY;
-    XAudioRegisterClient(g_memory.FindFunction(*callback), callback[1]);
+    if (auto cb = g_memory.FindFunction(*callback))
+    {
+        XAudioRegisterClient(cb, callback[1]);
+    }
+    else
+    {
+        fprintf(stderr, "[boot][warn] Audio callback 0x%08X not found; audio disabled until valid.\n", (uint32_t)*callback);
+    }
     return 0;
 }
 

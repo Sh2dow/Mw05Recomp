@@ -19,6 +19,7 @@ static void CreateAudioDevice()
 
     SDL_AudioSpec desired{}, obtained{};
     desired.freq = XAUDIO_SAMPLES_HZ;
+    // Prefer float32; SDL3 will validate via hints and device query
     desired.format = SDL_AUDIO_F32;
     desired.channels = surround ? XAUDIO_NUM_CHANNELS : 2;
     // SDL3: use hints for requested format
@@ -26,10 +27,9 @@ static void CreateAudioDevice()
     SDL_SetHint(SDL_HINT_AUDIO_FORMAT, "SDL_AUDIO_F32");
     SDL_SetHint(SDL_HINT_AUDIO_CHANNELS, surround ? "6" : "2");
     g_audioDevice = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired);
-    SDL_GetAudioDeviceFormat(g_audioDevice, &obtained, nullptr);
-
     if (!g_audioDevice)
         LOGFN_ERROR("Failed to open audio device: {}", SDL_GetError());
+    SDL_GetAudioDeviceFormat(g_audioDevice, &obtained, nullptr);
 
     g_downMixToStereo = (obtained.channels == 2);
 
@@ -44,12 +44,22 @@ static void CreateAudioDevice()
     srcSpec.freq = XAUDIO_SAMPLES_HZ;
     srcSpec.format = SDL_AUDIO_F32;
     srcSpec.channels = g_downMixToStereo ? 2 : XAUDIO_NUM_CHANNELS;
-    SDL_AudioSpec dstSpec{}; // will be set by binding
+    SDL_AudioSpec dstSpec{}; // will be set by binding; create stream matching device
+    dstSpec.freq = obtained.freq;
+    dstSpec.format = obtained.format;
+    dstSpec.channels = obtained.channels;
     g_audioStream = SDL_CreateAudioStream(&srcSpec, &dstSpec);
     if (!g_audioStream)
     {
         LOGFN_ERROR("Failed to create audio stream: {}", SDL_GetError());
-        return;
+        // Fallback: try S16 destination
+        dstSpec.format = SDL_AUDIO_S16;
+        g_audioStream = SDL_CreateAudioStream(&srcSpec, &dstSpec);
+        if (!g_audioStream)
+        {
+            LOGFN_ERROR("Audio disabled: could not create stream with any format: {}", SDL_GetError());
+            return;
+        }
     }
     if (!SDL_BindAudioStream(g_audioDevice, g_audioStream))
     {
@@ -90,12 +100,22 @@ static void AudioThread()
 
     while (!g_audioThreadShouldExit)
     {
+        if (!g_audioStream)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         uint32_t queuedAudioSize = SDL_GetAudioStreamQueued(g_audioStream);
         constexpr size_t MAX_LATENCY = 10;
         const size_t callbackAudioSize = channels * XAUDIO_NUM_SAMPLES * sizeof(float);
 
         if ((queuedAudioSize / callbackAudioSize) <= MAX_LATENCY)
         {
+            if (!g_clientCallback)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
             ctx.ppcContext.r3.u32 = g_clientCallbackParam;
             g_clientCallback(ctx.ppcContext, g_memory.base);
         }

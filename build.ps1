@@ -1,45 +1,206 @@
-# Load VS env (keep as you had)
-& "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat" -arch=x64 | Out-Null
+# --- build_cmd.ps1: Staged helper for MW05 build ---
 
-# Resolve Kits root
-$kitsRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots').KitsRoot10
+param(
+    [ValidateSet('all','0','configure','1','codegen','2','genlist','3','lib','4','app','5')]
+    [string]$Stage,
+    [switch]$Clean,
+    [switch]$DisableAppPch
+)
 
-# Pick the newest *numeric* SDK folder under ...\Lib (ignore 'wdf', etc.)
-$latestSdk = Get-ChildItem "$kitsRoot\Lib" -Directory |
-    Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
-    Sort-Object Name -Descending |
-    Select-Object -First 1 -ExpandProperty Name
+# --- 0) Paths & tools (keep as-is) ---
+$root     = "C:\Program Files (x86)\Windows Kits\10"
+$latestSdk= "10.0.26100.0"
+$VS = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+$MSVC = Join-Path $VS "VC\Tools\MSVC\14.44.35207"
+$LLVM = Join-Path $VS "VC\Tools\Llvm\x64\bin"
+$VSINC = Join-Path $MSVC "include"
+$SDKINC= Join-Path $root "Include\$latestSdk"
+$VCBIN = Join-Path $MSVC "bin\Hostx64\x64"
+$VCLIB = Join-Path $MSVC "lib\x64"
+$UCRTINC = Join-Path $SDKINC "ucrt"
+$SHAREDINC = Join-Path $SDKINC "shared"
+$UMINc = Join-Path $SDKINC "um"
+$WINRTINC = Join-Path $SDKINC "winrt"
+$CPPWINRTINC = Join-Path $SDKINC "cppwinrt"
+$UCRTLIB = Join-Path $root "Lib\$latestSdk\ucrt\x64"
+$UMLIB = Join-Path $root "Lib\$latestSdk\um\x64"
 
-if (-not $latestSdk) {
-    throw "No Windows 10/11 SDK found under '$kitsRoot\Lib'. Install one via Visual Studio Installer."
+# INCLUDE
+$includeParts = @($VSINC,$UCRTINC,$SHAREDINC,$UMINc,$WINRTINC,$CPPWINRTINC)
+if ($env:INCLUDE) {
+    $env:INCLUDE = ($includeParts -join ';') + ';' + $env:INCLUDE
+} else {
+    $env:INCLUDE = ($includeParts -join ';')
 }
 
-# Build the path to d3d12.lib
-$d3d12 = Join-Path $kitsRoot "Lib\$latestSdk\um\x64\d3d12.lib"
-if (-not (Test-Path $d3d12)) {
-    throw "d3d12.lib not found at: $d3d12 (SDK corrupt?). Reinstall Windows 10/11 SDK."
+# LIB
+if ($env:LIB) {
+    $env:LIB = "$VCLIB;$UCRTLIB;$UMLIB;" + $env:LIB
+} else {
+    $env:LIB = "$VCLIB;$UCRTLIB;$UMLIB"
 }
 
-Write-Host "Using SDK: $latestSdk"
-Write-Host "D3D12_LIB: $d3d12"
-
-# Clean previous failed cache
-Remove-Item -Recurse -Force out/build/msvc-release -ErrorAction SilentlyContinue
-
+# PATH
+$env:PATH = "$VCBIN;" + (Join-Path $root "bin\$latestSdk\x64") + ';' + $LLVM + ';' + $env:PATH
+$env:WindowsSdkDir     = ($root -replace '\\','/') + "/"
+$env:WindowsSDKVersion = "$latestSdk/"
+$env:CMAKE_SH = 'CMAKE_SH-NOTFOUND'
+$RC    = (Join-Path $root "bin\$latestSdk\x64\rc.exe") -replace '\\','/'
+$MT    = (Join-Path $LLVM "llvm-mt.exe")               -replace '\\','/'
+$D3D12 = (Join-Path $root "Lib\$latestSdk\um\x64\d3d12.lib") -replace '\\','/'
 $toolchain = "D:/Repos/Games/MW05Recomp/thirdparty/vcpkg/scripts/buildsystems/vcpkg.cmake"
+$exe = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/tools/XenonRecomp/XenonRecomp/XenonRecomp.exe'
+# clean outputs so Ninja MUST run the rule
+$ppc = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/ppc'
+$patched = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default_patched.xex'
+if (-not (Test-Path $ppc)) { New-Item -ItemType Directory $ppc | Out-Null }
+if ($Clean) {
+    # Remove only generated sources; keep .gitignore and any manual files
+    Get-ChildItem -Path $ppc -Force -File -Filter 'ppc_recomp.*.cpp' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (Test-Path $patched) { Remove-Item -Force $patched }
+    # Also clear app PCH so it rebuilds under current toolset
+    $appPchDir = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/CMakeFiles/Mw05Recomp.dir'
+    Get-ChildItem -Path $appPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*' | Remove-Item -Force -ErrorAction SilentlyContinue
+}
 
-cmake -S . -B out/build/msvc-release `
-  -G "Visual Studio 17 2022" -A x64 -T ClangCL `
-  -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-  -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-  -DD3D12_LIB="$d3d12" `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_SYSTEM_VERSION=$latestSdk `
-  -DCMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION=$latestSdk
+# Interactive stage selection if not provided
+if (-not $PSBoundParameters.ContainsKey('Stage')) {
+    Write-Host "Select build stage:" -ForegroundColor Cyan
+    Write-Host "  [a] All (configure → codegen → genlist → lib → app)"
+    Write-Host "  [0] Configure"
+    Write-Host "  [1] Codegen"
+    Write-Host "  [2] Generate file list + reconfigure"
+    Write-Host "  [3] Build library"
+    Write-Host "  [4] Build app"
+    $sel = Read-Host "Enter choice (a/0/1/2/3/4) [default: a]"
+    if ([string]::IsNullOrWhiteSpace($sel)) { $Stage = 'all' }
+    else {
+        switch ($sel) {
+            'a' { $Stage = 'all' }
+            '0' { $Stage = 'configure' }
+            '1' { $Stage = 'codegen' }
+            '2' { $Stage = 'genlist' }
+            '3' { $Stage = 'lib' }
+            '4' { $Stage = 'app' }
+            default { $Stage = 'all' }
+        }
+    }
+}
 
-cmake --build out/build/msvc-release --config Release
+function Invoke-Configure {
+    Write-Host "[Stage] Configure (fresh=$Clean)"
+    $freshArgs = @()
+    if ($Clean) { $freshArgs += '--fresh' }
+    $pchArg = @()
+    if ($DisableAppPch) {
+        $pchArg += '-D'; $pchArg += 'MW05_SKIP_APP_PCH=ON'
+    }
+    cmake --preset x64-Clang-Release @freshArgs `
+    -D CMAKE_C_COMPILER="$LLVM/clang-cl.exe" `
+    -D CMAKE_CXX_COMPILER="$LLVM/clang-cl.exe" `
+    -D CMAKE_TOOLCHAIN_FILE="$toolchain" `
+    -D VCPKG_TARGET_TRIPLET="x64-windows-static" `
+    -D CMAKE_BUILD_TYPE=Release `
+    -D CMAKE_SYSTEM_VERSION="$latestSdk" `
+    -D CMAKE_RC_COMPILER="$RC" `
+    -D CMAKE_MT="$MT" `
+    -D CMAKE_SH=CMAKE_SH-NOTFOUND `
+    -D MW05_XEX="D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex" `
+    -D MW05_RECOMP_SKIP_CODEGEN=OFF `
+    -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
+    @pchArg
+}
 
+# Helper tasks
+function Invoke-Codegen { cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target PPCCodegen -j1 -v }
+function Invoke-GenList { cmake -P "D:/Repos/Games/MW05Recomp/Mw05RecompLib/cmake/gen_ppc_list.cmake"; cmake --preset x64-Clang-Release }
+function Build-Lib    { cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target Mw05RecompLib -j1 -v }
+function Build-App    {
+    # Ensure app PCH is rebuilt with the current toolset
+    $appPchDir = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/CMakeFiles/Mw05Recomp.dir'
+    $removedPch = $false
+    $toRemove = Get-ChildItem -Path $appPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*'
+    if ($toRemove) {
+        $toRemove | Remove-Item -Force -ErrorAction SilentlyContinue
+        $removedPch = $true
+    }
+    # If we removed or if cmake_pch.cxx is missing, re-run configure to regenerate it
+    $pchSource = Join-Path $appPchDir 'cmake_pch.cxx'
+    if ($removedPch -or -not (Test-Path $pchSource)) {
+        cmake --preset x64-Clang-Release | Out-Host
+    }
 
-# open x64 Clang Debug (uses Ninja, clang-cl, lld-link, and VCPKG_ROOT from preset)
-#cmake --preset x64-Clang-Release
-#cmake --build out/build/x64-Clang-Release
+    cmake --build "D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release" --target Mw05Recomp -j1 -v
+    $app = 'D:/Repos/Games/MW05Recomp/out/build/x64-Clang-Release/Mw05Recomp/Mw05Recomp.exe'
+    if (Test-Path $app) {
+        Write-Host ("App built: {0}" -f $app) -ForegroundColor Green
+        Write-Host ("Run: `"{0}`"" -f $app)
+    } else {
+        Write-Host "App executable not found yet (build may have failed)." -ForegroundColor Yellow
+    }
+}
+
+# Stage selection
+switch ($Stage) {
+    'configure' { Invoke-Configure; break }
+    '1'         { Invoke-Configure; break }
+    'codegen'   { Invoke-Codegen; break }
+    '2'         { Invoke-Codegen; break }
+    'genlist'   { Invoke-GenList; break }
+    '3'         { Invoke-GenList; break }
+    'lib'       { Build-Lib; break }
+    '4'         { Build-Lib; break }
+    'app'       { Build-App; break }
+    '5'         { Build-App; break }
+    default {
+        # all
+        Invoke-Configure
+        Invoke-Codegen
+        Invoke-GenList
+        Build-Lib
+        Build-App
+    }
+}
+
+# Summary / verification
+function Summarize-PPC {
+    param([string]$Dir = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/ppc')
+    $files = Get-ChildItem $Dir -Filter 'ppc_recomp.*.cpp' -ErrorAction SilentlyContinue
+    $count = $files.Count
+    Write-Host ("Generated PPC sources: {0}" -f $count)
+    if ($count -eq 0) { return }
+    $indices = @()
+    foreach ($f in $files) {
+        if ($f.BaseName -match 'ppc_recomp\.(\d+)$') { $indices += [int]$matches[1] }
+    }
+    if ($indices.Count -gt 0) {
+        $min = ($indices | Measure-Object -Minimum).Minimum
+        $max = ($indices | Measure-Object -Maximum).Maximum
+        $span = $max - $min + 1
+        $set = [System.Collections.Generic.HashSet[int]]::new()
+        foreach ($i in $indices) { [void]$set.Add($i) }
+        $missing = @()
+        for ($i = $min; $i -le $max; $i++) { if (-not $set.Contains($i)) { $missing += $i } }
+        Write-Host ("Index range: {0}..{1} (span {2}), missing: {3}" -f $min,$max,$span,$missing.Count)
+        if ($missing.Count -gt 0 -and $missing.Count -le 20) {
+            Write-Host ("Missing indices: {0}" -f ($missing -join ', '))
+        }
+    }
+    $oldest = $files | Sort-Object LastWriteTime | Select-Object -First 1
+    $newest = $files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($oldest) { Write-Host ("Oldest: {0}  {1}" -f $oldest.Name, $oldest.LastWriteTime) }
+    if ($newest) { Write-Host ("Newest: {0}  {1}" -f $newest.Name, $newest.LastWriteTime) }
+    $genList = 'D:/Repos/Games/MW05Recomp/Mw05RecompLib/ppc/generated_sources.cmake'
+    if (Test-Path $genList) {
+        $lines = (Get-Content $genList -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
+        Write-Host ("generated_sources.cmake lines: {0}" -f $lines)
+    }
+}
+
+# If we just ran genlist, summarize immediately for convenience
+if ($Stage -eq 'genlist' -or $Stage -eq '3' -or $Stage -eq 'all') {
+    Summarize-PPC
+}
+
+# Always print a brief summary at the end
+Summarize-PPC

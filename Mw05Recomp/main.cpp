@@ -128,7 +128,9 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     auto loadResult = LoadFile(path);
     if (loadResult.empty())
     {
-        assert("Failed to load module" && false);
+        // Print a helpful message and fail gracefully instead of asserting
+        fprintf(stderr, "[boot][error] Failed to load module: %s\n", path.string().c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), ("Failed to load module:\n" + path.string()).c_str(), GameWindow::s_pWindow);
         return 0;
     }
 
@@ -198,6 +200,22 @@ void init()
 
 int main(int argc, char *argv[])
 {
+    // Attach a console when --verbose is passed, even for Windows GUI builds.
+    bool verbose = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--verbose") { verbose = true; break; }
+    }
+#if defined(_WIN32)
+    if (verbose) {
+        AllocConsole();
+        FILE* fOut = nullptr; FILE* fErr = nullptr;
+        freopen_s(&fOut, "CONOUT$", "w", stdout);
+        freopen_s(&fErr, "CONOUT$", "w", stderr);
+        printf("[boot] Mw05Recomp starting (--verbose)\n");
+        fflush(stdout);
+    }
+#endif
+    if (verbose) { printf("[boot] entering main()\n"); fflush(stdout); }
 #ifdef _WIN32
     timeBeginPeriod(1);
 #endif
@@ -370,6 +388,12 @@ int main(int argc, char *argv[])
     KiSystemStartup();
 
     uint32_t entry = LdrLoadModule(modulePath);
+    if (entry == 0)
+    {
+        // LdrLoadModule already displayed a message box with details.
+        if (verbose) { printf("[boot][error] Module load failed; exiting.\n"); fflush(stdout); }
+        std::_Exit(1);
+    }
 
     if (!runInstallerWizard)
     {

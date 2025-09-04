@@ -495,9 +495,56 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
     return 0;
 }
 
-void NtQueryVirtualMemory()
+uint32_t NtQueryVirtualMemory(
+    uint32_t /*ProcessHandle*/,
+    uint32_t BaseAddress,
+    uint32_t MemoryInformationClass,
+    uint32_t Buffer,
+    uint32_t Length,
+    be<uint32_t>* ReturnLength)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Very small emulation sufficient for simple probes.
+    // Validate guest pointers to avoid host faults.
+    auto in_range = [](uint32_t guest_off, size_t bytes) -> bool {
+        if (guest_off == 0) return false;
+        if (guest_off < 4096) return false; // guard page
+        return (size_t)guest_off + bytes <= PPC_MEMORY_SIZE;
+    };
+
+    if (ReturnLength && ((size_t)ReturnLength - (size_t)g_memory.base) < PPC_MEMORY_SIZE)
+        *ReturnLength = 0;
+
+    if (!in_range(Buffer, Length))
+        return 0xC0000005; // STATUS_ACCESS_VIOLATION
+
+    // For MemoryBasicInformation (class 0), report a single committed RW private region from the
+    // provided BaseAddress up to the end of guest memory. Fill a minimal 7x u32 struct.
+    if (MemoryInformationClass == 0 && Length >= 7 * sizeof(uint32_t))
+    {
+        uint32_t info[7] = {};
+        const uint32_t base = BaseAddress;
+        const uint32_t alloc_base = base & ~0xFFFu;
+        const uint32_t region_size = (base < PPC_MEMORY_SIZE) ? (PPC_MEMORY_SIZE - base) : 0;
+
+        // Fields: BaseAddress, AllocationBase, AllocationProtect, RegionSize, State, Protect, Type
+        info[0] = base;
+        info[1] = alloc_base;
+        info[2] = PAGE_READWRITE;
+        info[3] = region_size;
+        info[4] = MEM_COMMIT;      // committed
+        info[5] = PAGE_READWRITE;  // current protect
+        info[6] = 0x20000;         // MEM_PRIVATE (value used by NT)
+
+        memcpy(g_memory.Translate(Buffer), info, 7 * sizeof(uint32_t));
+        if (ReturnLength && ((size_t)ReturnLength - (size_t)g_memory.base) < PPC_MEMORY_SIZE)
+            *ReturnLength = 7 * sizeof(uint32_t);
+
+        return 0; // STATUS_SUCCESS
+    }
+
+    // Default: zero the buffer up to Length and return success; some callers only check status.
+    memset(g_memory.Translate(Buffer), 0, Length);
+    return 0; // STATUS_SUCCESS
 }
 
 void MmQueryStatistics()
@@ -616,14 +663,71 @@ void NtDuplicateObject()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void NtAllocateVirtualMemory()
+uint32_t NtAllocateVirtualMemory(
+    uint32_t /*ProcessHandle*/,
+    be<uint32_t>* BaseAddress,
+    uint32_t /*ZeroBits*/,
+    be<uint32_t>* RegionSize,
+    uint32_t /*AllocationType*/,
+    uint32_t /*Protect*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    auto is_valid_guest_ptr = [](const void* p, size_t bytes) -> bool {
+        if (!p) return false;
+        const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
+        const uint8_t* b = g_memory.base;
+        if (u < b + 4096) return false; // first page is noaccess sentinel
+        size_t off = static_cast<size_t>(u - b);
+        return off + bytes <= PPC_MEMORY_SIZE;
+    };
+
+    if (!is_valid_guest_ptr(BaseAddress, sizeof(*BaseAddress)) ||
+        !is_valid_guest_ptr(RegionSize, sizeof(*RegionSize)))
+    {
+        return 0xC0000005; // STATUS_ACCESS_VIOLATION
+    }
+
+    uint32_t size = (uint32_t)*RegionSize;
+    if (size == 0)
+        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+
+    void* host = g_userHeap.Alloc(size);
+    if (!host)
+        return 0xC0000017; // STATUS_NO_MEMORY
+
+    uint32_t guestAddr = g_memory.MapVirtual(host);
+    // Zero like MEM_COMMIT would on Windows to avoid UAF of garbage.
+    memset(host, 0, size);
+    if (BaseAddress)
+        *BaseAddress = guestAddr;
+
+    return 0; // STATUS_SUCCESS
 }
 
-void NtFreeVirtualMemory()
+uint32_t NtFreeVirtualMemory(
+    uint32_t /*ProcessHandle*/,
+    be<uint32_t>* BaseAddress,
+    be<uint32_t>* /*RegionSize*/,
+    uint32_t /*FreeType*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    auto is_valid_guest_ptr = [](const void* p, size_t bytes) -> bool {
+        if (!p) return false;
+        const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
+        const uint8_t* b = g_memory.base;
+        if (u < b + 4096) return false;
+        size_t off = static_cast<size_t>(u - b);
+        return off + bytes <= PPC_MEMORY_SIZE;
+    };
+
+    if (!is_valid_guest_ptr(BaseAddress, sizeof(*BaseAddress)))
+        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+
+    void* host = g_memory.Translate(*BaseAddress);
+    if (host)
+        g_userHeap.Free(host);
+
+    // Clear out base so callers don't reuse it.
+    *BaseAddress = 0;
+    return 0; // STATUS_SUCCESS
 }
 
 void ObDereferenceObject()
@@ -1636,6 +1740,36 @@ GUEST_FUNCTION_HOOK(__imp__XamEnableInactivityProcessing, XamEnableInactivityPro
 GUEST_FUNCTION_HOOK(__imp__XamResetInactivity, XamResetInactivity);
 GUEST_FUNCTION_HOOK(__imp__XamShowMessageBoxUIEx, XamShowMessageBoxUIEx);
 GUEST_FUNCTION_HOOK(__imp__XGetLanguage, XGetLanguage);
+
+// Minimal stubs for XAM imports referenced by the recompiled mapping but not yet implemented.
+GUEST_FUNCTION_STUB(__imp__XamLoaderGetLaunchDataSize);
+GUEST_FUNCTION_STUB(__imp__XamLoaderGetLaunchData);
+GUEST_FUNCTION_STUB(__imp__XamLoaderSetLaunchData);
+GUEST_FUNCTION_STUB(__imp__XamUserGetName);
+GUEST_FUNCTION_STUB(__imp__XamUserAreUsersFriends);
+GUEST_FUNCTION_STUB(__imp__XamUserCheckPrivilege);
+GUEST_FUNCTION_STUB(__imp__XamUserCreateStatsEnumerator);
+GUEST_FUNCTION_STUB(__imp__XamReadTileToTexture);
+GUEST_FUNCTION_STUB(__imp__XamParseGamerTileKey);
+GUEST_FUNCTION_STUB(__imp__XamWriteGamerTile);
+GUEST_FUNCTION_STUB(__imp__XamUserCreatePlayerEnumerator);
+GUEST_FUNCTION_STUB(__imp__XamUserCreateAchievementEnumerator);
+GUEST_FUNCTION_STUB(__imp__XamUserGetXUID);
+GUEST_FUNCTION_STUB(__imp__XamShowSigninUIp);
+GUEST_FUNCTION_STUB(__imp__XamShowFriendsUI);
+GUEST_FUNCTION_STUB(__imp__XamShowPlayersUI);
+GUEST_FUNCTION_STUB(__imp__XamShowMessagesUI);
+GUEST_FUNCTION_STUB(__imp__XamShowKeyboardUI);
+GUEST_FUNCTION_STUB(__imp__XamShowQuickChatUI);
+GUEST_FUNCTION_STUB(__imp__XamShowVoiceMailUI);
+GUEST_FUNCTION_STUB(__imp__XamShowGamerCardUIForXUID);
+GUEST_FUNCTION_STUB(__imp__XamShowAchievementsUI);
+GUEST_FUNCTION_STUB(__imp__XamShowPlayerReviewUI);
+GUEST_FUNCTION_STUB(__imp__XamShowMarketplaceUI);
+GUEST_FUNCTION_STUB(__imp__XamShowMessageComposeUI);
+GUEST_FUNCTION_STUB(__imp__XamShowGameInviteUI);
+GUEST_FUNCTION_STUB(__imp__XamShowFriendRequestUI);
+
 GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderTerminateTitle, XamLoaderTerminateTitle);
 GUEST_FUNCTION_HOOK(__imp__XamGetExecutionId, XamGetExecutionId);
@@ -1650,6 +1784,35 @@ GUEST_FUNCTION_HOOK(__imp__NtWaitForSingleObjectEx, NtWaitForSingleObjectEx);
 GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
 GUEST_FUNCTION_HOOK(__imp__ExGetXConfigSetting, ExGetXConfigSetting);
 GUEST_FUNCTION_HOOK(__imp__NtQueryVirtualMemory, NtQueryVirtualMemory);
+uint32_t NtProtectVirtualMemory(
+    uint32_t /*ProcessHandle*/,
+    be<uint32_t>* BaseAddress,
+    be<uint32_t>* RegionSize,
+    uint32_t NewProtect,
+    be<uint32_t>* OldProtect)
+{
+    // Validate guest pointers
+    auto valid_ptr = [](const void* p, size_t bytes) -> bool {
+        if (!p) return false;
+        const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
+        const uint8_t* b = g_memory.base;
+        if (u < b + 4096) return false;
+        size_t off = static_cast<size_t>(u - b);
+        return off + bytes <= PPC_MEMORY_SIZE;
+    };
+
+    if (!valid_ptr(BaseAddress, sizeof(*BaseAddress)) || !valid_ptr(RegionSize, sizeof(*RegionSize)))
+        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+
+    if (OldProtect && valid_ptr(OldProtect, sizeof(*OldProtect)))
+        *OldProtect = PAGE_READWRITE; // report prior as RW for simplicity
+
+    // We don’t enforce protection in host; treat as success.
+    (void)NewProtect;
+    return 0; // STATUS_SUCCESS
+}
+
+GUEST_FUNCTION_HOOK(__imp__NtProtectVirtualMemory, NtProtectVirtualMemory);
 GUEST_FUNCTION_HOOK(__imp__MmQueryStatistics, MmQueryStatistics);
 GUEST_FUNCTION_HOOK(__imp__NtCreateEvent, NtCreateEvent);
 GUEST_FUNCTION_HOOK(__imp__XexCheckExecutablePrivilege, XexCheckExecutablePrivilege);
@@ -1808,3 +1971,177 @@ GUEST_FUNCTION_HOOK(__imp__XMACreateContext, XMACreateContext);
 GUEST_FUNCTION_HOOK(__imp__XAudioRegisterRenderDriverClient, XAudioRegisterRenderDriverClient);
 GUEST_FUNCTION_HOOK(__imp__XAudioUnregisterRenderDriverClient, XAudioUnregisterRenderDriverClient);
 GUEST_FUNCTION_HOOK(__imp__XAudioSubmitRenderDriverFrame, XAudioSubmitRenderDriverFrame);
+
+// Additional networking (WSA/XNP) stubs required by PPC mapping but unused in offline mode
+GUEST_FUNCTION_STUB(__imp__NetDll_WSASend);
+GUEST_FUNCTION_STUB(__imp__NetDll_sendto);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSASendTo);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSAEventSelect);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSAGetLastError);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSASetLastError);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSACreateEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSACloseEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSASetEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSAResetEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSAWaitForMultipleEvents);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLoadConfigParams);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpSaveConfigParams);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpConfigUPnP);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpConfig);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpGetConfigStatus);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLoadMachineAccount);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpSaveMachineAccount);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpCapture);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpEthernetInterceptSetCallbacks);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpEthernetInterceptXmit);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpEthernetInterceptRecv);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonGetStatus);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonGetQFlags);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonSetQFlags);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonSetQEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonClearQEvent);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonGetQVals);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonSetQVals);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpLogonSetPState);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpGetVlanXboxName);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpSetVlanXboxName);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpGetActiveSocketList);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpNoteSystemTime);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpRegisterKeyForCallerType);
+GUEST_FUNCTION_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
+GUEST_FUNCTION_STUB(__imp__XNetLogonGetMachineID);
+GUEST_FUNCTION_STUB(__imp__XamUserGetOnlineCountryFromXUID);
+GUEST_FUNCTION_STUB(__imp__XamUserGetMembershipTierFromXUID);
+GUEST_FUNCTION_STUB(__imp__XamSessionRefObjByHandle);
+GUEST_FUNCTION_STUB(__imp__XamSessionCreateHandle);
+GUEST_FUNCTION_STUB(__imp__XamContentCreate);
+GUEST_FUNCTION_STUB(__imp__XamContentInstall);
+GUEST_FUNCTION_STUB(__imp__XamContentFlush);
+GUEST_FUNCTION_STUB(__imp__XamContentSetThumbnail);
+GUEST_FUNCTION_STUB(__imp__XamContentGetThumbnail);
+GUEST_FUNCTION_STUB(__imp__XamContentGetLicenseMask);
+GUEST_FUNCTION_STUB(__imp__XamContentCreateDeviceEnumerator);
+GUEST_FUNCTION_STUB(__imp__XamContentGetDeviceName);
+GUEST_FUNCTION_STUB(__imp__XamContentLaunchImage);
+GUEST_FUNCTION_STUB(__imp__XeKeysGetKeyProperties);
+GUEST_FUNCTION_STUB(__imp__XeCryptAesKey);
+GUEST_FUNCTION_STUB(__imp__XeCryptAesEcb);
+GUEST_FUNCTION_STUB(__imp__XeKeysQwNeRsaPrvCrypt);
+GUEST_FUNCTION_STUB(__imp__XeCryptBnQw_SwapDwQwLeBe);
+GUEST_FUNCTION_STUB(__imp__XeCryptRandom);
+GUEST_FUNCTION_STUB(__imp__XeCryptShaFinal);
+GUEST_FUNCTION_STUB(__imp__XeCryptShaUpdate);
+GUEST_FUNCTION_STUB(__imp__XeCryptShaInit);
+GUEST_FUNCTION_STUB(__imp__XeCryptBnQwNeRsaPubCrypt);
+
+// Additional stubs: XeCrypt/XeKeys, XMA, NT timers
+GUEST_FUNCTION_STUB(__imp__XeCryptBnQwNeRsaPrvCrypt);
+GUEST_FUNCTION_STUB(__imp__XeCryptBnQwNeRsaKeyGen);
+GUEST_FUNCTION_STUB(__imp__XeCryptRc4Key);
+GUEST_FUNCTION_STUB(__imp__XeCryptRc4Ecb);
+
+GUEST_FUNCTION_STUB(__imp__XMAGetOutputBufferWriteOffset);
+GUEST_FUNCTION_STUB(__imp__XMASetInputBuffer1);
+GUEST_FUNCTION_STUB(__imp__XMASetOutputBufferReadOffset);
+GUEST_FUNCTION_STUB(__imp__XMAInitializeContext);
+GUEST_FUNCTION_STUB(__imp__XMASetInputBuffer0);
+GUEST_FUNCTION_STUB(__imp__XMADisableContext);
+GUEST_FUNCTION_STUB(__imp__XMAEnableContext);
+GUEST_FUNCTION_STUB(__imp__XMAIsOutputBufferValid);
+GUEST_FUNCTION_STUB(__imp__XMASetInputBuffer0Valid);
+GUEST_FUNCTION_STUB(__imp__XMAGetOutputBufferReadOffset);
+GUEST_FUNCTION_STUB(__imp__XMAIsInputBuffer1Valid);
+GUEST_FUNCTION_STUB(__imp__XMASetOutputBufferValid);
+GUEST_FUNCTION_STUB(__imp__XMAIsInputBuffer0Valid);
+GUEST_FUNCTION_STUB(__imp__XMASetInputBuffer1Valid);
+
+GUEST_FUNCTION_STUB(__imp__NtSetTimerEx);
+GUEST_FUNCTION_STUB(__imp__NtCreateTimer);
+
+// Additional minimal stubs to satisfy link for mappings that are unused at runtime.
+GUEST_FUNCTION_STUB(__imp__Refresh);
+GUEST_FUNCTION_STUB(__imp__XamInputGetKeystrokeEx);
+GUEST_FUNCTION_STUB(__imp__VdGetGraphicsAsicID);
+GUEST_FUNCTION_STUB(__imp__VdQuerySystemCommandBuffer);
+GUEST_FUNCTION_STUB(__imp__VdSetSystemCommandBuffer);
+GUEST_FUNCTION_STUB(__imp__VdInitializeEDRAM);
+GUEST_FUNCTION_STUB(__imp__MmSetAddressProtect);
+GUEST_FUNCTION_STUB(__imp__NtCreateIoCompletion);
+GUEST_FUNCTION_STUB(__imp__NtSetIoCompletion);
+GUEST_FUNCTION_STUB(__imp__NtRemoveIoCompletion);
+GUEST_FUNCTION_STUB(__imp__ObOpenObjectByPointer);
+GUEST_FUNCTION_STUB(__imp__ObLookupThreadByThreadId);
+GUEST_FUNCTION_STUB(__imp__KeSetDisableBoostThread);
+GUEST_FUNCTION_STUB(__imp__NtQueueApcThread);
+GUEST_FUNCTION_STUB(__imp__RtlCompareMemory);
+GUEST_FUNCTION_STUB(__imp__XamCreateEnumeratorHandle);
+GUEST_FUNCTION_STUB(__imp__XMsgSystemProcessCall);
+GUEST_FUNCTION_STUB(__imp__XamGetPrivateEnumStructureFromHandle);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetCleanup);
+
+// Missing exports reported by linker for PPC mappings
+GUEST_FUNCTION_STUB(__imp__NtCreateMutant);
+GUEST_FUNCTION_STUB(__imp__NtReleaseMutant);
+GUEST_FUNCTION_STUB(__imp__NtYieldExecution);
+GUEST_FUNCTION_STUB(__imp__FscGetCacheElementCount);
+GUEST_FUNCTION_STUB(__imp__ExAllocatePool);
+GUEST_FUNCTION_STUB(__imp__XamVoiceHeadsetPresent);
+GUEST_FUNCTION_STUB(__imp__XamVoiceClose);
+GUEST_FUNCTION_STUB(__imp__XMsgCancelIORequest);
+GUEST_FUNCTION_STUB(__imp__XamVoiceSubmitPacket);
+GUEST_FUNCTION_STUB(__imp__XamVoiceCreate);
+GUEST_FUNCTION_STUB(__imp__XAudioQueryDriverPerformance);
+GUEST_FUNCTION_STUB(__imp__KeTryToAcquireSpinLockAtRaisedIrql);
+GUEST_FUNCTION_STUB(__imp__KePulseEvent);
+GUEST_FUNCTION_STUB(__imp__ExAllocatePoolWithTag);
+GUEST_FUNCTION_STUB(__imp__MmAllocatePhysicalMemory);
+GUEST_FUNCTION_STUB(__imp__XMASetInputBufferReadOffset);
+GUEST_FUNCTION_STUB(__imp__XMABlockWhileInUse);
+GUEST_FUNCTION_STUB(__imp__XMASetLoopData);
+GUEST_FUNCTION_STUB(__imp__NtCancelTimer);
+GUEST_FUNCTION_STUB(__imp__ObOpenObjectByName);
+GUEST_FUNCTION_STUB(__imp__NtPulseEvent);
+GUEST_FUNCTION_STUB(__imp__NtSignalAndWaitForSingleObjectEx);
+// Networking (XNet) stubs
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetRandom);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetCreateKey);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetRegisterKey);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetUnregisterKey);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetXnAddrToInAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetServerToInAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetTsAddrToInAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetInAddrToXnAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetInAddrToServer);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetInAddrToString);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetUnregisterInAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetXnAddrToMachineId);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetConnect);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetConnectStatus);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetDnsLookup);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetDnsRelease);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosListen);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosLookup);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosServiceLookup);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosRelease);
+
+// Networking/additional import stubs continued
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetDebugXnAddr);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetEthernetLinkStatus);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetBroadcastVersionStatus);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosGetListenStats);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetOpt);
+GUEST_FUNCTION_STUB(__imp__NetDll_XNetSetOpt);
+GUEST_FUNCTION_STUB(__imp__XamFree);
+GUEST_FUNCTION_STUB(__imp__XamAlloc);
+GUEST_FUNCTION_STUB(__imp__XNetLogonGetTitleID);
+GUEST_FUNCTION_STUB(__imp__XamUserWriteProfileSettings);
+GUEST_FUNCTION_STUB(__imp__NetDll_shutdown);
+GUEST_FUNCTION_STUB(__imp__NetDll_ioctlsocket);
+GUEST_FUNCTION_STUB(__imp__NetDll_getsockopt);
+GUEST_FUNCTION_STUB(__imp__NetDll_getsockname);
+GUEST_FUNCTION_STUB(__imp__NetDll_getpeername);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSAGetOverlappedResult);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSACancelOverlappedIO);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSARecv);
+GUEST_FUNCTION_STUB(__imp__NetDll_recvfrom);
+GUEST_FUNCTION_STUB(__imp__NetDll_WSARecvFrom);

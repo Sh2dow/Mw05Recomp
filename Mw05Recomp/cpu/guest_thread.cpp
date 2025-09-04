@@ -141,13 +141,29 @@ uint32_t GuestThreadHandle::Wait(uint32_t timeout)
 
 uint32_t GuestThread::Start(const GuestThreadParams& params)
 {
+    // Early diagnostic: print entry address before lookup when verbose
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
+    {
+        printf("[boot] GuestThread::Start entry=0x%08X flags=0x%08X value=0x%08X\n", params.function, params.flags, (uint32_t)params.value);
+        fflush(stdout);
+    }
     const auto procMask = (uint8_t)(params.flags >> 24);
     const auto cpuNumber = procMask == 0 ? 0 : 7 - std::countl_zero(procMask);
 
     GuestThreadContext ctx(cpuNumber);
     ctx.ppcContext.r3.u64 = params.value;
-
-    g_memory.FindFunction(params.function)(ctx.ppcContext, g_memory.base);
+    if (auto entryFunc = g_memory.FindFunction(params.function))
+    {
+        entryFunc(ctx.ppcContext, g_memory.base);
+    }
+    else
+    {
+        fprintf(stderr, "[boot][error] Guest entry 0x%08X not found.\n", params.function);
+#ifdef _WIN32
+        MessageBoxA(nullptr, "Failed to locate guest entry point.", "Mw05 Recompiled", MB_ICONERROR);
+#endif
+        std::_Exit(1);
+    }
 
     return ctx.ppcContext.r3.u32;
 }

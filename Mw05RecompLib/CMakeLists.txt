@@ -10,9 +10,13 @@ else()
     add_compile_options(-ffp-model=strict)
 endif()
 
+# Allow overriding XenonRecomp config/header paths from cache or CLI
+set(XENON_RECOMP_CONFIG_FILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/config/MW05.toml" CACHE STRING "Path to XenonRecomp config TOML")
+set(XENON_RECOMP_HEADER_FILE_PATH "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/XenonUtils/ppc_context.h" CACHE STRING "Path to XenonRecomp ppc_context.h for codegen")
+
 target_compile_definitions(XenonRecomp PRIVATE 
-    XENON_RECOMP_CONFIG_FILE_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/config/MW05.toml\"
-    XENON_RECOMP_HEADER_FILE_PATH=\"${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/XenonUtils/ppc_context.h\")
+    XENON_RECOMP_CONFIG_FILE_PATH=\"${XENON_RECOMP_CONFIG_FILE_PATH}\"
+    XENON_RECOMP_HEADER_FILE_PATH=\"${XENON_RECOMP_HEADER_FILE_PATH}\")
 
 set(MW05_RECOMP_PPC_RECOMPILED_SOURCES 
     "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_config.h"
@@ -34,11 +38,8 @@ else()
         list(SORT _ppc_existing)
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES ${_ppc_existing})
     else()
-        # True first pass: use a safe minimal fallback range. This avoids
-        # requesting files that won’t exist yet and lets PPCCodegen run.
-        foreach(i RANGE 0 255)
-            list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.${i}.cpp")
-        endforeach()
+        # Bootstrap: include a tiny stub so CMake can configure without generated sources.
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
     endif()
     list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
 endif()
@@ -46,7 +47,6 @@ endif()
 add_custom_command(
     OUTPUT 
         "${CMAKE_CURRENT_SOURCE_DIR}/private/default_patched.xex"
-        ${MW05_RECOMP_PPC_RECOMPILED_SOURCES}
     COMMAND 
         $<TARGET_FILE:XenonRecomp>
     DEPENDS 
@@ -60,7 +60,6 @@ add_custom_command(
 add_custom_target(PPCCodegen
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/private/default_patched.xex"
-        ${MW05_RECOMP_PPC_RECOMPILED_SOURCES}
 )
 
 # add_custom_command(
@@ -100,10 +99,15 @@ add_custom_command(
     USES_TERMINAL
 )
 
+# Shader cache is generated later; include it only if present to avoid configure failures.
+set(MW05_SHADER_SOURCES "shader/shader_cache.h")
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/shader/shader_cache.cpp")
+    list(APPEND MW05_SHADER_SOURCES "shader/shader_cache.cpp")
+endif()
+
 add_library(Mw05RecompLib 
     ${MW05_RECOMP_PPC_RECOMPILED_SOURCES}
-    "shader/shader_cache.h"
-    "shader/shader_cache.cpp"
+    ${MW05_SHADER_SOURCES}
 )
 
 # Ensure the library build orders after codegen when invoked together

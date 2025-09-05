@@ -1,12 +1,13 @@
 # --- build_cmd.ps1: Staged helper for MW05 build ---
 
 param(
-  [ValidateSet('all','0','configure','1','codegen','2','genlist','3','lib','4','app','5')]
+  [ValidateSet('all','0','configure','1','codegen','2','genlist','3','lib','4','app','5','patch','6')]
   [string]$Stage,
   [ValidateSet('Debug','Release','RelWithDebInfo','MinSizeRel')]
   [string]$Config = 'Release',
   [switch]$Clean,
-  [switch]$DisableAppPch
+  [switch]$DisableAppPch,
+  [string]$ModuleName
 )
 
 # --- 0) Paths & tools (keep as-is) ---
@@ -77,6 +78,7 @@ if (-not $PSBoundParameters.ContainsKey('Stage')) {
   Write-Host "  [2] Generate file list + reconfigure"
   Write-Host "  [3] Build library"
   Write-Host "  [4] Build app"
+  Write-Host "  [6] Patch XEX only (run XenonRecomp)"
   $sel = Read-Host "Enter choice (a/0/1/2/3/4) [default: a]"
   if ([string]::IsNullOrWhiteSpace($sel)) { $Stage = 'all' }
   else {
@@ -87,6 +89,7 @@ if (-not $PSBoundParameters.ContainsKey('Stage')) {
       '2' { $Stage = 'genlist' }
       '3' { $Stage = 'lib' }
       '4' { $Stage = 'app' }
+      '6' { $Stage = 'patch' }
       default { $Stage = 'all' }
     }
   }
@@ -100,6 +103,10 @@ function Invoke-Configure {
   if ($DisableAppPch) { 
     $pchArg += '-D'; $pchArg += 'MW05_SKIP_APP_PCH=ON'
   }
+  $modArg = @()
+  if ($PSBoundParameters.ContainsKey('ModuleName') -and $ModuleName) {
+    $modArg += '-D'; $modArg += "MW05_MODULE_NAME=$ModuleName"
+  }
   cmake --preset $preset @freshArgs `
     -D CMAKE_C_COMPILER="$LLVM/clang-cl.exe" `
     -D CMAKE_CXX_COMPILER="$LLVM/clang-cl.exe" `
@@ -110,12 +117,11 @@ function Invoke-Configure {
     -D CMAKE_RC_COMPILER="$RC" `
     -D CMAKE_MT="$MT" `
     -D CMAKE_SH=CMAKE_SH-NOTFOUND `
-    -D XENON_RECOMP_HEADER_FILE_PATH="D:/Repos/Games/MW05Recomp/tools/XenonRecomp/XenonUtils/ppc_context.h" `
-    -D XENON_RECOMP_CONFIG_FILE_PATH="D:/Repos/Games/MW05Recomp/Mw05RecompLib/config/MW05.toml" `
-    -D MW05_XEX="D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex" `
+    `
     -D MW05_RECOMP_SKIP_CODEGEN=OFF `
     -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
-    @pchArg
+    @pchArg `
+    @modArg
 }
 
 # Helper tasks
@@ -134,6 +140,33 @@ function Invoke-Codegen {
   Write-Host "Using XEX: $xex" -ForegroundColor Gray
   Write-Host "Using TOML: D:/Repos/Games/MW05Recomp/Mw05RecompLib/config/MW05.toml" -ForegroundColor Gray
   cmake --build "$buildDir" --target PPCCodegen -j1 -v
+}
+function Invoke-Patch {
+  Write-Host "[Stage] Patch XEX (run XenonRecomp)" -ForegroundColor Cyan
+  $xex = "D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex"
+  $out = "D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default_patched.xex"
+  if (-not (Test-Path $xex)) {
+    Write-Host "Missing XEX: $xex" -ForegroundColor Red
+    exit 1
+  }
+  # Ensure XenonRecomp is built
+  cmake --build "$buildDir" --target XenonRecomp -j1 -v
+  if (-not (Test-Path $exe)) {
+    Write-Host "XenonRecomp not found at $exe" -ForegroundColor Red
+    exit 1
+  }
+  Write-Host "Running: $exe" -ForegroundColor Gray
+  & $exe
+  $ec = $LASTEXITCODE
+  if ($ec -ne 0) {
+    Write-Host ("XenonRecomp exited with code {0}" -f $ec) -ForegroundColor Yellow
+  }
+  if (Test-Path $out) {
+    $sz = (Get-Item $out).Length
+    Write-Host ("Patched XEX produced: {0} bytes" -f $sz) -ForegroundColor Green
+  } else {
+    Write-Host "Patched XEX was not produced. Check XenonRecomp output above." -ForegroundColor Red
+  }
 }
 function Invoke-GenList {
   Write-Host "[Stage] Generate PPC file list" -ForegroundColor Cyan
@@ -169,6 +202,23 @@ function Build-App    {
   if (Test-Path $app) {
     Write-Host ("App built: {0}" -f $app) -ForegroundColor Green
     Write-Host ("Run: `"{0}`"" -f $app)
+    # Copy patched module next to the app for runtime loading
+    $dstDir = Split-Path -Parent $app
+    $dstXex = Join-Path $dstDir 'default_patched.xex'
+    if (Test-Path $patched) {
+      Copy-Item -Force $patched $dstXex
+      Write-Host ("Synced patched module to: {0}" -f $dstXex) -ForegroundColor DarkGray
+      # If a custom ModuleName is provided, sync under that name too
+      if ($PSBoundParameters.ContainsKey('ModuleName') -and $ModuleName) {
+        $dstCustom = Join-Path $dstDir $ModuleName
+        if (!(Test-Path $dstCustom) -or ((Get-Item $dstCustom).FullName -ne (Get-Item $dstXex).FullName)) {
+          Copy-Item -Force $patched $dstCustom
+          Write-Host ("Synced patched module to: {0}" -f $dstCustom) -ForegroundColor DarkGray
+        }
+      }
+    } else {
+      Write-Host ("Patched XEX not found: {0}. Build codegen first (Stage codegen/genlist)." -f $patched) -ForegroundColor Yellow
+    }
   } else {
     Write-Host "App executable not found yet (build may have failed)." -ForegroundColor Yellow
   }
@@ -182,6 +232,8 @@ switch ($Stage) {
   '2'         { Invoke-Codegen; break }
   'genlist'   { Invoke-GenList; break }
   '3'         { Invoke-GenList; break }
+  'patch'     { Invoke-Patch; break }
+  '6'         { Invoke-Patch; break }
   'lib'       { Build-Lib; break }
   '4'         { Build-Lib; break }
   'app'       { Build-App; break }

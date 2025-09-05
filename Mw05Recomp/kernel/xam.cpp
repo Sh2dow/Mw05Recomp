@@ -9,6 +9,7 @@
 #include "xxHashMap.h"
 #include <user/paths.h>
 #include <SDL3/SDL.h>
+#include <os/logger.h>
 
 struct XamListener : KernelObject
 {
@@ -123,8 +124,13 @@ XCONTENT_DATA XamMakeContent(uint32_t type, const std::string_view& name)
 
 void XamRegisterContent(const XCONTENT_DATA& data, const std::string_view& root)
 {
-    const auto idx = data.dwContentType - 1;
-
+    const auto idx_raw = data.dwContentType - 1;
+    if (idx_raw >= gContentRegistry.size())
+    {
+        LOGFN_ERROR("XamRegisterContent: invalid content type {} for {}", (uint32_t)data.dwContentType, data.szFileName);
+        return;
+    }
+    const size_t idx = static_cast<size_t>(idx_raw);
     gContentRegistry[idx].emplace(StringHash(data.szFileName), XHOSTCONTENT_DATA{ data }).first->second.szRoot = root;
 }
 
@@ -265,6 +271,12 @@ uint32_t XamContentCreateEnumerator(uint32_t dwUserIndex, uint32_t DeviceID, uin
         return 0xFFFFFFFF;
     }
 
+    // Validate content type to avoid out-of-range array access
+    if (dwContentType < 1 || dwContentType > gContentRegistry.size())
+    {
+        LOGFN_ERROR("XamContentCreateEnumerator: invalid content type {}", dwContentType);
+        return ERROR_INVALID_PARAMETER;
+    }
     const auto& registry = gContentRegistry[dwContentType - 1];
     const auto& values = registry | std::views::values;
     auto* enumerator = CreateKernelObject<XamEnumerator<decltype(values.begin())>>(cItem, sizeof(_XCONTENT_DATA), values.begin(), values.end());
@@ -295,7 +307,14 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
     uint32_t dwContentFlags, be<uint32_t>* pdwDisposition, be<uint32_t>* pdwLicenseMask,
     uint32_t dwFileCacheSize, uint64_t uliContentSize, PXXOVERLAPPED pOverlapped)
 {
-    const auto& registry = gContentRegistry[pContentData->dwContentType - 1];
+    uint32_t contentType = static_cast<uint32_t>(pContentData->dwContentType);
+    if (contentType < 1 || contentType > gContentRegistry.size())
+    {
+        // Be permissive for early boot: treat unknown types as RESERVED to avoid crashing.
+        LOGFN_ERROR("XamContentCreateEx: invalid content type {} for {} — treating as RESERVED", contentType, pContentData->szFileName);
+        contentType = XCONTENTTYPE_RESERVED;
+    }
+    const auto& registry = gContentRegistry[contentType - 1];
     const auto exists = registry.contains(StringHash(pContentData->szFileName));
     const auto mode = dwContentFlags & 0xF;
 

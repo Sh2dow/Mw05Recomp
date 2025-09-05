@@ -11,6 +11,7 @@
 #include "xam.h"
 #include "xdm.h"
 #include <user/config.h>
+#include <ui/game_window.h>
 #include <os/logger.h>
 
 #ifdef _WIN32
@@ -558,10 +559,7 @@ uint32_t NtCreateEvent(be<uint32_t>* handle, void* objAttributes, uint32_t event
     return 0;
 }
 
-uint32_t XexCheckExecutablePrivilege()
-{
-    return 0;
-}
+
 
 void DbgPrint()
 {
@@ -628,6 +626,12 @@ uint32_t KeDelayExecutionThread(uint32_t WaitMode, bool Alertable, be<int64_t>* 
     return STATUS_SUCCESS;
 }
 
+// Some titles gate functionality behind kernel privilege checks. Be permissive by default.
+uint32_t XexCheckExecutablePrivilege()
+{
+    return 1; // present
+}
+
 void ExFreePool()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -663,43 +667,65 @@ void NtDuplicateObject()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-uint32_t NtAllocateVirtualMemory(
-    uint32_t /*ProcessHandle*/,
-    be<uint32_t>* BaseAddress,
-    uint32_t /*ZeroBits*/,
-    be<uint32_t>* RegionSize,
-    uint32_t /*AllocationType*/,
-    uint32_t /*Protect*/)
+uint32_t NtAllocateVirtualMemory()
 {
-    auto is_valid_guest_ptr = [](const void* p, size_t bytes) -> bool {
-        if (!p) return false;
-        const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
-        const uint8_t* b = g_memory.base;
-        if (u < b + 4096) return false; // first page is noaccess sentinel
-        size_t off = static_cast<size_t>(u - b);
-        return off + bytes <= PPC_MEMORY_SIZE;
+    // Tolerant implementation: deduce argument mapping from PPC regs and succeed.
+    auto* ctx = GetPPCContext();
+    if (!ctx)
+        return 0xC0000005; // STATUS_ACCESS_VIOLATION
+
+    const uint32_t regs[8] = {
+        ctx->r3.u32, ctx->r4.u32, ctx->r5.u32, ctx->r6.u32,
+        ctx->r7.u32, ctx->r8.u32, ctx->r9.u32, ctx->r10.u32
     };
 
-    if (!is_valid_guest_ptr(BaseAddress, sizeof(*BaseAddress)) ||
-        !is_valid_guest_ptr(RegionSize, sizeof(*RegionSize)))
+    auto is_guest_ptr = [](uint32_t off, size_t bytes) -> bool {
+        return off != 0 && (uint64_t)off + bytes <= (uint64_t)PPC_MEMORY_SIZE;
+    };
+
+    // Find a BaseAddress pointer parameter among the first few regs
+    be<uint32_t>* pBase = nullptr;
+    for (int i = 0; i < 5; ++i)
     {
-        return 0xC0000005; // STATUS_ACCESS_VIOLATION
+        if (is_guest_ptr(regs[i], sizeof(*pBase)))
+        {
+            auto* cand = reinterpret_cast<be<uint32_t>*>(g_memory.base + regs[i]);
+            // Prefer the one currently holding 0
+            if (!pBase || (uint32_t)(*cand) == 0)
+                pBase = cand;
+        }
     }
 
-    uint32_t size = (uint32_t)*RegionSize;
-    if (size == 0)
-        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+    // Try to detect RegionSize: prefer a small value in regs, else from a guest pointer, else default 0x1000
+    uint32_t regionSize = 0;
+    for (int i = 0; i < 8; ++i)
+    {
+        const uint32_t v = regs[i];
+        if (v > 0 && v <= (16u << 20)) { regionSize = v; break; } // <= 16 MiB
+    }
+    if (regionSize == 0)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            if (is_guest_ptr(regs[i], sizeof(be<uint32_t>)))
+            {
+                regionSize = (uint32_t)(*reinterpret_cast<be<uint32_t>*>(g_memory.base + regs[i]));
+                if (regionSize) break;
+            }
+        }
+    }
+    if (regionSize == 0) regionSize = 0x1000; // one page default
 
-    void* host = g_userHeap.Alloc(size);
+    if (!pBase)
+        return 0xC0000005; // STATUS_ACCESS_VIOLATION
+
+    void* host = g_userHeap.Alloc(regionSize);
     if (!host)
         return 0xC0000017; // STATUS_NO_MEMORY
 
-    uint32_t guestAddr = g_memory.MapVirtual(host);
-    // Zero like MEM_COMMIT would on Windows to avoid UAF of garbage.
-    memset(host, 0, size);
-    if (BaseAddress)
-        *BaseAddress = guestAddr;
-
+    const uint32_t guestAddr = g_memory.MapVirtual(host);
+    memset(host, 0, regionSize);
+    *pBase = guestAddr;
     return 0; // STATUS_SUCCESS
 }
 
@@ -713,7 +739,6 @@ uint32_t NtFreeVirtualMemory(
         if (!p) return false;
         const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
         const uint8_t* b = g_memory.base;
-        if (u < b + 4096) return false;
         size_t off = static_cast<size_t>(u - b);
         return off + bytes <= PPC_MEMORY_SIZE;
     };
@@ -820,7 +845,30 @@ void RtlImageXexHeaderField()
 
 void HalReturnToFirmware()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Title requested return to firmware/dashboard. By default, ignore this to allow
+    // titles that call it during bring-up to continue. Set MW05_ALLOW_FIRMWARE_RETURN=1
+    // to honor the request and exit.
+    uint32_t reason = 0;
+    if (auto* ctx = GetPPCContext())
+        reason = ctx->r3.u32;
+
+    const char* allow = std::getenv("MW05_ALLOW_FIRMWARE_RETURN");
+    const bool honor = (allow && allow[0] && !(allow[0]=='0' && allow[1]=='\0'));
+
+    if (honor)
+    {
+        KernelTraceDumpRecent(16);
+#ifdef _WIN32
+        char msg[256];
+        std::snprintf(msg, sizeof(msg), "Game requested return to firmware (code=%u). Exiting.", reason);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GameWindow::GetTitle(), msg, GameWindow::s_pWindow);
+#endif
+        std::_Exit(0);
+    }
+    else
+    {
+        LOGFN("[kernel] HalReturnToFirmware ignored (code={})", reason);
+    }
 }
 
 void RtlFillMemoryUlong()
@@ -845,12 +893,15 @@ void RtlCompareMemoryUlong()
 
 uint32_t RtlInitializeCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    if (!cs)
+        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+
     cs->Header.Absolute = 0;
     cs->LockCount = -1;
     cs->RecursionCount = 0;
     cs->OwningThread = 0;
 
-    return 0;
+    return 0; // STATUS_SUCCESS
 }
 
 void RtlRaiseException_x()

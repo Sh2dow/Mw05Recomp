@@ -161,7 +161,8 @@ struct ArgTranslator
         }
 
         const uint32_t off = static_cast<uint32_t>(v);
-        if (off < 4096 || off >= PPC_MEMORY_SIZE)
+        // Allow low guest offsets; we no longer guard the first page.
+        if (off == 0 || off >= PPC_MEMORY_SIZE)
         {
             return nullptr;
         }

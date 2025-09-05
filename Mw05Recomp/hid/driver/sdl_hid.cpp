@@ -152,6 +152,9 @@ Controller* g_activeController;
 
 inline Controller* EnsureController(uint32_t dwUserIndex)
 {
+    if (dwUserIndex >= g_controllers.size())
+        return nullptr;
+
     if (!g_controllers[dwUserIndex].controller)
         return nullptr;
 

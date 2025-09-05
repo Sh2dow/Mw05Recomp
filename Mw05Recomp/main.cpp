@@ -360,7 +360,34 @@ int main(int argc, char *argv[])
     isGameInstalled = Installer::checkGameInstall(GetGamePath(), modulePath);
     runInstallerWizard = forceInstaller || forceDLCInstaller || !isGameInstalled;
 #else
-    modulePath = GetGamePath() / "Mw05.xex";
+    // Resolve module path with sensible fallbacks.
+    // 1) Explicit env override
+    // 2) App folder: MW05_MODULE_NAME, default_patched.xex, default.xex
+    // 3) GetGamePath(): MW05_MODULE_NAME, default_patched.xex, default.xex
+    const char* envModulePath = std::getenv("MW05_MODULE_PATH");
+    if (envModulePath && std::filesystem::exists(envModulePath))
+    {
+        modulePath = std::filesystem::path(envModulePath);
+    }
+    else
+    {
+        const std::array<std::filesystem::path, 6> candidates = {
+            g_executableRoot / MW05_MODULE_NAME,
+            g_executableRoot / "default_patched.xex",
+            g_executableRoot / "default.xex",
+            GetGamePath() / MW05_MODULE_NAME,
+            GetGamePath() / "default_patched.xex",
+            GetGamePath() / "default.xex",
+        };
+        for (const auto& p : candidates)
+        {
+            if (!p.empty() && std::filesystem::exists(p))
+            {
+                modulePath = p;
+                break;
+            }
+        }
+    }
 #endif
     if (runInstallerWizard)
     {
@@ -386,6 +413,15 @@ int main(int argc, char *argv[])
         LOGFN_ERROR("Failed to load persistent storage binary... (status code {})", (int)PersistentStorageManager::BinStatus);
 
     KiSystemStartup();
+
+    if (modulePath.empty())
+    {
+        const char* msg = "Could not locate module file. Place default_patched.xex or default.xex next to the app, or set MW05_MODULE_PATH.";
+#ifdef _WIN32
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), msg, GameWindow::s_pWindow);
+#endif
+        std::_Exit(1);
+    }
 
     uint32_t entry = LdrLoadModule(modulePath);
     if (entry == 0)

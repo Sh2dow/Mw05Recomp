@@ -9,3 +9,5 @@ bool KernelTraceEnabled();
 // Captures thread id and a few PPC argument registers for quick inspection.
 void KernelTraceImport(const char* import_name, PPCContext& ctx);
 
+// Diagnostic: dump recent imports captured in a small ring buffer
+void KernelTraceDumpRecent(int maxCount = 16);

@@ -58,6 +58,10 @@ else()
     add_compile_options(-ffp-model=strict)
 endif()
 
+# Title/module name to load at runtime (can be overridden for other games)
+set(MW05_MODULE_NAME "default_patched.xex" CACHE STRING "Module filename to load at runtime")
+add_compile_definitions(MW05_MODULE_NAME="${MW05_MODULE_NAME}")
+
 add_compile_definitions(
     SDL_MAIN_HANDLED
     _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR # Microsoft wtf?

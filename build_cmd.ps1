@@ -28,26 +28,24 @@ $CPPWINRTINC = Join-Path $SDKINC "cppwinrt"
 $UCRTLIB = Join-Path $root "Lib\$latestSdk\ucrt\x64"
 $UMLIB = Join-Path $root "Lib\$latestSdk\um\x64"
 
-# INCLUDE
-$includeParts = @($VSINC,$UCRTINC,$SHAREDINC,$UMINc,$WINRTINC,$CPPWINRTINC)
-if ($env:INCLUDE) {
-  $env:INCLUDE = ($includeParts -join ';') + ';' + $env:INCLUDE
-} else {
+# Avoid growing env vars on repeated runs; wire once per session.
+if (-not $env:MW05_ENV_INIT) {
+  # INCLUDE
+  $includeParts = @($VSINC,$UCRTINC,$SHAREDINC,$UMINc,$WINRTINC,$CPPWINRTINC)
   $env:INCLUDE = ($includeParts -join ';')
-}
 
-# LIB
-if ($env:LIB) {
-  $env:LIB = "$VCLIB;$UCRTLIB;$UMLIB;" + $env:LIB
-} else {
+  # LIB
   $env:LIB = "$VCLIB;$UCRTLIB;$UMLIB"
-}
 
-# PATH
-$env:PATH = "$VCBIN;" + (Join-Path $root "bin\$latestSdk\x64") + ';' + $LLVM + ';' + $env:PATH
-$env:WindowsSdkDir     = ($root -replace '\\','/') + "/"
-$env:WindowsSDKVersion = "$latestSdk/"
-$env:CMAKE_SH = 'CMAKE_SH-NOTFOUND'
+  # PATH (prepend tool bins once)
+  $env:PATH = "$VCBIN;" + (Join-Path $root "bin\$latestSdk\x64") + ';' + $LLVM + ';' + $env:PATH
+  $env:WindowsSdkDir     = ($root -replace '\\','/') + "/"
+  $env:WindowsSDKVersion = "$latestSdk/"
+  $env:CMAKE_SH = 'CMAKE_SH-NOTFOUND'
+  $env:MW05_ENV_INIT = '1'
+} else {
+  Write-Host "[env] Using existing INCLUDE/LIB/PATH (MW05_ENV_INIT=1)" -ForegroundColor DarkGray
+}
 $RC    = (Join-Path $root "bin\$latestSdk\x64\rc.exe") -replace '\\','/'
 $MT    = (Join-Path $LLVM "llvm-mt.exe")               -replace '\\','/'
 $D3D12 = (Join-Path $root "Lib\$latestSdk\um\x64\d3d12.lib") -replace '\\','/'

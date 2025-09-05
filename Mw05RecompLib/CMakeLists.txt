@@ -28,6 +28,19 @@ set(MW05_RECOMP_PPC_RECOMPILED_SOURCES
 set(_MW05_PPC_LIST "${CMAKE_CURRENT_SOURCE_DIR}/ppc/generated_sources.cmake")
 if (EXISTS ${_MW05_PPC_LIST})
     include(${_MW05_PPC_LIST})
+    # Filter out any stale entries that no longer exist on disk
+    set(_MW05_PPC_FILTERED)
+    foreach(_f IN LISTS MW05_RECOMP_PPC_RECOMPILED_SOURCES)
+        if (EXISTS "${_f}")
+            list(APPEND _MW05_PPC_FILTERED "${_f}")
+        endif()
+    endforeach()
+    set(MW05_RECOMP_PPC_RECOMPILED_SOURCES ${_MW05_PPC_FILTERED})
+    # If the generated list was stale/empty, fall back to bootstrap stub
+    list(LENGTH MW05_RECOMP_PPC_RECOMPILED_SOURCES _ppc_len)
+    if (_ppc_len EQUAL 0)
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
+    endif()
     # Ensure mapping table TU is included even when using generated list
     list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
 else()
@@ -115,6 +128,7 @@ add_dependencies(Mw05RecompLib PPCCodegen)
 
 target_include_directories(Mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(Mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
+target_compile_definitions(Mw05RecompLib PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
 # Enable SSSE3 for generated PPC recompiler TUs that use _mm_shuffle_epi8
 # Build Mw05RecompLib with SSSE3 so PCH and all TUs share the same target features

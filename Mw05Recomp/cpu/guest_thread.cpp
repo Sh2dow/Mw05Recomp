@@ -4,6 +4,7 @@
 #include <kernel/heap.h>
 #include <kernel/function.h>
 #include "ppc_context.h"
+#include <unordered_map>
 
 constexpr size_t PCR_SIZE = 0xAB0;
 constexpr size_t TLS_SIZE = 0x100;
@@ -12,6 +13,10 @@ constexpr size_t STACK_SIZE = 0x40000;
 constexpr size_t TOTAL_SIZE = PCR_SIZE + TLS_SIZE + TEB_SIZE + STACK_SIZE;
 
 constexpr size_t TEB_OFFSET = PCR_SIZE + TLS_SIZE;
+
+// Thread registry: maps guest thread IDs to kernel handles
+static std::mutex g_threadRegMutex;
+static std::unordered_map<uint32_t, uint32_t> g_tidToHandle;
 
 GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
 {
@@ -177,6 +182,12 @@ GuestThreadHandle* GuestThread::Start(const GuestThreadParams& params, uint32_t*
         *threadId = hThread->GetThreadId();
     }
 
+    // Register thread id -> kernel handle mapping for wait by ID
+    {
+        std::lock_guard<std::mutex> lk(g_threadRegMutex);
+        g_tidToHandle[hThread->GetThreadId()] = GetKernelHandle(hThread);
+    }
+
     return hThread;
 }
 
@@ -259,3 +270,10 @@ GUEST_FUNCTION_HOOK(sub_82BD57A8, GetThreadPriorityImpl);
 GUEST_FUNCTION_HOOK(sub_82BD5910, SetThreadIdealProcessorImpl);
 
 GUEST_FUNCTION_STUB(sub_82BD58F8); // Some function that updates the TEB, don't really care since the field is not set
+uint32_t GuestThread::LookupHandleByThreadId(uint32_t threadId)
+{
+    std::lock_guard<std::mutex> lk(g_threadRegMutex);
+    auto it = g_tidToHandle.find(threadId);
+    if (it != g_tidToHandle.end()) return it->second;
+    return 0;
+}

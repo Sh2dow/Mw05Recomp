@@ -55,6 +55,9 @@ struct GuestThread
     static uint32_t GetCurrentThreadId();
     static void SetLastError(uint32_t error);
 
+    // Lookup a kernel handle for a given guest thread id (if known).
+    static uint32_t LookupHandleByThreadId(uint32_t threadId);
+
 #ifdef _WIN32
     static void SetThreadName(uint32_t threadId, const char* name);
 #endif

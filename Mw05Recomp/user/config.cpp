@@ -815,7 +815,7 @@ void Config::Load()
         {
             def->ReadValue(toml);
 
-#if _DEBUG
+#if _DEBUG & MW05_LOG_CONFIG
             LOGFN_UTILITY("{} (0x{:X})", def->GetDefinition().c_str(), (intptr_t)def->GetValue());
 #endif
         }

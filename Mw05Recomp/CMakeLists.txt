@@ -77,6 +77,7 @@ set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/heap.cpp"
     "kernel/memory.cpp"
     "kernel/trace.cpp"
+    "kernel/vm_arena.cpp"
     "kernel/xam.cpp"
     "kernel/io/file_system.cpp"
 )

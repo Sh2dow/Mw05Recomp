@@ -4,11 +4,16 @@
 
 struct Heap
 {
+    static constexpr uint64_t kAlignedMagic = 0x4D573035414C4743ull; // 'MW05ALGC'
     Mutex mutex;
     O1HeapInstance* heap;
+    void* heapBase{};
+    size_t heapSize{};
 
     Mutex physicalMutex;
     O1HeapInstance* physicalHeap;
+    void* physicalBase{};
+    size_t physicalSize{};
 
     void Init();
 

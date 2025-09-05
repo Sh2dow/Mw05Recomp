@@ -43,6 +43,8 @@ if (EXISTS ${_MW05_PPC_LIST})
     endif()
     # Ensure mapping table TU is included even when using generated list
     list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+    # Include local stubs to satisfy any rare missing symbols cleanly
+    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
 else()
     # No generated list. If there are already generated files in-tree, use them.
     file(GLOB _ppc_existing "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.*.cpp")
@@ -55,6 +57,8 @@ else()
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
     endif()
     list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+    # Add local stubs to cover any rare unmapped functions to keep link stable.
+    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
 endif()
 
 add_custom_command(

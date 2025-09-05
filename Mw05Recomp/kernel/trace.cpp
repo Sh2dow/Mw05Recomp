@@ -5,6 +5,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <atomic>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static std::atomic<int> g_traceEnabled{-1}; // -1 = unknown, 0 = no, 1 = yes
 struct TraceEntry {
@@ -40,19 +43,43 @@ bool KernelTraceEnabled()
     return s != 0;
 }
 
+static inline void SafeCopyName(char* dst, size_t dst_cap, const char* src)
+{
+    if (!dst || dst_cap == 0) return;
+#ifdef _WIN32
+    __try {
+        if (!src) {
+            std::snprintf(dst, dst_cap, "%s", "<null>");
+            return;
+        }
+        // Copy up to dst_cap-1, byte-by-byte, stopping at NUL.
+        size_t i = 0;
+        for (; i + 1 < dst_cap; ++i) {
+            char c = src[i];
+            dst[i] = c;
+            if (c == '\0') break;
+        }
+        if (i + 1 >= dst_cap) dst[dst_cap - 1] = '\0';
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        std::snprintf(dst, dst_cap, "%s", "<bad-name>");
+    }
+#else
+    std::snprintf(dst, dst_cap, "%s", src ? src : "<null>");
+#endif
+}
+
 void KernelTraceImport(const char* import_name, PPCContext& ctx)
 {
     const uint32_t tid = GuestThread::GetCurrentThreadId();
     // Always store to ring buffer for post-mortem diagnostics
     uint32_t idx = g_ringIndex.fetch_add(1, std::memory_order_relaxed);
     TraceEntry& e = g_ring[idx % (uint32_t)std::size(g_ring)];
-    const char* name = import_name ? import_name : "<null>";
-    std::snprintf(e.name, sizeof(e.name), "%s", name);
+    SafeCopyName(e.name, sizeof(e.name), import_name);
     e.tid = tid;
     e.r3 = ctx.r3.u32; e.r4 = ctx.r4.u32; e.r5 = ctx.r5.u32; e.r6 = ctx.r6.u32;
 
     if (!KernelTraceEnabled()) return;
-    LOGFN("[TRACE] import={} tid={:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X}", name, tid, e.r3, e.r4, e.r5, e.r6);
+    LOGFN("[TRACE] import={} tid={:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X}", e.name, tid, e.r3, e.r4, e.r5, e.r6);
 }
 
 void KernelTraceDumpRecent(int maxCount)

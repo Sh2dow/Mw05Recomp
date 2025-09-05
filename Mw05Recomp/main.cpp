@@ -31,9 +31,11 @@
 #include <mod/mod_loader.h>
 #endif
 #include <preload_executable.h>
+#include <kernel/trace.h>
 
 #ifdef _WIN32
 #include <timeapi.h>
+#include <windows.h>
 #endif
 
 #if defined(_WIN32) && defined(MW05_RECOMP_D3D12)
@@ -226,6 +228,18 @@ int main(int argc, char *argv[])
         LOGN_WARNING("OS does not support registry.");
 
     os::logger::Init();
+
+#ifdef _WIN32
+    // Install an unhandled exception filter to log crash code/address and recent kernel imports.
+    static auto MwUnhandledException = [](EXCEPTION_POINTERS* ep) -> LONG {
+        const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+        const void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+        LOGFN_ERROR("[crash] unhandled exception code=0x{:08X} addr={} tid={:08X}", (unsigned)code, addr, GetCurrentThreadId());
+        KernelTraceDumpRecent(32);
+        return EXCEPTION_EXECUTE_HANDLER;
+    };
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep)->LONG { return MwUnhandledException(ep); });
+#endif
 
     PreloadContext preloadContext;
     preloadContext.PreloadExecutable();

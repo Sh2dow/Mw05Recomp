@@ -448,42 +448,39 @@ uint32_t FscSetCacheElementCount()
     return 0;
 }
 
-uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
+uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
+                                 uint32_t WaitMode,
+                                 uint32_t Alertable,
+                                 be<int64_t>* Timeout)
 {
-    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
-	// Accept any timeout; HostObject::Wait already supports finite waits on events/semaphores.
+    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout); // 0, finite, or INFINITE are all OK.
 
-    if (IsKernelObject(Handle))
-    {
+    // Kernel handle path
+    if (IsKernelObject(Handle)) {
         return GetKernelObject(Handle)->Wait(timeout);
     }
-    else
-    {
-        // Thread ID path: resolve to kernel handle if known
-        if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle))
-        {
-            if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0))
-            {
-                LOGFN("[ntwait.tid] handle=0x{:08X} -> kh=0x{:08X}", Handle, kh);
-            }
-            return GetKernelObject(kh)->Wait(timeout);
+
+    // Thread ID path: resolve to kernel handle if known
+    if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle)) {
+        if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0)) {
+            LOGFN("[ntwait.tid] handle=0x{:08X} -> kh=0x{:08X}", Handle, kh);
         }
-        // Dispatcher-pointer path
-        if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER)))
-        {
-            auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
-            if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0))
-            {
-                LOGFN("[ntwait.ptr] handle=0x{:08X} type={} state={}", Handle, (unsigned)hdr->Type, (unsigned)hdr->SignalState);
-            }
-            return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
-        }
-        LOGFN_WARNING("[ntwait] non-kernel handle=0x{:08X} waitmode={} alertable={} timeout={} -> fallback success",
-                      Handle, WaitMode, Alertable, timeout);
-        return STATUS_SUCCESS;
+        return GetKernelObject(kh)->Wait(timeout);
     }
 
-    return STATUS_TIMEOUT;
+    // Dispatcher-pointer path
+    if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
+        auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
+        if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0)) {
+            LOGFN("[ntwait.ptr] handle=0x{:08X} type={} state={}", Handle, (unsigned)hdr->Type, (unsigned)hdr->SignalState);
+        }
+        return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
+    }
+
+    LOGFN_WARNING("[ntwait] non-kernel handle=0x{:08X} waitmode={} alertable={} timeout={} -> fallback success",
+                  Handle, WaitMode, Alertable, timeout);
+    // Be permissive for unknown handles during bring-up.
+    return STATUS_SUCCESS;
 }
 
 void NtWriteFile()
@@ -663,9 +660,15 @@ void __C_specific_handler_x()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void RtlNtStatusToDosError()
+uint32_t RtlNtStatusToDosError(uint32_t Status)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // For now, pass through common success and map unknown NTSTATUS to generic ERROR_GEN_FAILURE.
+    // Titles often just check for zero/non-zero.
+    if (Status == STATUS_SUCCESS) return 0;
+    // If it's already a small Win32/errno-style code, pass through.
+    if ((Status & 0xFFFF0000u) == 0) return Status;
+    // Generic failure (31).
+    return 31u;
 }
 
 void XexGetProcedureAddress()
@@ -698,19 +701,18 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
     return STATUS_SUCCESS;
 }
 
-uint32_t KeDelayExecutionThread(uint32_t /*WaitMode*/, bool Alertable, be<int64_t>* Timeout)
+uint32_t KeDelayExecutionThread(uint32_t /*WaitMode*/, uint32_t Alertable, be<int64_t>* Interval)
 {
-    const uint32_t ms = GuestTimeoutToMilliseconds(Timeout);
+    // Xbox 360 uses relative times in 100ns; negative means "relative".
+    const uint32_t ms = GuestTimeoutToMilliseconds(Interval);
 
-#ifdef _WIN32
-    if (ms == 0) SwitchToThread(); else Sleep(ms);
-#else
-    if (ms == 0) std::this_thread::yield();
-    else std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-#endif
+    if (ms == INFINITE) { std::this_thread::yield(); return 0; }
 
-    // Unless you actually queue APCs elsewhere, don't fake-alert.
-    return STATUS_SUCCESS;
+    // Even if Alertable != 0, we don’t implement APC delivery here—just sleep.
+    if (ms > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+    else { std::this_thread::sleep_for(std::chrono::milliseconds(1)); } // avoid tight spin
+
+    return 0; // STATUS_SUCCESS
 }
 
 // Some titles gate functionality behind kernel privilege checks. Be permissive by default.
@@ -749,9 +751,25 @@ void NtReadFile()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void NtDuplicateObject()
+uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
+                           uint32_t SourceHandle,
+                           uint32_t TargetProcessHandle,
+                           be<uint32_t>* TargetHandle,
+                           uint32_t DesiredAccess,
+                           uint32_t Attributes,
+                           uint32_t Options)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    (void)SourceProcessHandle; (void)TargetProcessHandle; (void)DesiredAccess; (void)Attributes; (void)Options;
+    if (!TargetHandle) return STATUS_INVALID_PARAMETER;
+    if (IsKernelObject(SourceHandle)) {
+        TargetHandle->value = SourceHandle;
+        return STATUS_SUCCESS;
+    }
+    if (uint32_t kh = GuestThread::LookupHandleByThreadId(SourceHandle)) {
+        TargetHandle->value = kh;
+        return STATUS_SUCCESS;
+    }
+    return STATUS_INVALID_HANDLE;
 }
 
 // ExCreateThread is implemented later in this file (guest thread support)
@@ -965,9 +983,10 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
     return STATUS_SUCCESS;
 }
 
-void ObDereferenceObject()
+uint32_t ObDereferenceObject(uint32_t Object)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    (void)Object;
+    return STATUS_SUCCESS;
 }
 
 void KeSetBasePriorityThread(GuestThreadHandle* hThread, int priority)
@@ -1876,43 +1895,64 @@ void NetDll_XNetGetTitleXnAddr()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-uint32_t KeWaitForMultipleObjects(uint32_t Count, xpointer<XDISPATCHER_HEADER>* Objects, uint32_t WaitType, uint32_t WaitReason, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
+uint32_t KeWaitForMultipleObjects(uint32_t Count,
+                                  be<uint32_t>* Handles,
+                                  uint32_t WaitType,
+                                  uint32_t WaitMode,
+                                  uint32_t Alertable,
+                                  be<int64_t>* Timeout,
+                                  be<uint32_t>* /*WaitBlockArray*/)
 {
-    // FIXME: This function is only accounting for events.
+    (void)WaitMode; (void)Alertable;
 
-    const uint64_t timeout = GuestTimeoutToMilliseconds(Timeout);
-    assert(timeout == INFINITE);
+    const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
+    const bool wait_all = (WaitType != 0);
 
-    if (WaitType == 0) // Wait all
-    {
-        for (size_t i = 0; i < Count; i++)
-            QueryKernelObject<Event>(*Objects[i])->Wait(timeout);
+    // Collect kernel objects
+    std::vector<KernelObject*> objs;
+    objs.reserve(Count);
+    for (uint32_t i = 0; i < Count; ++i) {
+        const uint32_t h = Handles[i].value;
+        KernelObject* ko = nullptr;
+        if (IsKernelObject(h)) ko = GetKernelObject(h);
+        else if (uint32_t kh = GuestThread::LookupHandleByThreadId(h)) ko = GetKernelObject(kh);
+        if (!ko) return STATUS_INVALID_HANDLE;
+        objs.push_back(ko);
     }
-    else
-    {
-        thread_local std::vector<Event*> s_events;
-        s_events.resize(Count);
 
-        for (size_t i = 0; i < Count; i++)
-            s_events[i] = QueryKernelObject<Event>(*Objects[i]);
+    auto start = std::chrono::steady_clock::now();
+    auto elapsed_ms = [&]() -> uint32_t {
+        auto d = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        return d < 0 ? 0u : static_cast<uint32_t>(d);
+    };
 
-        while (true)
-        {
-            uint32_t generation = g_keSetEventGeneration.load();
+    // Simple polling wait across objects with optional timeout.
+    while (true) {
+        uint32_t signaled_index = UINT32_MAX;
+        uint32_t ready_count = 0;
 
-            for (size_t i = 0; i < Count; i++)
-            {
-                if (s_events[i]->Wait(0) == STATUS_SUCCESS)
-                {
-                    return STATUS_WAIT_0 + i;
-                }
+        for (uint32_t i = 0; i < Count; ++i) {
+            // Probe each object with a non-blocking wait.
+            if (objs[i]->Wait(0) == STATUS_SUCCESS) {
+                ++ready_count;
+                if (!wait_all) { signaled_index = i; break; }
             }
-
-            g_keSetEventGeneration.wait(generation);
         }
-    }
 
-    return STATUS_SUCCESS;
+        if ((wait_all && ready_count == Count) || (!wait_all && signaled_index != UINT32_MAX)) {
+            // NT returns STATUS_WAIT_0 + index for any-signaled; for WaitAll, return STATUS_SUCCESS.
+            if (!wait_all) return STATUS_WAIT_0 + (signaled_index & 0xFF);
+            return STATUS_SUCCESS;
+        }
+
+        // Timeout?
+        if (timeout_ms != INFINITE && elapsed_ms() >= timeout_ms) {
+            return STATUS_TIMEOUT;
+        }
+
+        // Sleep a tick to avoid hammering (1ms).
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 uint32_t KeRaiseIrqlToDpcLevel()

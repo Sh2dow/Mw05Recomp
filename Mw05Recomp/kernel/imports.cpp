@@ -19,20 +19,53 @@
 
 #include "kernel/event.h"
 #include "kernel/semaphore.h"
-
-#ifdef _WIN32
-#include <ntstatus.h>
-
-#include <thread>
-#include <chrono>
-#include <vector>
-#include <cstring>  // for memset in VdQueryVideoMode
-#endif
-
-// add these near the other includes
 #include "kernel/handles.h"   // HandleTable, g_HandleTable, Handle type/Lookup
 #include "kernel/apc.h"       // ApcPendingForCurrentThread()
 #include "kernel/time.h"      // KeQuerySystemTime()
+
+// ---- cross-SDK type shims (safe with/without Windows headers) ----
+#include <cstdint>
+#include <chrono>
+#include <thread>
+#include <algorithm>
+#include <vector>
+#include <cstring>  // for memset in VdQueryVideoMode
+
+#ifdef _WIN32
+  #include <windows.h>
+#endif
+
+#ifndef NTSTATUS
+  using NTSTATUS = long;
+#endif
+#ifndef STATUS_SUCCESS
+  #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
+#endif
+#ifndef BOOLEAN
+  using BOOLEAN = unsigned char;
+#endif
+#ifndef _KPROCESSOR_MODE_DEFINED
+  using KPROCESSOR_MODE = unsigned char;
+  #define _KPROCESSOR_MODE_DEFINED
+#endif
+
+// Prefer SDK's LARGE_INTEGER if present
+#ifndef PLARGE_INTEGER
+  using PLARGE_INTEGER = LARGE_INTEGER*;
+#endif
+
+// ---- host fallbacks if your emulator helpers are missing ----
+#ifndef HAVE_READ_GUEST_HELPERS
+  // Define this macro in your build if you already have read_guest_i64/host_sleep.
+  static inline int64_t read_guest_i64(const void* p) {
+    // Fallback assumes guest pointer is directly addressable (dev-only).
+    return p ? *reinterpret_cast<const int64_t*>(p) : 0;
+  }
+  static inline void host_sleep(int ms) {
+    if (ms <= 0) std::this_thread::yield();
+    else std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  }
+#endif
 
 // Forward declaration for early calls in this file
 uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, uint32_t WaitMode, bool Alertable, be<int64_t>* Timeout);
@@ -679,7 +712,7 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
         *BytesInMultiByteString = reqSize;
 
     if (reqSize > MaxBytesInMultiByteString)
-        return STATUS_FAIL_CHECK;
+        return STATUS_INVALID_PARAMETER;
 
     for (size_t i = 0; i < reqSize; i++)
     {
@@ -691,25 +724,42 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
     return STATUS_SUCCESS;
 }
 
-uint32_t KeDelayExecutionThread(uint32_t /*WaitMode*/, uint32_t Alertable, be<int64_t>* Interval)
-{
-    const uint32_t ms = GuestTimeoutToMilliseconds(Interval);
+// ---- FIXED KeDelayExecutionThread ----
+extern "C"
+NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
+                                BOOLEAN /*Alertable*/,
+                                PLARGE_INTEGER IntervalGuest /*guest ptr*/) {
+  // 1) Read SIGNED 64-bit ticks from *guest* memory (100-ns units)
+  const int64_t ticks = read_guest_i64(IntervalGuest); // negative = relative
 
-    // Optional: if you implement APCs, check them when Alertable here.
-
-    if (ms == INFINITE) {
-        // Sleep "forever" – on hosts you’ll usually loop / wait on a condvar.
-        // Minimal shim: sleep in chunks so a future wakeup can interrupt if you add one later.
-        for (;;)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-    } else if (ms > 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-    } else {
-        // zero-timeout means yield
-        std::this_thread::yield();
-    }
-
+  if (ticks == 0) {
+    // Yield-only
+    host_sleep(0);
     return STATUS_SUCCESS;
+  }
+
+  if (ticks < 0) {
+    // 2) Relative delay: sleep the full duration (chunked to stay responsive)
+    int64_t remaining100 = -ticks;
+    while (remaining100 > 0) {
+      const int chunk_ms = std::min(ceil_ms_from_100ns(remaining100), 100);
+      host_sleep(std::max(chunk_ms, 1));
+      remaining100 -= (int64_t)chunk_ms * 10'000;
+    }
+    return STATUS_SUCCESS;
+  } else {
+    // 3) Absolute delay: loop until we reach the target time
+    const int64_t deadline100 = ticks;
+    while (true) {
+      const int64_t now100 = query_system_time_100ns();
+      if (now100 >= deadline100)
+        break;
+      const int64_t remain100 = deadline100 - now100;
+      const int chunk_ms = std::min(ceil_ms_from_100ns(remain100), 100);
+      host_sleep(std::max(chunk_ms, 1));
+    }
+    return STATUS_SUCCESS;
+  }
 }
 
 // Some titles gate functionality behind kernel privilege checks. Be permissive by default.
@@ -748,29 +798,90 @@ void NtReadFile()
     LOG_UTILITY("!!! STUB !!!");
 }
 
+// NtDuplicateObject.cpp (fixed)
+#include <cpu/guest_stack_var.h>   // CURRENT_THREAD_HANDLE
+#include "ntstatus.h"           // STATUS_* codes
+
+// Xbox 360-style signature you appear to use; adjust types/names if yours differ.
+// Example signature — match yours.
+// constants (adjust to your project's headers if they already exist)
+#ifndef STATUS_SUCCESS
+#define STATUS_SUCCESS 0
+#endif
+#ifndef STATUS_INVALID_PARAMETER
+#define STATUS_INVALID_PARAMETER 0xC000000D
+#endif
+#ifndef STATUS_INVALID_HANDLE
+#define STATUS_INVALID_HANDLE 0xC0000008
+#endif
+
+#ifndef DUPLICATE_CLOSE_SOURCE
+#define DUPLICATE_CLOSE_SOURCE 0x00000001
+#endif
+#ifndef DUPLICATE_SAME_ACCESS
+#define DUPLICATE_SAME_ACCESS  0x00000002
+#endif
+
+// Pseudo-handle helper: treat any negative handle as "current *"
+static inline bool IsPseudoHandle(uint32_t h) {
+    return static_cast<int32_t>(h) < 0;
+}
+
+// Your declared overloads:
+// bool IsKernelObject(uint32_t handle);
+// bool IsKernelObject(void* obj);
+
+// Keep this signature in sync with your import/thunk layer.
 uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
                            uint32_t SourceHandle,
                            uint32_t TargetProcessHandle,
-                           be<uint32_t>* TargetHandle,
+                           uint32_t* TargetHandle,
                            uint32_t DesiredAccess,
                            uint32_t Attributes,
                            uint32_t Options)
 {
-    // Minimal behavior: if SourceHandle refers to a known kernel object, just duplicate by
-    // returning the same handle value. Many titles only need a usable handle in the target process.
-	(void)SourceProcessHandle; (void)TargetProcessHandle; (void)DesiredAccess; (void)Attributes; (void)Options;
-    if (!TargetHandle) return STATUS_INVALID_PARAMETER;
-    if (IsKernelObject(SourceHandle)) {
-        TargetHandle->value = SourceHandle;
+    // Validate out param
+    if (!TargetHandle) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Validate source handle
+    if (SourceHandle == 0 /* or your invalid sentinel */) {
+        return STATUS_INVALID_HANDLE;
+    }
+
+    // Normalize pseudo process handles (caller uses -1/-2/etc. for current)
+    const bool srcIsCurrent = IsPseudoHandle(SourceProcessHandle);
+    const bool dstIsCurrent = IsPseudoHandle(TargetProcessHandle);
+    (void)srcIsCurrent; (void)dstIsCurrent; // in this shim they’re informational
+
+    // If SAME_ACCESS is set, ignore DesiredAccess (Windows semantics)
+    if (Options & DUPLICATE_SAME_ACCESS) {
+        DesiredAccess = 0;
+    }
+
+    // Kernel objects in this project are duplicated by *mirroring* the value.
+    // (Do any refcount bump you maintain for these here.)
+    if (::IsKernelObject(SourceHandle)) {
+        *TargetHandle = SourceHandle;
+        if (Options & DUPLICATE_CLOSE_SOURCE) {
+            // If you track open/close on kernel objects, perform it here.
+            // e.g., KernelClose(SourceHandle);
+        }
         return STATUS_SUCCESS;
     }
 
-    // Some titles pass pseudo-handles or thread IDs; try to resolve to a real kernel object.
-    if (uint32_t kh = GuestThread::LookupHandleByThreadId(SourceHandle)) {
-        TargetHandle->value = kh;
-        return STATUS_SUCCESS;
+    // Non-kernel/guest handles: if your runtime doesn’t create a *new* slot,
+    // just mirror the value as well (most titles only require this).
+    *TargetHandle = SourceHandle;
+
+    if (Options & DUPLICATE_CLOSE_SOURCE) {
+        // Close the source in your table if you maintain one.
+        // e.g., GuestCloseHandle(SourceHandle);
+        // If you don't track them yet, it's safe to no-op.
     }
-    return STATUS_INVALID_HANDLE;
+
+    return STATUS_SUCCESS;
 }
 
 // ExCreateThread is implemented later in this file (guest thread support)

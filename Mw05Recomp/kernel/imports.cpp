@@ -17,9 +17,22 @@
 #include <ui/game_window.h>
 #include <os/logger.h>
 
+#include "kernel/event.h"
+#include "kernel/semaphore.h"
+
 #ifdef _WIN32
 #include <ntstatus.h>
+
+#include <thread>
+#include <chrono>
+#include <vector>
+#include <cstring>  // for memset in VdQueryVideoMode
 #endif
+
+// add these near the other includes
+#include "kernel/handles.h"   // HandleTable, g_HandleTable, Handle type/Lookup
+#include "kernel/apc.h"       // ApcPendingForCurrentThread()
+#include "kernel/time.h"      // KeQuerySystemTime()
 
 // Forward declaration for early calls in this file
 uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, uint32_t WaitMode, bool Alertable, be<int64_t>* Timeout);
@@ -218,11 +231,6 @@ inline void CloseKernelObject(XDISPATCHER_HEADER& header)
     DestroyKernelObject(header.WaitListHead.Blink);
 }
 
-uint32_t GuestTimeoutToMilliseconds(be<int64_t>* timeout)
-{
-    return timeout ? (*timeout * -1) / 10000 : INFINITE;
-}
-
 void VdHSIOCalibrationLock()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -259,11 +267,6 @@ void KeTimeStampBundle()
 }
 
 void XboxHardwareInfo()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
-void XGetVideoMode()
 {
     LOG_UTILITY("!!! STUB !!!");
 }
@@ -448,39 +451,26 @@ uint32_t FscSetCacheElementCount()
     return 0;
 }
 
-uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
-                                 uint32_t WaitMode,
-                                 uint32_t Alertable,
-                                 be<int64_t>* Timeout)
+// 2) Typical wait path (single-object) without IsSignaled() or wrong table name
+uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t /*WaitMode*/, uint32_t /*Alertable*/, be<int64_t>* Timeout)
 {
-    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout); // 0, finite, or INFINITE are all OK.
+    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
 
     // Kernel handle path
-    if (IsKernelObject(Handle)) {
+    if (IsKernelObject(Handle))
         return GetKernelObject(Handle)->Wait(timeout);
-    }
 
-    // Thread ID path: resolve to kernel handle if known
-    if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle)) {
-        if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0)) {
-            LOGFN("[ntwait.tid] handle=0x{:08X} -> kh=0x{:08X}", Handle, kh);
-        }
+    // Thread-id path -> map to a known kernel handle if we track it
+    if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle))
         return GetKernelObject(kh)->Wait(timeout);
-    }
 
-    // Dispatcher-pointer path
+    // Dispatcher-pointer path (guest address to XDISPATCHER_HEADER)
     if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
         auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
-        if (const char* t = std::getenv("MW05_TRACE_KERNEL"); t && t[0] && !(t[0]=='0' && t[1]==0)) {
-            LOGFN("[ntwait.ptr] handle=0x{:08X} type={} state={}", Handle, (unsigned)hdr->Type, (unsigned)hdr->SignalState);
-        }
-        return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
+        return KeWaitForSingleObject(hdr, /*WaitReason*/0, /*WaitMode*/0, /*Alertable*/false, Timeout);
     }
 
-    LOGFN_WARNING("[ntwait] non-kernel handle=0x{:08X} waitmode={} alertable={} timeout={} -> fallback success",
-                  Handle, WaitMode, Alertable, timeout);
-    // Be permissive for unknown handles during bring-up.
-    return STATUS_SUCCESS;
+    return STATUS_INVALID_HANDLE;
 }
 
 void NtWriteFile()
@@ -665,7 +655,7 @@ uint32_t RtlNtStatusToDosError(uint32_t Status)
     // For now, pass through common success and map unknown NTSTATUS to generic ERROR_GEN_FAILURE.
     // Titles often just check for zero/non-zero.
     if (Status == STATUS_SUCCESS) return 0;
-    // If it's already a small Win32/errno-style code, pass through.
+    // If it's already a small Win32 error-style code, pass through.
     if ((Status & 0xFFFF0000u) == 0) return Status;
     // Generic failure (31).
     return 31u;
@@ -703,16 +693,23 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
 
 uint32_t KeDelayExecutionThread(uint32_t /*WaitMode*/, uint32_t Alertable, be<int64_t>* Interval)
 {
-    // Xbox 360 uses relative times in 100ns; negative means "relative".
     const uint32_t ms = GuestTimeoutToMilliseconds(Interval);
 
-    if (ms == INFINITE) { std::this_thread::yield(); return 0; }
+    // Optional: if you implement APCs, check them when Alertable here.
 
-    // Even if Alertable != 0, we don’t implement APC delivery here—just sleep.
-    if (ms > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
-    else { std::this_thread::sleep_for(std::chrono::milliseconds(1)); } // avoid tight spin
+    if (ms == INFINITE) {
+        // Sleep "forever" – on hosts you’ll usually loop / wait on a condvar.
+        // Minimal shim: sleep in chunks so a future wakeup can interrupt if you add one later.
+        for (;;)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+    } else if (ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    } else {
+        // zero-timeout means yield
+        std::this_thread::yield();
+    }
 
-    return 0; // STATUS_SUCCESS
+    return STATUS_SUCCESS;
 }
 
 // Some titles gate functionality behind kernel privilege checks. Be permissive by default.
@@ -759,12 +756,16 @@ uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
                            uint32_t Attributes,
                            uint32_t Options)
 {
-    (void)SourceProcessHandle; (void)TargetProcessHandle; (void)DesiredAccess; (void)Attributes; (void)Options;
+    // Minimal behavior: if SourceHandle refers to a known kernel object, just duplicate by
+    // returning the same handle value. Many titles only need a usable handle in the target process.
+	(void)SourceProcessHandle; (void)TargetProcessHandle; (void)DesiredAccess; (void)Attributes; (void)Options;
     if (!TargetHandle) return STATUS_INVALID_PARAMETER;
     if (IsKernelObject(SourceHandle)) {
         TargetHandle->value = SourceHandle;
         return STATUS_SUCCESS;
     }
+
+    // Some titles pass pseudo-handles or thread IDs; try to resolve to a real kernel object.
     if (uint32_t kh = GuestThread::LookupHandleByThreadId(SourceHandle)) {
         TargetHandle->value = kh;
         return STATUS_SUCCESS;
@@ -1772,19 +1773,6 @@ void NtFlushBuffersFile()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void KeQuerySystemTime(be<uint64_t>* time)
-{
-    constexpr int64_t FILETIME_EPOCH_DIFFERENCE = 116444736000000000LL;
-
-    auto now = std::chrono::system_clock::now();
-    auto timeSinceEpoch = now.time_since_epoch();
-
-    int64_t currentTime100ns = std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10000000>>>(timeSinceEpoch).count();
-    currentTime100ns += FILETIME_EPOCH_DIFFERENCE;
-
-    *time = currentTime100ns;
-}
-
 void RtlTimeToTimeFields()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -1895,63 +1883,104 @@ void NetDll_XNetGetTitleXnAddr()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-uint32_t KeWaitForMultipleObjects(uint32_t Count,
-                                  be<uint32_t>* Handles,
-                                  uint32_t WaitType,
-                                  uint32_t WaitMode,
-                                  uint32_t Alertable,
-                                  be<int64_t>* Timeout,
-                                  be<uint32_t>* /*WaitBlockArray*/)
+uint32_t KeWaitForMultipleObjects(
+    uint32_t Count,
+    xpointer<XDISPATCHER_HEADER>* Objects,
+    uint32_t WaitType,          // 0=any, !=0=all
+    uint32_t /*WaitReason*/,
+    uint32_t /*WaitMode*/,
+    uint32_t Alertable,
+    be<int64_t>* Timeout,
+    be<uint32_t>* /*WaitBlockArray*/)
 {
-    (void)WaitMode; (void)Alertable;
-
     const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
     const bool wait_all = (WaitType != 0);
 
-    // Collect kernel objects
+    // --- Fast path: all are Events -> use generation wait
+    {
+        bool all_events = true;
+        thread_local std::vector<Event*> s_events;
+        s_events.resize(Count);
+
+        for (uint32_t i = 0; i < Count; ++i) {
+            Event* ev = QueryKernelObject<Event>(*Objects[i]);
+            if (!ev) { all_events = false; break; }
+            s_events[i] = ev;
+        }
+
+        if (all_events) {
+            const auto start = std::chrono::steady_clock::now();
+            auto expired = [&]{
+                if (timeout_ms == INFINITE) return false;
+                uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - start).count();
+                return ms >= timeout_ms;
+            };
+
+            for (;;) {
+                uint32_t ready = 0, signaled = UINT32_MAX;
+                for (uint32_t i = 0; i < Count; ++i) {
+                    if (s_events[i]->Wait(0) == STATUS_SUCCESS) {
+                        ++ready; if (!wait_all) { signaled = i; break; }
+                    }
+                }
+                if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
+                else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
+
+                if (Alertable) { /* APC check here if you wire it up; could return STATUS_USER_APC */ }
+                if (expired()) return STATUS_TIMEOUT;
+
+                uint32_t gen = g_keSetEventGeneration.load();
+                g_keSetEventGeneration.wait(gen); // sleep until an Event changes
+            }
+        }
+    }
+
+    // --- Generic path: support known types (Event/Semaphore) via KernelObject*
     std::vector<KernelObject*> objs;
     objs.reserve(Count);
+
     for (uint32_t i = 0; i < Count; ++i) {
-        const uint32_t h = Handles[i].value;
+        XDISPATCHER_HEADER& hdr = *Objects[i];
         KernelObject* ko = nullptr;
-        if (IsKernelObject(h)) ko = GetKernelObject(h);
-        else if (uint32_t kh = GuestThread::LookupHandleByThreadId(h)) ko = GetKernelObject(kh);
+        switch (hdr.Type) {
+            case 0: // NotificationEvent
+            case 1: // SynchronizationEvent
+                ko = static_cast<KernelObject*>(QueryKernelObject<Event>(hdr));
+                break;
+            case 5: // Semaphore
+                ko = static_cast<KernelObject*>(QueryKernelObject<Semaphore>(hdr));
+                break;
+            default:
+                return STATUS_INVALID_HANDLE; // unsupported waitable here
+        }
         if (!ko) return STATUS_INVALID_HANDLE;
         objs.push_back(ko);
     }
 
-    auto start = std::chrono::steady_clock::now();
-    auto elapsed_ms = [&]() -> uint32_t {
-        auto d = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-        return d < 0 ? 0u : static_cast<uint32_t>(d);
+    const auto start = std::chrono::steady_clock::now();
+    auto expired = [&]{
+        if (timeout_ms == INFINITE) return false;
+        uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start).count();
+        return ms >= timeout_ms;
     };
 
-    // Simple polling wait across objects with optional timeout.
-    while (true) {
-        uint32_t signaled_index = UINT32_MAX;
-        uint32_t ready_count = 0;
+    for (;;) {
+        uint32_t ready = 0, signaled = UINT32_MAX;
 
         for (uint32_t i = 0; i < Count; ++i) {
-            // Probe each object with a non-blocking wait.
             if (objs[i]->Wait(0) == STATUS_SUCCESS) {
-                ++ready_count;
-                if (!wait_all) { signaled_index = i; break; }
+                ++ready; if (!wait_all) { signaled = i; break; }
             }
         }
+        if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
+        else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
 
-        if ((wait_all && ready_count == Count) || (!wait_all && signaled_index != UINT32_MAX)) {
-            // NT returns STATUS_WAIT_0 + index for any-signaled; for WaitAll, return STATUS_SUCCESS.
-            if (!wait_all) return STATUS_WAIT_0 + (signaled_index & 0xFF);
-            return STATUS_SUCCESS;
-        }
+        if (Alertable) { /* APC check here if present */ }
+        if (expired()) return STATUS_TIMEOUT;
 
-        // Timeout?
-        if (timeout_ms != INFINITE && elapsed_ms() >= timeout_ms) {
-            return STATUS_TIMEOUT;
-        }
-
-        // Sleep a tick to avoid hammering (1ms).
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // light backoff
     }
 }
 

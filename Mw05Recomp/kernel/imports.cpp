@@ -16,6 +16,7 @@
 #include <user/config.h>
 #include <ui/game_window.h>
 #include <os/logger.h>
+#include <gpu/video.h>
 
 #include "kernel/event.h"
 #include "kernel/semaphore.h"
@@ -33,6 +34,31 @@
 
 #ifdef _WIN32
   #include <windows.h>
+#endif
+
+
+// NtDuplicateObject.cpp (fixed)
+#include <cpu/guest_stack_var.h>   // CURRENT_THREAD_HANDLE
+#include "ntstatus.h"           // STATUS_* codes
+
+// Xbox 360-style signature you appear to use; adjust types/names if yours differ.
+// Example signature — match yours.
+// constants (adjust to your project's headers if they already exist)
+#ifndef STATUS_SUCCESS
+#define STATUS_SUCCESS 0
+#endif
+#ifndef STATUS_INVALID_PARAMETER
+#define STATUS_INVALID_PARAMETER 0xC000000D
+#endif
+#ifndef STATUS_INVALID_HANDLE
+#define STATUS_INVALID_HANDLE 0xC0000008
+#endif
+
+#ifndef DUPLICATE_CLOSE_SOURCE
+#define DUPLICATE_CLOSE_SOURCE 0x00000001
+#endif
+#ifndef DUPLICATE_SAME_ACCESS
+#define DUPLICATE_SAME_ACCESS  0x00000002
 #endif
 
 #ifndef NTSTATUS
@@ -798,30 +824,6 @@ void NtReadFile()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-// NtDuplicateObject.cpp (fixed)
-#include <cpu/guest_stack_var.h>   // CURRENT_THREAD_HANDLE
-#include "ntstatus.h"           // STATUS_* codes
-
-// Xbox 360-style signature you appear to use; adjust types/names if yours differ.
-// Example signature — match yours.
-// constants (adjust to your project's headers if they already exist)
-#ifndef STATUS_SUCCESS
-#define STATUS_SUCCESS 0
-#endif
-#ifndef STATUS_INVALID_PARAMETER
-#define STATUS_INVALID_PARAMETER 0xC000000D
-#endif
-#ifndef STATUS_INVALID_HANDLE
-#define STATUS_INVALID_HANDLE 0xC0000008
-#endif
-
-#ifndef DUPLICATE_CLOSE_SOURCE
-#define DUPLICATE_CLOSE_SOURCE 0x00000001
-#endif
-#ifndef DUPLICATE_SAME_ACCESS
-#define DUPLICATE_SAME_ACCESS  0x00000002
-#endif
-
 // Pseudo-handle helper: treat any negative handle as "current *"
 static inline bool IsPseudoHandle(uint32_t h) {
     return static_cast<int32_t>(h) < 0;
@@ -1314,12 +1316,25 @@ bool VdPersistDisplay(uint32_t a1, uint32_t* a2)
 
 void VdSwap()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Present the current backbuffer and advance frame state
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[boot] VdSwap()\n"); fflush(stdout);
+    }
+    Video::Present();
 }
 
-void VdGetSystemCommandBuffer()
+// --- Minimal stateful Vd* bridge (enough to unblock guest expectations) ---
+static std::atomic<uint32_t> g_VdSystemCommandBuffer{0};
+static std::atomic<uint32_t> g_VdSystemCommandBufferGpuIdAddr{0};
+static std::atomic<uint32_t> g_VdGraphicsCallback{0};
+static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
+
+extern "C" uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
+extern "C" uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
+
+uint32_t VdGetSystemCommandBuffer()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    return g_VdSystemCommandBuffer.load();
 }
 
 void KeReleaseSpinLockFromRaisedIrql(uint32_t* spinLock)
@@ -1347,14 +1362,14 @@ uint32_t KiApcNormalRoutineNop()
     return 0;
 }
 
-void VdEnableRingBufferRPtrWriteBack()
+void VdEnableRingBufferRPtrWriteBack(uint32_t /*base*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // No-op
 }
 
-void VdInitializeRingBuffer()
+void VdInitializeRingBuffer(uint32_t /*base*/, uint32_t /*len*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // No-op
 }
 
 uint32_t MmGetPhysicalAddress(uint32_t address)
@@ -1363,9 +1378,9 @@ uint32_t MmGetPhysicalAddress(uint32_t address)
     return address;
 }
 
-void VdSetSystemCommandBufferGpuIdentifierAddress()
+void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    g_VdSystemCommandBufferGpuIdAddr = addr;
 }
 
 void _vsnprintf_x()
@@ -1412,9 +1427,11 @@ void VdSetDisplayMode()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void VdSetGraphicsInterruptCallback()
+void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    g_VdGraphicsCallback = callback;
+    g_VdGraphicsCallbackCtx = context;
+    LOGFN("[vd] SetGraphicsInterruptCallback cb=0x{:08X} ctx=0x{:08X}", callback, context);
 }
 
 void VdInitializeEngines()

@@ -1,0 +1,17 @@
+# MW'05 hook mapping template
+# Map app hook names (left column) to MW’05 guest addresses (right column).
+# Fill more as you identify them from IDA. Leave rows commented until you know
+# the correct address. Use hex with 0x prefix.
+
+name,guest_addr
+sub_82BDA8C0,0x82598A20   # Video::Present wrapper (optional; VdSwap already presents)
+sub_82BD99B0,0x82598230   # CreateDevice (GPU bring-up container: ring buffer init)
+# sub_82BE9498,0x00000000   # CreateTexture
+# sub_82BE6AD0,0x00000000   # CreateVertexBuffer
+# sub_82BE6BF8,0x00000000   # CreateIndexBuffer
+# sub_82BE04B0,0x00000000   # GetVertexDeclaration
+# sub_82BE0530,0x00000000   # HashVertexDeclaration
+# sub_82BE6CA8,0x00000000   # LockIndexBuffer
+# sub_82BE6CF0,0x00000000   # UnlockIndexBuffer
+# sub_82BE9300,0x00000000   # LockTextureRect
+# sub_82BE7780,0x00000000   # UnlockTextureRect

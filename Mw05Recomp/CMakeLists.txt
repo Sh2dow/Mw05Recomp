@@ -256,6 +256,63 @@ set(MW05_RECOMP_CXX_SOURCES
     ${MW05_RECOMP_THIRDPARTY_SOURCES}
 )
 
+# Auto-generate app-side PPC overrides from PPC_FUNC definitions
+set(PPC_OVERRIDES_CPP "${CMAKE_BINARY_DIR}/ppc_overrides.gen.cpp")
+add_custom_command(
+    OUTPUT ${PPC_OVERRIDES_CPP}
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+            ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_ppc_overrides.py
+                              -D_src=${CMAKE_CURRENT_SOURCE_DIR}
+                              -D_out=${PPC_OVERRIDES_CPP}
+                              -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_ppc_overrides.py
+            ${MW05_RECOMP_CXX_SOURCES}
+    COMMENT "Generating PPC override mappings from app sources"
+    VERBATIM
+)
+list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_OVERRIDES_CPP})
+
+# Optional: generate stubs for indirect-miss addresses from mw05_debug.log
+option(MW05_GEN_INDIRECT_STUBS "Generate stub mappings from mw05_debug.log" OFF)
+if (MW05_GEN_INDIRECT_STUBS)
+    set(PPC_INDIRECT_CPP "${CMAKE_CURRENT_BINARY_DIR}/ppc_indirect_stubs.gen.cpp")
+    add_custom_command(
+        OUTPUT ${PPC_INDIRECT_CPP}
+        COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+                ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_stubs.py
+                                  -D_src=${CMAKE_CURRENT_SOURCE_DIR}
+                                  -D_out=${PPC_INDIRECT_CPP}
+                                  -D_log=${CMAKE_BINARY_DIR}/Mw05Recomp/mw05_debug.log
+                                  -D_ppc=${CMAKE_SOURCE_DIR}/Mw05RecompLib/ppc
+                                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_indirect.cmake
+        DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_indirect_stubs.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_indirect.cmake
+        COMMENT "Generating indirect-call stub mappings from mw05_debug.log"
+        VERBATIM)
+    list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_CPP})
+endif()
+
+option(MW05_GEN_INDIRECT_REDIRECTS "Redirect indirect-miss addresses to nearest function start from IDA HTML" OFF)
+if (MW05_GEN_INDIRECT_REDIRECTS)
+    set(PPC_INDIRECT_REDIRECTS_CPP "${CMAKE_BINARY_DIR}/ppc_indirect_redirects.gen.cpp")
+    add_custom_command(
+        OUTPUT ${PPC_INDIRECT_REDIRECTS_CPP}
+        COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+                ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_redirects.py
+                                  -D_out=${PPC_INDIRECT_REDIRECTS_CPP}
+                                  -D_log=${CMAKE_BINARY_DIR}/Mw05Recomp/mw05_debug.log
+                                  -D_html=${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+                                  -D_ppc=${CMAKE_SOURCE_DIR}/Mw05RecompLib/ppc
+                                  -D_src=${CMAKE_CURRENT_SOURCE_DIR}
+                                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
+        DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_indirect_redirects.py
+                ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
+        COMMENT "Generating indirect-call redirects using IDA HTML"
+        VERBATIM)
+    list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_REDIRECTS_CPP})
+endif()
+
 # Optional: auto-generate import stubs for __imp__ functions
 option(MW05_GEN_IMPORT_STUBS "Generate import stubs from PPC mapping" OFF)
 if (MW05_GEN_IMPORT_STUBS)

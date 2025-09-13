@@ -14,6 +14,7 @@
 #include <hid/hid.h>
 #include <kernel/memory.h>
 #include <kernel/xdbf.h>
+#include <kernel/function.h>
 #include <res/bc_diff/button_bc_diff.bin.h>
 #include <res/font/im_font_atlas.dds.h>
 #include <shader/shader_cache.h>
@@ -99,6 +100,9 @@ extern "C"
 {
     __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
+    uint32_t VdGetGraphicsInterruptCallback();
+    uint32_t VdGetGraphicsInterruptContext();
 }
 #endif
 
@@ -314,6 +318,9 @@ static std::unique_ptr<RenderCommandList> g_commandLists[NUM_FRAMES];
 static std::unique_ptr<RenderCommandFence> g_commandFences[NUM_FRAMES];
 static std::unique_ptr<RenderQueryPool> g_queryPools[NUM_FRAMES];
 static bool g_commandListStates[NUM_FRAMES];
+// Lightweight debug counters (gated by MW_VERBOSE)
+static std::atomic<uint64_t> g_dbgDrawCount{0};
+static std::atomic<uint64_t> g_dbgCmdCount{0};
 
 static Mutex g_copyMutex;
 static std::unique_ptr<RenderCommandQueue> g_copyQueue;
@@ -2863,6 +2870,27 @@ void Video::Present()
     g_executedCommandList.wait(false);
     g_executedCommandList = false;
 
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
+    {
+        static bool s_loggedOnce = false;
+        if (!s_loggedOnce)
+        {
+            printf("[boot] Video::Present first call\n");
+            fflush(stdout);
+            s_loggedOnce = true;
+        }
+    }
+
+    // Emulate GPU interrupt callback if guest registered one via VdSetGraphicsInterruptCallback
+    if (auto cb = VdGetGraphicsInterruptCallback())
+    {
+        if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+            printf("[vd] GPU interrupt cb=0x%08X ctx=0x%08X\n", cb, VdGetGraphicsInterruptContext());
+            fflush(stdout);
+        }
+        GuestToHostFunction<void>(cb, VdGetGraphicsInterruptContext());
+    }
+
     if (g_swapChainValid && g_swapChain)
     {
         if (g_pendingWaitOnSwapChain)
@@ -2898,6 +2926,14 @@ void Video::Present()
     g_uploadAllocators[g_frame].reset();
     g_intermediaryUploadAllocator.reset();
     g_triangleFanIndexData.reset();
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
+    {
+        uint64_t draws = g_dbgDrawCount.exchange(0);
+        uint64_t cmds  = g_dbgCmdCount.exchange(0);
+        printf("[boot] present stats: draws=%llu cmds=%llu valid=%d\n",
+               (unsigned long long)draws, (unsigned long long)cmds, (int)g_swapChainValid);
+        fflush(stdout);
+    }
     g_quadIndexData.reset();
 
     if (g_swapChain)
@@ -5317,6 +5353,7 @@ static std::thread g_renderThread([]
             for (size_t i = 0; i < count; i++)
             {
                 auto& cmd = commands[i];
+                g_dbgCmdCount.fetch_add(1, std::memory_order_relaxed);
                 switch (cmd.type)
                 {
                 case RenderCommandType::SetRenderState:                    ProcSetRenderState(cmd); break;
@@ -5340,9 +5377,9 @@ static std::thread g_renderThread([]
                 case RenderCommandType::SetVertexShaderConstants:          ProcSetVertexShaderConstants(cmd); break;
                 case RenderCommandType::SetPixelShaderConstants:           ProcSetPixelShaderConstants(cmd); break;
                 case RenderCommandType::AddPipeline:                       ProcAddPipeline(cmd); break;
-                case RenderCommandType::DrawPrimitive:                     ProcDrawPrimitive(cmd); break;
-                case RenderCommandType::DrawIndexedPrimitive:              ProcDrawIndexedPrimitive(cmd); break;
-                case RenderCommandType::DrawPrimitiveUP:                   ProcDrawPrimitiveUP(cmd); break;
+                case RenderCommandType::DrawPrimitive:                     g_dbgDrawCount.fetch_add(1, std::memory_order_relaxed); ProcDrawPrimitive(cmd); break;
+                case RenderCommandType::DrawIndexedPrimitive:              g_dbgDrawCount.fetch_add(1, std::memory_order_relaxed); ProcDrawIndexedPrimitive(cmd); break;
+                case RenderCommandType::DrawPrimitiveUP:                   g_dbgDrawCount.fetch_add(1, std::memory_order_relaxed); ProcDrawPrimitiveUP(cmd); break;
                 case RenderCommandType::SetVertexDeclaration:              ProcSetVertexDeclaration(cmd); break;
                 case RenderCommandType::SetVertexShader:                   ProcSetVertexShader(cmd); break;
                 case RenderCommandType::SetStreamSource:                   ProcSetStreamSource(cmd); break;

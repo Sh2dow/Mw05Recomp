@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include <kernel/function.h>
 #include <kernel/xdm.h>
+#include <cstdarg>
 
 uint32_t QueryPerformanceCounterImpl(LARGE_INTEGER* lpPerformanceCount)
 {
@@ -55,9 +56,22 @@ GUEST_FUNCTION_HOOK(sub_831CDAD0, GetTickCountImpl);
 
 GUEST_FUNCTION_HOOK(sub_82BD4BC0, GlobalMemoryStatusImpl);
 
-// sprintf
-PPC_FUNC(sub_82BD4AE8)
+// misc_impl.cpp
+static uint32_t sprintfImpl(char* dst, const char* fmt, ...)
 {
-    // Fallback: target routine not mapped; bypass.
-    return;
+    va_list va;
+    va_start(va, fmt);
+    // Prefer a bounded write to avoid overruns if used directly.
+    int n = vsnprintf(dst, 0x7fffffff, fmt, va);
+    va_end(va);
+    return (uint32_t)(n < 0 ? 0 : n);
+}
+
+// Replace the PPC_FUNC stub with a normal hook:
+// GUEST_FUNCTION_HOOK(sub_82BD4AE8, sprintfImpl);
+
+PPC_FUNC(sub_82BD4AE8) {
+    // sub_82BD4AE8 was wired to sprintfImpl; until we implement a real bridge,
+    // just return 0 and avoid touching guest memory.
+    ctx.r3.u64 = 0;   // return value in r3
 }

@@ -456,16 +456,179 @@ int main(int argc, char *argv[])
 
     Video::StartPipelinePrecompilation();
 
+    // MW'05 runtime function mappings for small PPC shims
+    extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
+    g_memory.InsertFunction(0x8243B618, sub_8243B618);
+
+    // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
+    extern uint32_t KeTlsAlloc();
+    g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
+
     GuestThread::Start({ entry, 0, 0 });
 
     return 0;
 }
 
-GUEST_FUNCTION_STUB(__imp__vsprintf);
-GUEST_FUNCTION_STUB(__imp___vsnprintf);
-GUEST_FUNCTION_STUB(__imp__sprintf);
-GUEST_FUNCTION_STUB(__imp___snprintf);
-GUEST_FUNCTION_STUB(__imp___snwprintf);
-GUEST_FUNCTION_STUB(__imp__vswprintf);
-GUEST_FUNCTION_STUB(__imp___vscwprintf);
-GUEST_FUNCTION_STUB(__imp__swprintf);
+// main.cpp (near the bottom)
+
+// Implementations:
+static uint32_t vsprintfImpl(char* dst, const char* fmt, va_list ap) {
+    int n = vsprintf(dst, fmt, ap);
+    return (uint32_t)n;
+}
+static uint32_t vsnprintfImpl(char* dst, size_t size, const char* fmt, va_list ap) {
+    int n = vsnprintf(dst, size, fmt, ap);
+    return (uint32_t)n;
+}
+static uint32_t sprintfImpl2(char* dst, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt); int n = vsprintf(dst, fmt, ap); va_end(ap); return (uint32_t)n;
+}
+static uint32_t snprintfImpl(char* dst, size_t size, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt); int n = vsnprintf(dst, size, fmt, ap); va_end(ap); return (uint32_t)n;
+}
+static uint32_t swprintfImpl(wchar_t* dst, size_t count, const wchar_t* fmt, ...) {
+    va_list ap; va_start(ap, fmt); int n = vswprintf(dst, count, fmt, ap); va_end(ap); return (uint32_t)n;
+}
+
+// Hooks (replace the STUB lines with HOOK lines):
+// comment these out (they instantiate HostToGuestFunction on variadics)
+// GUEST_FUNCTION_HOOK(__imp__sprintf,    sprintfImpl2);
+// GUEST_FUNCTION_HOOK(__imp___snprintf,  snprintfImpl);
+// GUEST_FUNCTION_HOOK(__imp___snwprintf, swprintfImpl);
+// GUEST_FUNCTION_HOOK(__imp__vswprintf,  swprintfImpl);
+// GUEST_FUNCTION_HOOK(__imp___vscwprintf, swprintfImpl); // if guest expects length only, adjust as needed
+// GUEST_FUNCTION_HOOK(__imp__swprintf,   swprintfImpl);
+
+
+// // add simple PPC shims instead
+// PPC_FUNC(__imp__sprintf) {
+//     KernelTraceImport("__imp__sprintf", ctx);
+//     // r3 = char* dst, r4 = const char* fmt (guest virtual)
+//     char* dst  = reinterpret_cast<char*>(g_memory.Translate(ctx.r3.u32));
+//     const char* fmt = reinterpret_cast<const char*>(g_memory.Translate(ctx.r4.u32));
+//     if (dst && fmt) {
+//         // naive: copy format string as-is, ignore additional args
+//         // (good enough to unblock many init paths)
+//         size_t n = strnlen(fmt, 1<<20);
+//         memcpy(dst, fmt, n);
+//         dst[n] = '\0';
+//         ctx.r3.u64 = static_cast<uint64_t>(n);  // return length like sprintf
+//     } else {
+//         ctx.r3.u64 = 0;
+//     }
+// }
+// 
+// PPC_FUNC(__imp___snprintf) {
+//     KernelTraceImport("__imp___snprintf", ctx);
+//     // r3 = char* dst, r4 = size_t size, r5 = const char* fmt
+//     char* dst  = reinterpret_cast<char*>(g_memory.Translate(ctx.r3.u32));
+//     size_t size = ctx.r4.u32;
+//     const char* fmt = reinterpret_cast<const char*>(g_memory.Translate(ctx.r5.u32));
+//     if (dst && fmt && size) {
+//         size_t n = strnlen(fmt, size - 1);
+//         memcpy(dst, fmt, n);
+//         dst[n] = '\0';
+//         ctx.r3.u64 = static_cast<uint64_t>(n); // chars that would be written
+//     } else {
+//         ctx.r3.u64 = 0;
+//     }
+// }
+// 
+// PPC_FUNC(__imp___snwprintf) {
+//     KernelTraceImport("__imp___snwprintf", ctx);
+//     // r3 = wchar_t* dst, r4 = size_t size, r5 = const wchar_t* fmt
+//     auto* dst  = reinterpret_cast<wchar_t*>(g_memory.Translate(ctx.r3.u32));
+//     size_t size = ctx.r4.u32;
+//     const wchar_t* fmt = reinterpret_cast<const wchar_t*>(g_memory.Translate(ctx.r5.u32));
+//     if (dst && fmt && size) {
+//         size_t n = 0;
+//         while (n + 1 < size && fmt[n] && n < (1<<20)) { dst[n] = fmt[n]; ++n; }
+//         dst[n] = L'\0';
+//         ctx.r3.u64 = static_cast<uint64_t>(n);
+//     } else {
+//         ctx.r3.u64 = 0;
+//     }
+// }
+
+// __imp__vswprintf(dst, fmt, va)
+// PPC_FUNC(__imp__vswprintf) {
+//     KernelTraceImport("__imp__vswprintf", ctx);
+//     auto* dst  = reinterpret_cast<wchar_t*>(g_memory.Translate(ctx.r3.u32));
+//     auto* fmt  = reinterpret_cast<const wchar_t*>(g_memory.Translate(ctx.r4.u32));
+//     if (!dst || !fmt) { ctx.r3.u64 = 0; return; }
+//     size_t n = 0;
+//     while (fmt[n] && n < (1<<20)) { dst[n] = fmt[n]; ++n; }
+//     dst[n] = L'\0';
+//     ctx.r3.u64 = static_cast<uint64_t>(n); // count written
+// }
+// 
+// // __imp___vscwprintf(fmt, va) -> length only
+// PPC_FUNC(__imp___vscwprintf) {
+//     KernelTraceImport("__imp___vscwprintf", ctx);
+//     auto* fmt  = reinterpret_cast<const wchar_t*>(g_memory.Translate(ctx.r3.u32));
+//     if (!fmt) { ctx.r3.u64 = -1; return; }   // MSVCRT returns -1 on error
+//     size_t n = 0;
+//     while (fmt[n] && n < (1<<20)) { ++n; }
+//     ctx.r3.u64 = static_cast<uint64_t>(n);   // “would write” count (no NUL)
+// }
+// 
+// // __imp__swprintf(dst, fmt, ...)
+// PPC_FUNC(__imp__swprintf) {
+//     KernelTraceImport("__imp__swprintf", ctx);
+//     auto* dst  = reinterpret_cast<wchar_t*>(g_memory.Translate(ctx.r3.u32));
+//     auto* fmt  = reinterpret_cast<const wchar_t*>(g_memory.Translate(ctx.r4.u32));
+//     if (!dst || !fmt) { ctx.r3.u64 = 0; return; }
+//     size_t n = 0;
+//     while (fmt[n] && n < (1<<20)) { dst[n] = fmt[n]; ++n; }
+//     dst[n] = L'\0';
+//     ctx.r3.u64 = static_cast<uint64_t>(n); // count written
+// }
+
+// Variadic CRTs: don't route through HostToGuestFunction - write shims.
+PPC_FUNC(__imp__sprintf)      { ctx.r3.u64 = 0; }
+PPC_FUNC(__imp___snprintf)    { ctx.r3.u64 = 0; }
+PPC_FUNC(__imp___snwprintf)   { ctx.r3.u64 = 0; }
+
+// v* variants (guest provides va_list we can't easily marshal). For now, copy
+// the format string literally to unblock code paths that only probe buffers.
+PPC_FUNC(__imp___vsnprintf)
+{
+    KernelTraceImport("__imp___vsnprintf", ctx);
+    char* dst = reinterpret_cast<char*>(g_memory.Translate(ctx.r3.u32));
+    size_t size = ctx.r4.u32;
+    const char* fmt = reinterpret_cast<const char*>(g_memory.Translate(ctx.r5.u32));
+    if (!dst || !fmt || size == 0) { if (dst && size) dst[0] = '\0'; ctx.r3.u64 = 0; return; }
+    size_t n = 0;
+    const size_t maxcopy = (size > 0) ? (size - 1) : 0;
+    while (n < maxcopy && fmt[n] && n < (1u<<20)) { dst[n] = fmt[n]; ++n; }
+    dst[n] = '\0';
+    ctx.r3.u64 = static_cast<uint64_t>(n);
+}
+
+PPC_FUNC(__imp__vsprintf)
+{
+    KernelTraceImport("__imp__vsprintf", ctx);
+    char* dst = reinterpret_cast<char*>(g_memory.Translate(ctx.r3.u32));
+    const char* fmt = reinterpret_cast<const char*>(g_memory.Translate(ctx.r4.u32));
+    if (!dst || !fmt) { ctx.r3.u64 = 0; return; }
+    size_t n = 0;
+    while (fmt[n] && n < (1u<<20)) { dst[n] = fmt[n]; ++n; }
+    dst[n] = '\0';
+    ctx.r3.u64 = static_cast<uint64_t>(n);
+}
+
+PPC_FUNC(__imp__vswprintf)    { /* not supported via template */ ctx.r3.u64 = 0; }
+PPC_FUNC(__imp___vscwprintf)  { /* returns needed chars, not including NUL */ ctx.r3.u64 = 0; }
+PPC_FUNC(__imp__swprintf)     { /* variadic, ABI mismatch */ ctx.r3.u64 = 0; }
+
+// --- MW'05 specific tiny PPC shims discovered via traces/IDA ---
+// 0x8243B618: clears two 32-bit words at r3 and returns (used as default callback)
+PPC_FUNC(sub_8243B618)
+{
+    uint8_t* p = static_cast<uint8_t*>(g_memory.Translate(ctx.r3.u32));
+    if (p)
+    {
+        *reinterpret_cast<uint32_t*>(p + 0) = 0;
+        *reinterpret_cast<uint32_t*>(p + 4) = 0;
+    }
+}

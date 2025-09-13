@@ -6,6 +6,14 @@
 #include "memory.h"
 #include "trace.h"
 
+// --- Detect "variadic function pointer" types like R(*)(Args..., ...)
+template <typename T>
+struct is_variadic_fp : std::false_type {};
+
+template <typename R, typename... Args>
+struct is_variadic_fp<R(*)(Args..., ...)> : std::true_type {};
+
+
 template <typename R, typename... T>
 constexpr std::tuple<T...> function_args(R(*)(T...)) noexcept
 {
@@ -289,6 +297,11 @@ std::enable_if_t<(I < sizeof...(TArgs)), void> _translate_args_to_guest(PPCConte
 template<auto Func>
 PPC_FUNC(HostToGuestFunction)
 {
+    // Block printf-family (variadic) targets from using this generic bridge
+    static_assert(!is_variadic_fp<decltype(Func)>::value,
+        "Variadic functions (printf family) cannot be routed via HostToGuestFunction. "
+        "Write a PPC_FUNC shim instead.");
+
     using ret_t = decltype(std::apply(Func, function_args(Func)));
 
     auto args = function_args(Func);
@@ -302,11 +315,13 @@ PPC_FUNC(HostToGuestFunction)
     {
         auto v = std::apply(Func, args);
 
-        if constexpr (std::is_pointer<ret_t>())
+        if constexpr (std::is_pointer_v<ret_t>)  // <-- fix: _v, not ()
         {
             if (v != nullptr)
             {
-                ctx.r3.u64 = static_cast<uint32_t>(reinterpret_cast<size_t>(v) - reinterpret_cast<size_t>(base));
+                ctx.r3.u64 = static_cast<uint32_t>(
+                    reinterpret_cast<size_t>(v) -
+                    reinterpret_cast<size_t>(base));
             }
             else
             {
@@ -319,7 +334,7 @@ PPC_FUNC(HostToGuestFunction)
         }
         else
         {
-            ctx.r3.u64 = (uint64_t)v;
+            ctx.r3.u64 = static_cast<uint64_t>(v);
         }
     }
 }

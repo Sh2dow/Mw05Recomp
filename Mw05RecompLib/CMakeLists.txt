@@ -134,6 +134,12 @@ target_include_directories(Mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(Mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
 target_compile_definitions(Mw05RecompLib PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
+# Force-include our PPC trace glue so generated TUs log indirect-miss via logger
+if (MSVC)
+    target_compile_options(Mw05RecompLib PRIVATE /FIppc/ppc_trace_glue.h)
+else()
+    target_compile_options(Mw05RecompLib PRIVATE -include ppc/ppc_trace_glue.h)
+endif()
 # Enable SSSE3 for generated PPC recompiler TUs that use _mm_shuffle_epi8
 # Build Mw05RecompLib with SSSE3 so PCH and all TUs share the same target features
 target_compile_options(Mw05RecompLib PRIVATE

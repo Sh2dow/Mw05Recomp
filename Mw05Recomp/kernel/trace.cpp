@@ -94,3 +94,14 @@ void KernelTraceDumpRecent(int maxCount)
         LOGFN("[TRACE][recent] import={} tid={:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X}", e.name, e.tid, e.r3, e.r4, e.r5, e.r6);
     }
 }
+
+extern "C" void MwTraceIndirectMiss(unsigned int addr)
+{
+    // Always log to file via os::logger; mirror to stderr if MW_VERBOSE
+    LOGFN_WARNING("[ppc][indirect-miss] target=0x{:08X}", addr);
+#if _WIN32
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        fprintf(stderr, "[ppc][indirect-miss] target=0x%08X\n", addr);
+    }
+#endif
+}

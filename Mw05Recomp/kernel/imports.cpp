@@ -525,8 +525,8 @@ uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t /*WaitMode*/, uint32_
     static const auto s_t0 = std::chrono::steady_clock::now();
     if (s_fastBoot) {
         auto elapsed = std::chrono::steady_clock::now() - s_t0;
-        // During the first few seconds of boot, return success immediately for single-object waits
-        if (elapsed < std::chrono::seconds(3)) {
+        // During the first phase of boot, return success immediately for single-object waits
+        if (elapsed < std::chrono::seconds(30)) {
             // If Handle looks like a guest dispatcher header pointer, mark it signaled.
             KernelTraceHostOp("HOST.FastWait.NtWaitForSingleObjectEx");
             if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
@@ -778,6 +778,20 @@ extern "C"
 NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
                                 BOOLEAN /*Alertable*/,
                                 PLARGE_INTEGER IntervalGuest /*guest ptr*/) {
+  // Fast-boot: bypass delays entirely during early boot so threads progress
+  static const bool s_fastBoot = []{
+    if (const char* v = std::getenv("MW05_FAST_BOOT"))
+      return !(v[0] == '0' && v[1] == '\0');
+    return false;
+  }();
+  static const auto s_t0 = std::chrono::steady_clock::now();
+  if (s_fastBoot) {
+    auto elapsed = std::chrono::steady_clock::now() - s_t0;
+    if (elapsed < std::chrono::seconds(30)) {
+      KernelTraceHostOp("HOST.FastDelay.KeDelayExecutionThread");
+      return STATUS_SUCCESS;
+    }
+  }
   // 1) Read SIGNED 64-bit ticks from *guest* memory (100-ns units)
   const int64_t ticks = read_guest_i64(IntervalGuest); // negative = relative
 
@@ -1109,8 +1123,9 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
     static const auto s_t0 = std::chrono::steady_clock::now();
     if (s_fastBoot) {
         auto elapsed = std::chrono::steady_clock::now() - s_t0;
-        if (elapsed < std::chrono::seconds(3)) {
+        if (elapsed < std::chrono::seconds(30)) {
             KernelTraceHostOp("HOST.FastWait.KeWaitForSingleObject");
+            if (Object) Object->SignalState = 1; // mark signaled so caller observes state change
             return STATUS_SUCCESS;
         }
         if (timeout > 5'000) timeout = 1; // cap long timeouts after the initial window

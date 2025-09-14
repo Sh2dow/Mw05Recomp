@@ -9,6 +9,9 @@ endif()
 if(NOT DEFINED _log)
   set(_log "mw05_debug.log")
 endif()
+if(NOT DEFINED _misses)
+  set(_misses "")
+endif()
 if(NOT DEFINED _html)
   set(_html "NfsMWEurope.xex.html")
 endif()
@@ -26,11 +29,15 @@ else()
   set(_python python)
 endif()
 
-execute_process(
-  COMMAND ${_python} ${_py} --log ${_log} --html ${_html} --ppc-root ${_ppc} --app-root ${_src} --out-cpp ${_out}
-  RESULT_VARIABLE _res
-)
+if(_misses STREQUAL "")
+  execute_process(
+    COMMAND ${_python} ${_py} --log ${_log} --html ${_html} --ppc-root ${_ppc} --app-root ${_src} --out-cpp ${_out}
+    RESULT_VARIABLE _res)
+else()
+  execute_process(
+    COMMAND ${_python} ${_py} --misses ${_misses} --html ${_html} --ppc-root ${_ppc} --app-root ${_src} --out-cpp ${_out}
+    RESULT_VARIABLE _res)
+endif()
 if(NOT _res EQUAL 0)
   message(FATAL_ERROR "Failed to run ${_py} (rc=${_res})")
 endif()
-

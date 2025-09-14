@@ -2,6 +2,9 @@
 
 #include <cpu/ppc_context.h>
 #include <array>
+#include <tuple>
+#include <type_traits>
+#include <utility>
 #include "xbox.h"
 #include "memory.h"
 #include "trace.h"
@@ -13,12 +16,35 @@ struct is_variadic_fp : std::false_type {};
 template <typename R, typename... Args>
 struct is_variadic_fp<R(*)(Args..., ...)> : std::true_type {};
 
+// --- Basic function traits for raw function pointers
+template <typename T>
+struct function_traits;
 
-template <typename R, typename... T>
-constexpr std::tuple<T...> function_args(R(*)(T...)) noexcept
+template <typename R, typename... Args>
+struct function_traits<R(*)(Args...)>
 {
-    return std::tuple<T...>();
+    using return_type = R;
+    using args_tuple = std::tuple<Args...>;
+    using args_tuple_decay = std::tuple<std::decay_t<Args>...>;
+    static constexpr size_t arity = sizeof...(Args);
+};
+
+// Helper to materialize an args tuple value (decayed) for a function pointer
+template <typename R, typename... T>
+constexpr std::tuple<std::decay_t<T>...> function_args(R(*)(T...)) noexcept
+{
+    return std::tuple<std::decay_t<T>...>{};
 }
+
+// Detect PPC recompiled function pointers: void(PPCContext&, uint8_t*)
+template<typename T>
+struct is_ppc_func_ptr : std::false_type {};
+
+template<typename R, typename A0, typename A1>
+struct is_ppc_func_ptr<R(*)(A0, A1)> : std::bool_constant<
+    std::is_same_v<std::remove_reference_t<A0>, PPCContext> &&
+    std::is_same_v<std::remove_cv_t<std::remove_reference_t<A1>>, uint8_t*>
+> {};
 
 template<auto V>
 static constexpr decltype(V) constant_v = V;
@@ -29,7 +55,7 @@ static constexpr bool is_precise_v = std::is_same_v<T, float> || std::is_same_v<
 template<auto Func>
 struct arg_count_t
 {
-    static constexpr size_t value = std::tuple_size_v<decltype(function_args(Func))>;
+    static constexpr size_t value = function_traits<decltype(Func)>::arity;
 };
 
 template<typename TCallable, int I = 0, typename ...TArgs>
@@ -255,7 +281,9 @@ constexpr std::array<Argument, std::tuple_size_v<T1>> GatherFunctionArguments(co
 template<auto Func>
 constexpr std::array<Argument, arg_count_t<Func>::value> GatherFunctionArguments()
 {
-    return GatherFunctionArguments(function_args(Func));
+    // Use decayed types here to avoid references in tuples
+    using args_decay_t = typename function_traits<decltype(Func)>::args_tuple_decay;
+    return GatherFunctionArguments(args_decay_t{});
 }
 
 template<auto Func, size_t I>
@@ -302,20 +330,33 @@ PPC_FUNC(HostToGuestFunction)
         "Variadic functions (printf family) cannot be routed via HostToGuestFunction. "
         "Write a PPC_FUNC shim instead.");
 
-    using ret_t = decltype(std::apply(Func, function_args(Func)));
+    if constexpr (is_ppc_func_ptr<decltype(Func)>::value)
+    {
+        // Direct PPC trampoline: no argument translation
+        KernelTraceHostBegin(ctx);
+        Func(ctx, base);
+        KernelTraceHostEnd();
+    }
+    else
+    {
+        using ret_t = typename function_traits<decltype(Func)>::return_type;
 
-    auto args = function_args(Func);
-    _translate_args_to_host<Func>(ctx, base, args);
+        auto args = function_args(Func);
+        _translate_args_to_host<Func>(ctx, base, args);
+        // Expose ctx to host-side tracers for the duration of the host call
+        KernelTraceHostBegin(ctx);
 
     if constexpr (std::is_same_v<ret_t, void>)
     {
         std::apply(Func, args);
+        KernelTraceHostEnd();
     }
     else
     {
         auto v = std::apply(Func, args);
+        KernelTraceHostEnd();
 
-        if constexpr (std::is_pointer_v<ret_t>)  // <-- fix: _v, not ()
+        if constexpr (std::is_pointer_v<ret_t>)
         {
             if (v != nullptr)
             {
@@ -337,6 +378,7 @@ PPC_FUNC(HostToGuestFunction)
             ctx.r3.u64 = static_cast<uint64_t>(v);
         }
     }
+}
 }
 
 template<typename T, typename TFunction, typename... TArgs>

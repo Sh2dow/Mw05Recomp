@@ -96,6 +96,9 @@
 // Forward declaration for early calls in this file
 uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, uint32_t WaitMode, bool Alertable, be<int64_t>* Timeout);
 
+static std::atomic<uint32_t> g_RbWriteBackPtr{0};
+static std::atomic<uint32_t> g_RbBase{0}, g_RbLen{0};
+
 // helper (place near the top of the file with other helpers)
 inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
     if (off == 0) return false;
@@ -513,6 +516,26 @@ uint32_t FscSetCacheElementCount()
 // 2) Typical wait path (single-object) without IsSignaled() or wrong table name
 uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t /*WaitMode*/, uint32_t /*Alertable*/, be<int64_t>* Timeout)
 {
+    // Fast-boot: short-circuit early boot waits to allow other threads to progress to video init
+    static const bool s_fastBoot = []{
+        if (const char* v = std::getenv("MW05_FAST_BOOT"))
+            return !(v[0] == '0' && v[1] == '\0');
+        return false;
+    }();
+    static const auto s_t0 = std::chrono::steady_clock::now();
+    if (s_fastBoot) {
+        auto elapsed = std::chrono::steady_clock::now() - s_t0;
+        // During the first few seconds of boot, return success immediately for single-object waits
+        if (elapsed < std::chrono::seconds(3)) {
+            // If Handle looks like a guest dispatcher header pointer, mark it signaled.
+            KernelTraceHostOp("HOST.FastWait.NtWaitForSingleObjectEx");
+            if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
+                auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
+                hdr->SignalState = 1;
+            }
+            return STATUS_SUCCESS;
+        }
+    }
     const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
 
     // Kernel handle path
@@ -1076,7 +1099,22 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
                                bool /*Alertable*/,
                                be<int64_t>* Timeout)
 {
-    const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
+    uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
+    // Fast-boot: avoid long waits during early boot
+    static const bool s_fastBoot = []{
+        if (const char* v = std::getenv("MW05_FAST_BOOT"))
+            return !(v[0] == '0' && v[1] == '\0');
+        return false;
+    }();
+    static const auto s_t0 = std::chrono::steady_clock::now();
+    if (s_fastBoot) {
+        auto elapsed = std::chrono::steady_clock::now() - s_t0;
+        if (elapsed < std::chrono::seconds(3)) {
+            KernelTraceHostOp("HOST.FastWait.KeWaitForSingleObject");
+            return STATUS_SUCCESS;
+        }
+        if (timeout > 5'000) timeout = 1; // cap long timeouts after the initial window
+    }
 
     switch (Object->Type)
     {
@@ -1308,19 +1346,35 @@ void MmFreePhysicalMemory(uint32_t type, uint32_t guestAddress)
         g_userHeap.Free(g_memory.Translate(guestAddress));
 }
 
-bool VdPersistDisplay(uint32_t a1, uint32_t* a2)
+bool VdPersistDisplay(uint32_t /*a1*/, uint32_t* a2)
 {
-    *a2 = NULL;
-    return false;
+    // Unblock callers waiting for persist to complete.
+    if (a2) *a2 = 1;
+    return true;
 }
 
 void VdSwap()
 {
+    KernelTraceHostOp("HOST.VdSwap");
     // Present the current backbuffer and advance frame state
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] VdSwap()\n"); fflush(stdout);
     }
     Video::Present();
+
+    // Nudge ring-buffer RPtr write-back so guest polling sees forward progress
+    uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
+    if (wb)
+    {
+        if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
+        {
+            uint32_t cur = *rptr;
+            uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
+            uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
+            uint32_t next = (cur + 0x80u) & mask;
+            *rptr = next ? next : 0x40u;
+        }
+    }
 }
 
 // --- Minimal stateful Vd* bridge (enough to unblock guest expectations) ---
@@ -1332,9 +1386,41 @@ static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
 extern "C" uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
 extern "C" uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
 
-uint32_t VdGetSystemCommandBuffer()
+// Minimal emulation of the system command buffer used by the guest.
+// We expose a guest-visible buffer and return its address via both return value
+// and out-parameters to satisfy MW'05 call sites.
+static void* g_SysCmdBufHost = nullptr;
+static uint32_t g_SysCmdBufGuest = 0;
+static constexpr uint32_t kSysCmdBufSize = 64 * 1024;
+
+static void EnsureSystemCommandBuffer()
 {
-    return g_VdSystemCommandBuffer.load();
+    if (g_SysCmdBufGuest == 0)
+    {
+        g_SysCmdBufHost = g_userHeap.Alloc(kSysCmdBufSize, 0x100);
+        g_SysCmdBufGuest = g_memory.MapVirtual(g_SysCmdBufHost);
+        g_VdSystemCommandBuffer.store(g_SysCmdBufGuest);
+    }
+}
+
+uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
+{
+    EnsureSystemCommandBuffer();
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[vd] GetSystemCommandBuffer -> 0x%08X\n", g_SysCmdBufGuest);
+        fflush(stdout);
+    }
+    if (outCmdBufPtr) *outCmdBufPtr = g_SysCmdBufGuest;
+    if (outValue)     *outValue     = 0; // MW05 reads this; 0 is a safe default
+    return g_SysCmdBufGuest;
+}
+
+uint32_t VdQuerySystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
+{
+    EnsureSystemCommandBuffer();
+    if (outCmdBufPtr) *outCmdBufPtr = g_SysCmdBufGuest;
+    if (outValue)     *outValue     = 0;
+    return 0;
 }
 
 void KeReleaseSpinLockFromRaisedIrql(uint32_t* spinLock)
@@ -1362,14 +1448,33 @@ uint32_t KiApcNormalRoutineNop()
     return 0;
 }
 
-void VdEnableRingBufferRPtrWriteBack(uint32_t /*base*/)
+void VdEnableRingBufferRPtrWriteBack(uint32_t base)
 {
-    // No-op
+    // Record write-back pointer; zero it to indicate idle.
+    g_RbWriteBackPtr = base;
+    auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(base));
+    if (p) *p = 0;
 }
 
-void VdInitializeRingBuffer(uint32_t /*base*/, uint32_t /*len*/)
+void VdInitializeRingBuffer(uint32_t base, uint32_t len)
 {
-    // No-op
+    // MW05 (and Xenia logs) pass the ring buffer size as log2(len).
+    // Convert to bytes to ensure we zero the correct range so readers see a clean buffer.
+    g_RbBase = base;
+    g_RbLen = len;
+    const uint32_t size_bytes = (len < 32) ? (1u << (len & 31)) : 0u;
+    if (base && size_bytes)
+    {
+        uint8_t* p = reinterpret_cast<uint8_t*>(g_memory.Translate(base));
+        if (p) memset(p, 0, size_bytes);
+    }
+    // Seed write-back pointer so guest sees progress
+    uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
+    if (wb)
+    {
+        if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
+            *rptr = 0x20; // small non-zero value
+    }
 }
 
 uint32_t MmGetPhysicalAddress(uint32_t address)
@@ -1381,6 +1486,22 @@ uint32_t MmGetPhysicalAddress(uint32_t address)
 void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr)
 {
     g_VdSystemCommandBufferGpuIdAddr = addr;
+}
+
+void VdSetSystemCommandBuffer(uint32_t base, uint32_t len)
+{
+    // Trust guest-provided base/len; ensure our cache matches for VdGetSystemCommandBuffer callers.
+    if (base != 0)
+    {
+        g_VdSystemCommandBuffer.store(base);
+        g_SysCmdBufGuest = base;
+        g_SysCmdBufHost = g_memory.Translate(base);
+    }
+    (void)len;
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[vd] SetSystemCommandBuffer base=0x%08X len=%u\n", base, len);
+        fflush(stdout);
+    }
 }
 
 void _vsnprintf_x()
@@ -1417,14 +1538,32 @@ void VdQueryVideoMode(XVIDEO_MODE* vm)
     vm->Unknown01 = 0x01;
 }
 
-void VdGetCurrentDisplayInformation()
+void VdGetCurrentDisplayInformation(void* info)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Fill a minimal display info block expected by MW05 callers.
+    // Callers pass a stack buffer and read specific offsets:
+    //   lhz +0x98 (width), lhz +0x9A (height), lhz +0xA6 (unknown), lbz +0x54 (flags)
+    if (!info) return;
+    uint32_t width = 1280, height = 720;
+    auto* p = reinterpret_cast<uint8_t*>(info);
+    // Big-endian stores for guest reads
+    *reinterpret_cast<be<uint16_t>*>(p + 0x98) = static_cast<uint16_t>(width);
+    *reinterpret_cast<be<uint16_t>*>(p + 0x9A) = static_cast<uint16_t>(height);
+    *reinterpret_cast<be<uint16_t>*>(p + 0xA6) = static_cast<uint16_t>(60); // nominal refresh or aux field
+    p[0x54] = 1; // an enable/flag byte the guest reads
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[vd] GetCurrentDisplayInformation w=%u h=%u\n", width, height);
+        fflush(stdout);
+    }
 }
 
-void VdSetDisplayMode()
+void VdSetDisplayMode(uint32_t /*mode*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Accept and ignore; our renderer manages swapchain independently.
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[vd] SetDisplayMode()\n");
+        fflush(stdout);
+    }
 }
 
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
@@ -1436,12 +1575,13 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 
 void VdInitializeEngines()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Consider engines initialized; nothing to do in host.
 }
 
-void VdIsHSIOTrainingSucceeded()
+uint32_t VdIsHSIOTrainingSucceeded()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Unblock caller loops waiting for HSIO training.
+    return 1;
 }
 
 void VdGetCurrentDisplayGamma()
@@ -2219,7 +2359,15 @@ GUEST_FUNCTION_STUB(__imp__XamUserGetName);
 GUEST_FUNCTION_STUB(__imp__XamUserAreUsersFriends);
 GUEST_FUNCTION_STUB(__imp__XamUserCheckPrivilege);
 GUEST_FUNCTION_STUB(__imp__XamUserCreateStatsEnumerator);
-GUEST_FUNCTION_STUB(__imp__XamReadTileToTexture);
+// XamReadTileToTexture(handle, key, offset, size, texturePtr, miplevel, ...)
+// MW05 may call this to populate textures from XContent tiles. For now, no-op
+// and report success so callers can proceed. Add logging to help future wiring.
+PPC_FUNC(__imp__XamReadTileToTexture)
+{
+    (void)base;
+    // Minimal success return
+    ctx.r3.u32 = 0; // S_OK
+}
 GUEST_FUNCTION_STUB(__imp__XamParseGamerTileKey);
 GUEST_FUNCTION_STUB(__imp__XamWriteGamerTile);
 GUEST_FUNCTION_STUB(__imp__XamUserCreatePlayerEnumerator);
@@ -2532,8 +2680,8 @@ GUEST_FUNCTION_STUB(__imp__NtCreateTimer);
 GUEST_FUNCTION_STUB(__imp__Refresh);
 GUEST_FUNCTION_STUB(__imp__XamInputGetKeystrokeEx);
 GUEST_FUNCTION_STUB(__imp__VdGetGraphicsAsicID);
-GUEST_FUNCTION_STUB(__imp__VdQuerySystemCommandBuffer);
-GUEST_FUNCTION_STUB(__imp__VdSetSystemCommandBuffer);
+GUEST_FUNCTION_HOOK(__imp__VdQuerySystemCommandBuffer, VdQuerySystemCommandBuffer);
+GUEST_FUNCTION_HOOK(__imp__VdSetSystemCommandBuffer, VdSetSystemCommandBuffer);
 GUEST_FUNCTION_STUB(__imp__VdInitializeEDRAM);
 GUEST_FUNCTION_STUB(__imp__MmSetAddressProtect);
 GUEST_FUNCTION_STUB(__imp__NtCreateIoCompletion);

@@ -1,0 +1,1686 @@
+.text:82595FC8 sub_82595FC8:                           # CODE XREF: sub_8258FE50+18↑p
+.text:82595FC8                                         # sub_82590538+30↑p ...
+.text:82595FC8
+.text:82595FC8 .set back_chain, -0x70
+.text:82595FC8
+.text:82595FC8                 mflr      r12
+.text:82595FCC                 bl        __savegprlr_29
+.text:82595FD0                 stwu      r1, back_chain(r1)
+.text:82595FD4                 mr        r31, r3
+.text:82595FD8                 mr        r29, r4
+.text:82595FDC                 slwi      r30, r29, 2
+.text:82595FE0                 lwz       r11, 0(r31)
+.text:82595FE4                 lwz       r10, 4(r31)
+.text:82595FE8                 add       r11, r30, r11
+.text:82595FEC                 cmplw     cr6, r11, r10
+.text:82595FF0                 ble       cr6, loc_82596024
+.text:82595FF4                 bl        sub_825972B0
+.text:82595FF8                 lwz       r11, 0(r31)
+.text:82595FFC                 lwz       r10, 4(r31)
+.text:82596000                 add       r11, r30, r11
+.text:82596004                 cmplw     cr6, r11, r10
+.text:82596008                 ble       cr6, loc_82596024
+.text:8259600C                 mr        r4, r29
+.text:82596010                 mr        r3, r31
+.text:82596014                 bl        sub_82596978
+.text:82596018                 cmplwi    r3, 0
+.text:8259601C                 li        r3, 0
+.text:82596020                 beq       loc_82596028
+.text:82596024
+.text:82596024 loc_82596024:                           # CODE XREF: sub_82595FC8+28↑j
+.text:82596024                                         # sub_82595FC8+40↑j
+.text:82596024                 lwz       r3, 0(r31)
+.text:82596028
+.text:82596028 loc_82596028:                           # CODE XREF: sub_82595FC8+58↑j
+.text:82596028                 addi      r1, r1, 0x70 # 'p'
+.text:8259602C                 b         __restgprlr_29
+.text:8259602C # End of function sub_82595FC8
+
+.text:825972B0 sub_825972B0:                           # CODE XREF: sub_82224458+240↑p
+.text:825972B0                                         # sub_8245C900+260↑p ...
+.text:825972B0
+.text:825972B0 .set back_chain, -0x70
+.text:825972B0 .set var_20, -0x20
+.text:825972B0 .set var_1C, -0x1C
+.text:825972B0 .set var_18, -0x18
+.text:825972B0 .set var_10, -0x10
+.text:825972B0 .set var_8, -8
+.text:825972B0
+.text:825972B0                 mflr      r12
+.text:825972B4                 stw       r12, var_8(r1)
+.text:825972B8                 std       r30, var_18(r1)
+.text:825972BC                 std       r31, var_10(r1)
+.text:825972C0                 stwu      r1, back_chain(r1)
+.text:825972C4                 mr        r31, r3
+.text:825972C8                 lwz       r11, 0x34D0(r31)
+.text:825972CC                 cmplwi    cr6, r11, 0
+.text:825972D0                 bne       cr6, loc_82597328
+.text:825972D4                 lbz       r11, 0x28C0(r31)
+.text:825972D8                 clrrwi.   r11, r11, 7
+.text:825972DC                 bne       loc_82597328
+.text:825972E0                 addi      r5, r1, 0x70+var_20
+.text:825972E4                 addi      r4, r1, 0x70+var_1C
+.text:825972E8                 bl        sub_82596E40
+.text:825972EC                 lwz       r30, 0x70+var_20(r1)
+.text:825972F0                 cmplwi    cr6, r30, 0
+.text:825972F4                 beq       cr6, loc_82597328
+.text:825972F8                 li        r5, 4
+.text:825972FC                 li        r4, 4
+.text:82597300                 mr        r3, r31
+.text:82597304                 bl        sub_825968B0
+.text:82597308                 mr.       r4, r3
+.text:8259730C                 beq       loc_82597328
+.text:82597310                 addi      r8, r31, 0x34F4
+.text:82597314                 lwz       r5, 0x70+var_1C(r1)
+.text:82597318                 li        r7, 0
+.text:8259731C                 mr        r6, r30
+.text:82597320                 mr        r3, r31
+.text:82597324                 bl        sub_825971F0
+.text:82597328
+.text:82597328 loc_82597328:                           # CODE XREF: sub_825972B0+20↑j
+.text:82597328                                         # sub_825972B0+2C↑j ...
+.text:82597328                 mr        r3, r31
+.text:8259732C                 bl        sub_825970B0
+.text:82597330                 lbz       r11, 0x28C0(r31)
+.text:82597334                 clrrwi.   r11, r11, 7
+.text:82597338                 bne       loc_82597398
+.text:8259733C                 lis       r11, dword_82A2D8DC@ha
+.text:82597340                 lwz       r11, dword_82A2D8DC@l(r11)
+.text:82597344                 cmpwi     cr6, r11, 0
+.text:82597348                 beq       cr6, loc_82597398
+.text:8259734C                 lbz       r11, 0x28C1(r31)
+.text:82597350                 rlwinm.   r11, r11, 0,29,29
+.text:82597354                 bne       loc_82597398
+.text:82597358                 lwz       r11, 0x289C(r31)
+.text:8259735C                 li        r5, 0
+.text:82597360                 addi      r4, r1, 0x70+var_20
+.text:82597364                 addi      r11, r11, -2
+.text:82597368                 mr        r3, r31
+.text:8259736C                 stw       r11, 0x70+var_20(r1)
+.text:82597370                 bl        sub_82597650
+.text:82597374                 lwz       r11, 0x70+var_20(r1)
+.text:82597378                 cmplwi    cr6, r11, 0
+.text:8259737C                 beq       cr6, loc_8259738C
+.text:82597380                 addi      r4, r1, 0x70+var_20
+.text:82597384                 mr        r3, r31
+.text:82597388                 bl        sub_825976D8
+.text:8259738C
+.text:8259738C loc_8259738C:                           # CODE XREF: sub_825972B0+CC↑j
+.text:8259738C                 lbz       r11, 0x28C1(r31)
+.text:82597390                 ori       r11, r11, 4
+.text:82597394                 stb       r11, 0x28C1(r31)
+.text:82597398
+.text:82597398 loc_82597398:                           # CODE XREF: sub_825972B0+88↑j
+.text:82597398                                         # sub_825972B0+98↑j ...
+.text:82597398                 lwz       r3, 0(r31)
+.text:8259739C                 addi      r1, r1, 0x70
+.text:825973A0                 lwz       r12, var_8(r1)
+.text:825973A4                 mtlr      r12
+.text:825973A8                 ld        r30, var_18(r1)
+.text:825973AC                 ld        r31, var_10(r1)
+.text:825973B0                 blr
+.text:825973B0 # End of function sub_825972B0
+
+.text:825A54F0 sub_825A54F0:                           # CODE XREF: sub_82598A20+12C↑p
+.text:825A54F0                                         # sub_82598A20+1C0↑p
+.text:825A54F0                                         # DATA XREF: ...
+.text:825A54F0
+.text:825A54F0 .set back_chain, -0x70
+.text:825A54F0 .set var_18, -0x18
+.text:825A54F0 .set var_10, -0x10
+.text:825A54F0 .set var_8, -8
+.text:825A54F0
+.text:825A54F0                 mflr      r12
+.text:825A54F4                 stw       r12, var_8(r1)
+.text:825A54F8                 std       r30, var_18(r1)
+.text:825A54FC                 std       r31, var_10(r1)
+.text:825A5500                 stwu      r1, back_chain(r1)
+.text:825A5504                 mr        r31, r3
+.text:825A5508                 mr        r30, r4
+.text:825A550C                 lwz       r11, 0(r31)
+.text:825A5510                 lwz       r10, 8(r31)
+.text:825A5514                 cmplw     cr6, r11, r10
+.text:825A5518                 ble       cr6, loc_825A5524
+.text:825A551C                 bl        sub_825972B0
+.text:825A5520                 mr        r11, r3
+.text:825A5524
+.text:825A5524 loc_825A5524:                           # CODE XREF: sub_825A54F0+28↑j
+.text:825A5524                 lis       r10, -0x3FFE
+.text:825A5528                 ori       r9, r10, 0x5800 # 0xC0025800
+.text:825A552C                 lis       r10, -0x8000
+.text:825A5530                 ori       r8, r10, 3 # 0x80000003
+.text:825A5534                 srwi      r10, r30, 20
+.text:825A5538                 stwu      r9, 4(r11)
+.text:825A553C                 clrlwi    r9, r30, 3
+.text:825A5540                 addi      r10, r10, 0x200
+.text:825A5544                 rlwinm    r10, r10, 0,19,19
+.text:825A5548                 add       r10, r10, r9
+.text:825A554C                 stwu      r8, 4(r11)
+.text:825A5550                 lis       r9, -0x2153
+.text:825A5554                 ori       r9, r9, 0xBEEF # 0xDEADBEEF
+.text:825A5558                 stwu      r10, 4(r11)
+.text:825A555C                 stwu      r9, 4(r11)
+.text:825A5560                 stw       r11, 0(r31)
+.text:825A5564                 addi      r1, r1, 0x70
+.text:825A5568                 lwz       r12, var_8(r1)
+.text:825A556C                 mtlr      r12
+.text:825A5570                 ld        r30, var_18(r1)
+.text:825A5574                 ld        r31, var_10(r1)
+.text:825A5578                 blr
+.text:825A5578 # End of function sub_825A54F0
+
+.text:825A6DF0 sub_825A6DF0:                           # CODE XREF: sub_825A7208+280↓p
+.text:825A6DF0                                         # DATA XREF: .pdata:820D06E0↑o
+.text:825A6DF0
+.text:825A6DF0 .set back_chain, -0xD0
+.text:825A6DF0 .set var_80, -0x80
+.text:825A6DF0 .set var_78, -0x78
+.text:825A6DF0 .set var_30, -0x30
+.text:825A6DF0
+.text:825A6DF0                 mflr      r12
+.text:825A6DF4                 bl        __savegprlr_27
+.text:825A6DF8                 addi      r12, r1, var_30
+.text:825A6DFC                 bl        __savefpr_25
+.text:825A6E00                 stwu      r1, back_chain(r1)
+.text:825A6E04                 lis       r11, flt_82063970@ha
+.text:825A6E08                 fmr       f27, f1
+.text:825A6E0C                 mr        r27, r5
+.text:825A6E10                 fmr       f30, f2
+.text:825A6E14                 addi      r11, r11, flt_82063970@l
+.text:825A6E18                 mr        r28, r9
+.text:825A6E1C                 slwi      r31, r27, 4
+.text:825A6E20                 cmpwi     cr6, r3, 1
+.text:825A6E24                 lfs       f25, (flt_82061CE8 - 0x82063970)(r11)
+.text:825A6E28                 lfs       f26, (flt_82063038 - 0x82063970)(r11)
+.text:825A6E2C                 beq       cr6, loc_825A7130
+.text:825A6E30                 cmpwi     cr6, r3, 2
+.text:825A6E34                 beq       cr6, loc_825A70B4
+.text:825A6E38                 cmpwi     cr6, r3, 3
+.text:825A6E3C                 beq       cr6, loc_825A7038
+.text:825A6E40                 cmpwi     cr6, r3, 4
+.text:825A6E44                 beq       cr6, loc_825A6FD4
+.text:825A6E48                 cmpwi     cr6, r3, 5
+.text:825A6E4C                 beq       cr6, loc_825A6F58
+.text:825A6E50                 cmpwi     cr6, r3, 6
+.text:825A6E54                 beq       cr6, loc_825A6EC8
+.text:825A6E58                 cmpwi     cr6, r3, 7
+.text:825A6E5C                 bne       cr6, loc_825A6EC8
+.text:825A6E60                 cmplwi    cr6, r31, 0
+.text:825A6E64                 beq       cr6, loc_825A6E88
+.text:825A6E68                 mr        r11, r28
+.text:825A6E6C                 li        r10, 0
+.text:825A6E70                 cmplwi    r31, 0
+.text:825A6E74                 beq       loc_825A6E88
+.text:825A6E78                 mtctr     r31
+.text:825A6E7C
+.text:825A6E7C loc_825A6E7C:                           # CODE XREF: sub_825A6DF0+94↓j
+.text:825A6E7C                 stw       r10, 0(r11)
+.text:825A6E80                 addi      r11, r11, 4
+.text:825A6E84                 bdnz      loc_825A6E7C
+.text:825A6E88
+.text:825A6E88 loc_825A6E88:                           # CODE XREF: sub_825A6DF0+74↑j
+.text:825A6E88                                         # sub_825A6DF0+84↑j
+.text:825A6E88                 addi      r11, r31, -0x10
+.text:825A6E8C                 addi      r10, r31, 0x10
+.text:825A6E90                 srwi      r11, r11, 1
+.text:825A6E94                 srwi      r9, r10, 1
+.text:825A6E98                 cmplw     cr6, r11, r9
+.text:825A6E9C                 bge       cr6, loc_825A7190
+.text:825A6EA0                 slwi      r10, r11, 2
+.text:825A6EA4                 subf.     r11, r11, r9
+.text:825A6EA8                 add       r10, r10, r28
+.text:825A6EAC                 lis       r9, 0x3F80
+.text:825A6EB0                 beq       loc_825A7190
+.text:825A6EB4                 mtctr     r11
+.text:825A6EB8
+.text:825A6EB8 loc_825A6EB8:                           # CODE XREF: sub_825A6DF0+D0↓j
+.text:825A6EB8                 stw       r9, 0(r10)
+.text:825A6EBC                 addi      r10, r10, 4
+.text:825A6EC0                 bdnz      loc_825A6EB8
+.text:825A6EC4                 b         loc_825A7190
+.text:825A6EC8 # ---------------------------------------------------------------------------
+.text:825A6EC8
+.text:825A6EC8 loc_825A6EC8:                           # CODE XREF: sub_825A6DF0+64↑j
+.text:825A6EC8                                         # sub_825A6DF0+6C↑j
+.text:825A6EC8                 li        r11, 0
+.text:825A6ECC                 cmplwi    cr6, r31, 0
+.text:825A6ED0                 beq       cr6, loc_825A7190
+.text:825A6ED4                 srwi      r10, r31, 1
+.text:825A6ED8                 mr        r9, r28
+.text:825A6EDC                 addi      r6, r10, -0x10
+.text:825A6EE0                 subfic    r7, r10, 0x10
+.text:825A6EE4
+.text:825A6EE4 loc_825A6EE4:                           # CODE XREF: sub_825A6DF0+160↓j
+.text:825A6EE4                 cmplw     cr6, r11, r6
+.text:825A6EE8                 blt       cr6, loc_825A6F08
+.text:825A6EEC                 cmplw     cr6, r11, r10
+.text:825A6EF0                 bge       cr6, loc_825A6F08
+.text:825A6EF4                 add       r8, r7, r11
+.text:825A6EF8                 clrldi    r8, r8, 32
+.text:825A6EFC                 std       r8, 0xD0+var_80(r1)
+.text:825A6F00                 lfd       f0, 0xD0+var_80(r1)
+.text:825A6F04                 b         loc_825A6F30
+.text:825A6F08 # ---------------------------------------------------------------------------
+.text:825A6F08
+.text:825A6F08 loc_825A6F08:                           # CODE XREF: sub_825A6DF0+F8↑j
+.text:825A6F08                                         # sub_825A6DF0+100↑j
+.text:825A6F08                 addi      r8, r10, 0x10
+.text:825A6F0C                 cmplw     cr6, r11, r8
+.text:825A6F10                 bge       cr6, loc_825A6F40
+.text:825A6F14                 cmplw     cr6, r11, r10
+.text:825A6F18                 blt       cr6, loc_825A6F40
+.text:825A6F1C                 subf      r8, r11, r10
+.text:825A6F20                 addi      r8, r8, 0x10
+.text:825A6F24                 clrldi    r8, r8, 32
+.text:825A6F28                 std       r8, 0xD0+var_78(r1)
+.text:825A6F2C                 lfd       f0, 0xD0+var_78(r1)
+.text:825A6F30
+.text:825A6F30 loc_825A6F30:                           # CODE XREF: sub_825A6DF0+114↑j
+.text:825A6F30                 fcfid     f0, f0
+.text:825A6F34                 frsp      f0, f0
+.text:825A6F38                 stfs      f0, 0(r9)
+.text:825A6F3C                 b         loc_825A6F44
+.text:825A6F40 # ---------------------------------------------------------------------------
+.text:825A6F40
+.text:825A6F40 loc_825A6F40:                           # CODE XREF: sub_825A6DF0+120↑j
+.text:825A6F40                                         # sub_825A6DF0+128↑j
+.text:825A6F40                 stfs      f25, 0(r9)
+.text:825A6F44
+.text:825A6F44 loc_825A6F44:                           # CODE XREF: sub_825A6DF0+14C↑j
+.text:825A6F44                 addi      r11, r11, 1
+.text:825A6F48                 addi      r9, r9, 4
+.text:825A6F4C                 cmplw     cr6, r11, r31
+.text:825A6F50                 blt       cr6, loc_825A6EE4
+.text:825A6F54                 b         loc_825A7190
+.text:825A6F58 # ---------------------------------------------------------------------------
+.text:825A6F58
+.text:825A6F58 loc_825A6F58:                           # CODE XREF: sub_825A6DF0+5C↑j
+.text:825A6F58                 li        r29, 0
+.text:825A6F5C                 cmplwi    cr6, r31, 0
+.text:825A6F60                 beq       cr6, loc_825A7190
+.text:825A6F64                 clrldi    r10, r31, 32
+.text:825A6F68                 fdivs     f29, f26, f30
+.text:825A6F6C                 mr        r30, r28
+.text:825A6F70                 std       r10, 0xD0+var_78(r1)
+.text:825A6F74                 lfd       f0, 0xD0+var_78(r1)
+.text:825A6F78                 fcfid     f0, f0
+.text:825A6F7C                 frsp      f13, f0
+.text:825A6F80                 lfs       f0, (flt_82062DCC - 0x82063970)(r11)
+.text:825A6F84                 fmuls     f28, f13, f0
+.text:825A6F88
+.text:825A6F88 loc_825A6F88:                           # CODE XREF: sub_825A6DF0+1DC↓j
+.text:825A6F88                 clrldi    r11, r29, 32
+.text:825A6F8C                 std       r11, 0xD0+var_78(r1)
+.text:825A6F90                 lfd       f0, 0xD0+var_78(r1)
+.text:825A6F94                 fcfid     f0, f0
+.text:825A6F98                 frsp      f0, f0
+.text:825A6F9C                 fsubs     f0, f0, f28
+.text:825A6FA0                 fmuls     f31, f0, f27
+.text:825A6FA4                 fmr       f1, f31
+.text:825A6FA8                 bl        sub_825A6BD8
+.text:825A6FAC                 fmr       f30, f1
+.text:825A6FB0                 fmuls     f1, f29, f31
+.text:825A6FB4                 bl        sub_825A6BD8
+.text:825A6FB8                 addi      r29, r29, 1
+.text:825A6FBC                 fmuls     f0, f1, f30
+.text:825A6FC0                 stfs      f0, 0(r30)
+.text:825A6FC4                 addi      r30, r30, 4
+.text:825A6FC8                 cmplw     cr6, r29, r31
+.text:825A6FCC                 blt       cr6, loc_825A6F88
+.text:825A6FD0                 b         loc_825A7190
+.text:825A6FD4 # ---------------------------------------------------------------------------
+.text:825A6FD4
+.text:825A6FD4 loc_825A6FD4:                           # CODE XREF: sub_825A6DF0+54↑j
+.text:825A6FD4                 li        r29, 0
+.text:825A6FD8                 cmplwi    cr6, r31, 0
+.text:825A6FDC                 beq       cr6, loc_825A7190
+.text:825A6FE0                 clrldi    r10, r31, 32
+.text:825A6FE4                 mr        r30, r28
+.text:825A6FE8                 std       r10, 0xD0+var_78(r1)
+.text:825A6FEC                 lfd       f0, 0xD0+var_78(r1)
+.text:825A6FF0                 fcfid     f0, f0
+.text:825A6FF4                 frsp      f13, f0
+.text:825A6FF8                 lfs       f0, (flt_82062DCC - 0x82063970)(r11)
+.text:825A6FFC                 fmuls     f31, f13, f0
+.text:825A7000
+.text:825A7000 loc_825A7000:                           # CODE XREF: sub_825A6DF0+240↓j
+.text:825A7000                 clrldi    r11, r29, 32
+.text:825A7004                 std       r11, 0xD0+var_78(r1)
+.text:825A7008                 lfd       f0, 0xD0+var_78(r1)
+.text:825A700C                 fcfid     f0, f0
+.text:825A7010                 frsp      f0, f0
+.text:825A7014                 fsubs     f0, f0, f31
+.text:825A7018                 fmuls     f1, f0, f27
+.text:825A701C                 bl        sub_825A6C30
+.text:825A7020                 addi      r29, r29, 1
+.text:825A7024                 stfs      f1, 0(r30)
+.text:825A7028                 addi      r30, r30, 4
+.text:825A702C                 cmplw     cr6, r29, r31
+.text:825A7030                 blt       cr6, loc_825A7000
+.text:825A7034                 b         loc_825A7190
+.text:825A7038 # ---------------------------------------------------------------------------
+.text:825A7038
+.text:825A7038 loc_825A7038:                           # CODE XREF: sub_825A6DF0+4C↑j
+.text:825A7038                 li        r29, 0
+.text:825A703C                 cmplwi    cr6, r31, 0
+.text:825A7040                 beq       cr6, loc_825A7190
+.text:825A7044                 clrldi    r10, r31, 32
+.text:825A7048                 fdivs     f31, f26, f30
+.text:825A704C                 lfs       f29, (flt_82063970 - 0x82063970)(r11)
+.text:825A7050                 mr        r30, r28
+.text:825A7054                 std       r10, 0xD0+var_78(r1)
+.text:825A7058                 lfd       f0, 0xD0+var_78(r1)
+.text:825A705C                 fcfid     f0, f0
+.text:825A7060                 frsp      f13, f0
+.text:825A7064                 lfs       f0, (flt_82062DCC - 0x82063970)(r11)
+.text:825A7068                 fmuls     f30, f13, f0
+.text:825A706C
+.text:825A706C loc_825A706C:                           # CODE XREF: sub_825A6DF0+2BC↓j
+.text:825A706C                 clrldi    r11, r29, 32
+.text:825A7070                 fmr       f1, f29
+.text:825A7074                 std       r11, 0xD0+var_78(r1)
+.text:825A7078                 lfd       f0, 0xD0+var_78(r1)
+.text:825A707C                 fcfid     f0, f0
+.text:825A7080                 frsp      f0, f0
+.text:825A7084                 fsubs     f0, f0, f30
+.text:825A7088                 fmuls     f0, f0, f31
+.text:825A708C                 fmuls     f0, f0, f27
+.text:825A7090                 fmuls     f0, f0, f0
+.text:825A7094                 fneg      f2, f0
+.text:825A7098                 bl        sub_825A62A8
+.text:825A709C                 addi      r29, r29, 1
+.text:825A70A0                 stfs      f1, 0(r30)
+.text:825A70A4                 addi      r30, r30, 4
+.text:825A70A8                 cmplw     cr6, r29, r31
+.text:825A70AC                 blt       cr6, loc_825A706C
+.text:825A70B0                 b         loc_825A7190
+.text:825A70B4 # ---------------------------------------------------------------------------
+.text:825A70B4
+.text:825A70B4 loc_825A70B4:                           # CODE XREF: sub_825A6DF0+44↑j
+.text:825A70B4                 clrldi    r10, r31, 32
+.text:825A70B8                 li        r30, 0
+.text:825A70BC                 cmplwi    cr6, r31, 0
+.text:825A70C0                 std       r10, 0xD0+var_78(r1)
+.text:825A70C4                 lfd       f0, 0xD0+var_78(r1)
+.text:825A70C8                 fcfid     f0, f0
+.text:825A70CC                 frsp      f13, f0
+.text:825A70D0                 lfs       f0, (flt_82062DCC - 0x82063970)(r11)
+.text:825A70D4                 fmuls     f29, f13, f0
+.text:825A70D8                 beq       cr6, loc_825A7190
+.text:825A70DC                 mr        r29, r28
+.text:825A70E0
+.text:825A70E0 loc_825A70E0:                           # CODE XREF: sub_825A6DF0+338↓j
+.text:825A70E0                 clrldi    r11, r30, 32
+.text:825A70E4                 fmr       f3, f30
+.text:825A70E8                 fmr       f2, f29
+.text:825A70EC                 std       r11, 0xD0+var_78(r1)
+.text:825A70F0                 lfd       f0, 0xD0+var_78(r1)
+.text:825A70F4                 fcfid     f0, f0
+.text:825A70F8                 frsp      f31, f0
+.text:825A70FC                 fmr       f1, f31
+.text:825A7100                 bl        sub_825A6B70
+.text:825A7104                 fsubs     f0, f31, f29
+.text:825A7108                 fmr       f31, f1
+.text:825A710C                 fmuls     f1, f0, f27
+.text:825A7110                 bl        sub_825A6BD8
+.text:825A7114                 addi      r30, r30, 1
+.text:825A7118                 fmuls     f0, f1, f31
+.text:825A711C                 stfs      f0, 0(r29)
+.text:825A7120                 addi      r29, r29, 4
+.text:825A7124                 cmplw     cr6, r30, r31
+.text:825A7128                 blt       cr6, loc_825A70E0
+.text:825A712C                 b         loc_825A7190
+.text:825A7130 # ---------------------------------------------------------------------------
+.text:825A7130
+.text:825A7130 loc_825A7130:                           # CODE XREF: sub_825A6DF0+3C↑j
+.text:825A7130                 li        r29, 0
+.text:825A7134                 cmplwi    cr6, r31, 0
+.text:825A7138                 beq       cr6, loc_825A7190
+.text:825A713C                 clrldi    r10, r31, 32
+.text:825A7140                 mr        r30, r28
+.text:825A7144                 std       r10, 0xD0+var_78(r1)
+.text:825A7148                 lfd       f0, 0xD0+var_78(r1)
+.text:825A714C                 fcfid     f0, f0
+.text:825A7150                 frsp      f13, f0
+.text:825A7154                 lfs       f0, (flt_82062DCC - 0x82063970)(r11)
+.text:825A7158                 fmuls     f31, f13, f0
+.text:825A715C
+.text:825A715C loc_825A715C:                           # CODE XREF: sub_825A6DF0+39C↓j
+.text:825A715C                 clrldi    r11, r29, 32
+.text:825A7160                 std       r11, 0xD0+var_78(r1)
+.text:825A7164                 lfd       f0, 0xD0+var_78(r1)
+.text:825A7168                 fcfid     f0, f0
+.text:825A716C                 frsp      f0, f0
+.text:825A7170                 fsubs     f0, f0, f31
+.text:825A7174                 fmuls     f1, f0, f27
+.text:825A7178                 bl        sub_825A6D10
+.text:825A717C                 addi      r29, r29, 1
+.text:825A7180                 stfs      f1, 0(r30)
+.text:825A7184                 addi      r30, r30, 4
+.text:825A7188                 cmplw     cr6, r29, r31
+.text:825A718C                 blt       cr6, loc_825A715C
+.text:825A7190
+.text:825A7190 loc_825A7190:                           # CODE XREF: sub_825A6DF0+AC↑j
+.text:825A7190                                         # sub_825A6DF0+C0↑j ...
+.text:825A7190                 stfs      f25, 0(r28)
+.text:825A7194                 mr        r10, r28
+.text:825A7198                 li        r8, 0x10
+.text:825A719C
+.text:825A719C loc_825A719C:                           # CODE XREF: sub_825A6DF0+400↓j
+.text:825A719C                 fmr       f0, f25
+.text:825A71A0                 cmplwi    cr6, r27, 0
+.text:825A71A4                 beq       cr6, loc_825A71E8
+.text:825A71A8                 mr        r9, r10
+.text:825A71AC                 mr        r11, r27
+.text:825A71B0
+.text:825A71B0 loc_825A71B0:                           # CODE XREF: sub_825A6DF0+3D0↓j
+.text:825A71B0                 lfs       f13, 0(r9)
+.text:825A71B4                 addic.    r11, r11, -1
+.text:825A71B8                 fadds     f0, f13, f0
+.text:825A71BC                 addi      r9, r9, 0x40 # '@'
+.text:825A71C0                 bne       loc_825A71B0
+.text:825A71C4                 fdivs     f0, f26, f0
+.text:825A71C8                 mr        r11, r10
+.text:825A71CC                 mr        r9, r27
+.text:825A71D0
+.text:825A71D0 loc_825A71D0:                           # CODE XREF: sub_825A6DF0+3F4↓j
+.text:825A71D0                 lfs       f13, 0(r11)
+.text:825A71D4                 addic.    r9, r9, -1
+.text:825A71D8                 fmuls     f13, f0, f13
+.text:825A71DC                 stfs      f13, 0(r11)
+.text:825A71E0                 addi      r11, r11, 0x40 # '@'
+.text:825A71E4                 bne       loc_825A71D0
+.text:825A71E8
+.text:825A71E8 loc_825A71E8:                           # CODE XREF: sub_825A6DF0+3B4↑j
+.text:825A71E8                 addic.    r8, r8, -1
+.text:825A71EC                 addi      r10, r10, 4
+.text:825A71F0                 bne       loc_825A719C
+.text:825A71F4                 addi      r1, r1, 0xD0
+.text:825A71F8                 addi      r12, r1, var_30
+.text:825A71FC                 bl        __restfpr_25
+.text:825A7200                 b         __restgprlr_27
+.text:825A7200 # End of function sub_825A6DF0
+
+.text:825A65A8 sub_825A65A8:                           # CODE XREF: sub_825A7208+294↓p
+.text:825A65A8                                         # DATA XREF: .pdata:820D06B0↑o
+.text:825A65A8
+.text:825A65A8 .set back_chain, -0x3D0
+.text:825A65A8 .set var_380, -0x380
+.text:825A65A8 .set var_370, -0x370
+.text:825A65A8 .set var_348, -0x348
+.text:825A65A8 .set var_340, -0x340
+.text:825A65A8 .set var_338, -0x338
+.text:825A65A8 .set var_330, -0x330
+.text:825A65A8 .set var_328, -0x328
+.text:825A65A8 .set var_320, -0x320
+.text:825A65A8 .set var_310, -0x310
+.text:825A65A8 .set var_2E0, -0x2E0
+.text:825A65A8 .set var_2B0, -0x2B0
+.text:825A65A8
+.text:825A65A8                 mflr      r12
+.text:825A65AC                 bl        __savegprlr_27
+.text:825A65B0                 stwu      r1, back_chain(r1)
+.text:825A65B4                 mr        r30, r5
+.text:825A65B8                 mr        r31, r4
+.text:825A65BC                 slwi.     r11, r30, 4
+.text:825A65C0                 ble       loc_825A65D4
+.text:825A65C4                 mr        r4, r3
+.text:825A65C8                 addi      r3, r1, 0x3D0+var_2B0
+.text:825A65CC                 slwi      r5, r11, 2
+.text:825A65D0                 bl        sub_826BE200
+.text:825A65D4
+.text:825A65D4 loc_825A65D4:                           # CODE XREF: sub_825A65A8+18↑j
+.text:825A65D4                 cmpwi     cr6, r30, 0
+.text:825A65D8                 ble       cr6, loc_825A65FC
+.text:825A65DC                 addi      r11, r1, 0x3D0+var_370
+.text:825A65E0                 li        r10, -1
+.text:825A65E4                 cmplwi    r30, 0
+.text:825A65E8                 beq       loc_825A65FC
+.text:825A65EC                 mtctr     r30
+.text:825A65F0
+.text:825A65F0 loc_825A65F0:                           # CODE XREF: sub_825A65A8+50↓j
+.text:825A65F0                 stw       r10, 0(r11)
+.text:825A65F4                 addi      r11, r11, 4
+.text:825A65F8                 bdnz      loc_825A65F0
+.text:825A65FC
+.text:825A65FC loc_825A65FC:                           # CODE XREF: sub_825A65A8+30↑j
+.text:825A65FC                                         # sub_825A65A8+40↑j
+.text:825A65FC                 srawi     r11, r30, 1
+.text:825A6600                 addi      r10, r30, -1
+.text:825A6604                 addze     r11, r11
+.text:825A6608                 srawi     r10, r10, 1
+.text:825A660C                 li        r29, 0
+.text:825A6610                 addze     r10, r10
+.text:825A6614                 slwi      r11, r11, 2
+.text:825A6618                 addi      r9, r1, 0x3D0+var_370
+.text:825A661C                 slwi      r10, r10, 2
+.text:825A6620                 addi      r8, r1, 0x3D0+var_370
+.text:825A6624                 cmpwi     cr6, r30, 2
+.text:825A6628                 li        r4, 1
+.text:825A662C                 stwx      r29, r11, r9
+.text:825A6630                 stwx      r29, r10, r8
+.text:825A6634                 beq       cr6, loc_825A6668
+.text:825A6638                 addi      r11, r30, 2
+.text:825A663C                 addi      r10, r30, -3
+.text:825A6640                 srawi     r11, r11, 1
+.text:825A6644                 addi      r9, r1, 0x3D0+var_370
+.text:825A6648                 addze     r11, r11
+.text:825A664C                 srawi     r10, r10, 1
+.text:825A6650                 slwi      r11, r11, 2
+.text:825A6654                 addze     r10, r10
+.text:825A6658                 addi      r8, r1, 0x3D0+var_370
+.text:825A665C                 slwi      r10, r10, 2
+.text:825A6660                 stwx      r4, r11, r9
+.text:825A6664                 stwx      r4, r10, r8
+.text:825A6668
+.text:825A6668 loc_825A6668:                           # CODE XREF: sub_825A65A8+8C↑j
+.text:825A6668                 cmpwi     cr6, r30, 0
+.text:825A666C                 ble       cr6, loc_825A6698
+.text:825A6670                 addi      r11, r1, 0x3D0+var_370
+.text:825A6674                 mr        r10, r30
+.text:825A6678
+.text:825A6678 loc_825A6678:                           # CODE XREF: sub_825A65A8+EC↓j
+.text:825A6678                 lwz       r9, 0(r11)
+.text:825A667C                 cmpwi     cr6, r9, -1
+.text:825A6680                 bne       cr6, loc_825A668C
+.text:825A6684                 li        r9, 2
+.text:825A6688                 stw       r9, 0(r11)
+.text:825A668C
+.text:825A668C loc_825A668C:                           # CODE XREF: sub_825A65A8+D8↑j
+.text:825A668C                 addic.    r10, r10, -1
+.text:825A6690                 addi      r11, r11, 4
+.text:825A6694                 bne       loc_825A6678
+.text:825A6698
+.text:825A6698 loc_825A6698:                           # CODE XREF: sub_825A65A8+C4↑j
+.text:825A6698                 addi      r11, r1, 0x3D0+var_2B0
+.text:825A669C                 lis       r10, dbl_820B0098@ha
+.text:825A66A0                 subf      r3, r31, r11
+.text:825A66A4                 lis       r11, flt_82062AF4@ha
+.text:825A66A8                 mr        r5, r31
+.text:825A66AC                 addi      r11, r11, flt_82062AF4@l
+.text:825A66B0                 lfd       f9, dbl_820B0098@l(r10)
+.text:825A66B4                 li        r31, 0x10
+.text:825A66B8                 li        r6, 4
+.text:825A66BC                 lfs       f11, (flt_82061CE8 - 0x82062AF4)(r11)
+.text:825A66C0                 lfs       f10, (flt_82062AF4 - 0x82062AF4)(r11)
+.text:825A66C4
+.text:825A66C4 loc_825A66C4:                           # CODE XREF: sub_825A65A8+438↓j
+.text:825A66C4                 li        r8, 0x200
+.text:825A66C8                 cmpwi     cr6, r30, 0
+.text:825A66CC                 ble       cr6, loc_825A678C
+.text:825A66D0                 addi      r9, r1, 0x3D0+var_2E0
+.text:825A66D4                 add       r10, r3, r5
+.text:825A66D8                 mr        r11, r30
+.text:825A66DC
+.text:825A66DC loc_825A66DC:                           # CODE XREF: sub_825A65A8+148↓j
+.text:825A66DC                 lfs       f0, 0(r10)
+.text:825A66E0                 addic.    r11, r11, -1
+.text:825A66E4                 stfs      f0, 0(r9)
+.text:825A66E8                 addi      r10, r10, 0x40 # '@'
+.text:825A66EC                 addi      r9, r9, 4
+.text:825A66F0                 bne       loc_825A66DC
+.text:825A66F4                 mr        r11, r29
+.text:825A66F8                 mr        r9, r30
+.text:825A66FC
+.text:825A66FC loc_825A66FC:                           # CODE XREF: sub_825A65A8+1D8↓j
+.text:825A66FC                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A6700                 addi      r7, r1, 0x3D0+var_380
+.text:825A6704                 lfsx      f0, r11, r10
+.text:825A6708                 addi      r10, r1, 0x3D0+var_370
+.text:825A670C                 fcmpu     cr6, f0, f11
+.text:825A6710                 lwzx      r10, r11, r10
+.text:825A6714                 addi      r28, r10, 7
+.text:825A6718                 slw       r28, r4, r28
+.text:825A671C                 extsw     r28, r28
+.text:825A6720                 ble       cr6, loc_825A6740
+.text:825A6724                 std       r28, 0x3D0+var_320(r1)
+.text:825A6728                 lfd       f13, 0x3D0+var_320(r1)
+.text:825A672C                 fcfid     f13, f13
+.text:825A6730                 frsp      f13, f13
+.text:825A6734                 fmuls     f0, f13, f0
+.text:825A6738                 fadd      f0, f0, f9
+.text:825A673C                 b         loc_825A6758
+.text:825A6740 # ---------------------------------------------------------------------------
+.text:825A6740
+.text:825A6740 loc_825A6740:                           # CODE XREF: sub_825A65A8+178↑j
+.text:825A6740                 std       r28, 0x3D0+var_338(r1)
+.text:825A6744                 lfd       f13, 0x3D0+var_338(r1)
+.text:825A6748                 fcfid     f13, f13
+.text:825A674C                 frsp      f13, f13
+.text:825A6750                 fmuls     f0, f13, f0
+.text:825A6754                 fsub      f0, f0, f9
+.text:825A6758
+.text:825A6758 loc_825A6758:                           # CODE XREF: sub_825A65A8+194↑j
+.text:825A6758                 fctiwz    f0, f0
+.text:825A675C                 stfiwx    f0, 0, r7
+.text:825A6760                 addic.    r9, r9, -1
+.text:825A6764                 subfic    r7, r10, 2
+.text:825A6768                 lwz       r10, 0x3D0+var_380(r1)
+.text:825A676C                 addi      r28, r1, 0x3D0+var_310
+.text:825A6770                 stwx      r10, r11, r28
+.text:825A6774                 addi      r11, r11, 4
+.text:825A6778                 slw       r10, r10, r7
+.text:825A677C                 subf      r8, r10, r8
+.text:825A6780                 bne       loc_825A66FC
+.text:825A6784                 cmpwi     cr6, r8, 0
+.text:825A6788                 ble       cr6, loc_825A687C
+.text:825A678C
+.text:825A678C loc_825A678C:                           # CODE XREF: sub_825A65A8+124↑j
+.text:825A678C                                         # sub_825A65A8+2CC↓j
+.text:825A678C                 mr        r7, r29
+.text:825A6790                 fmr       f12, f10
+.text:825A6794                 mr        r9, r29
+.text:825A6798                 cmpwi     cr6, r30, 0
+.text:825A679C                 ble       cr6, loc_825A6850
+.text:825A67A0                 mr        r11, r29
+.text:825A67A4
+.text:825A67A4 loc_825A67A4:                           # CODE XREF: sub_825A65A8+2A4↓j
+.text:825A67A4                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A67A8                 lfsx      f0, r11, r10
+.text:825A67AC                 fabs      f13, f0
+.text:825A67B0                 fcmpu     cr6, f13, f11
+.text:825A67B4                 ble       cr6, loc_825A6808
+.text:825A67B8                 addi      r10, r1, 0x3D0+var_370
+.text:825A67BC                 addi      r28, r1, 0x3D0+var_310
+.text:825A67C0                 lwzx      r10, r11, r10
+.text:825A67C4                 addi      r10, r10, 7
+.text:825A67C8                 lwax      r28, r11, r28
+.text:825A67CC                 slw       r10, r4, r10
+.text:825A67D0                 extsw     r10, r10
+.text:825A67D4                 std       r28, 0x3D0+var_328(r1)
+.text:825A67D8                 std       r10, 0x3D0+var_330(r1)
+.text:825A67DC                 lfd       f13, 0x3D0+var_328(r1)
+.text:825A67E0                 fcfid     f13, f13
+.text:825A67E4                 lfd       f8, 0x3D0+var_330(r1)
+.text:825A67E8                 fcfid     f8, f8
+.text:825A67EC                 frsp      f13, f13
+.text:825A67F0                 frsp      f8, f8
+.text:825A67F4                 fmuls     f0, f8, f0
+.text:825A67F8                 fsubs     f13, f13, f0
+.text:825A67FC                 fdivs     f0, f13, f0
+.text:825A6800                 fabs      f0, f0
+.text:825A6804                 b         loc_825A680C
+.text:825A6808 # ---------------------------------------------------------------------------
+.text:825A6808
+.text:825A6808 loc_825A6808:                           # CODE XREF: sub_825A65A8+20C↑j
+.text:825A6808                 fmr       f0, f10
+.text:825A680C
+.text:825A680C loc_825A680C:                           # CODE XREF: sub_825A65A8+25C↑j
+.text:825A680C                 addi      r10, r1, 0x3D0+var_310
+.text:825A6810                 lwzx      r10, r11, r10
+.text:825A6814                 cmpwi     cr6, r10, 0xFF
+.text:825A6818                 bge       cr6, loc_825A6840
+.text:825A681C                 addi      r10, r1, 0x3D0+var_370
+.text:825A6820                 lwzx      r10, r11, r10
+.text:825A6824                 sraw      r10, r6, r10
+.text:825A6828                 cmpw      cr6, r8, r10
+.text:825A682C                 blt       cr6, loc_825A6840
+.text:825A6830                 fcmpu     cr6, f0, f12
+.text:825A6834                 bge       cr6, loc_825A6840
+.text:825A6838                 fmr       f12, f0
+.text:825A683C                 mr        r7, r9
+.text:825A6840
+.text:825A6840 loc_825A6840:                           # CODE XREF: sub_825A65A8+270↑j
+.text:825A6840                                         # sub_825A65A8+284↑j ...
+.text:825A6840                 addi      r9, r9, 1
+.text:825A6844                 addi      r11, r11, 4
+.text:825A6848                 cmpw      cr6, r9, r30
+.text:825A684C                 blt       cr6, loc_825A67A4
+.text:825A6850
+.text:825A6850 loc_825A6850:                           # CODE XREF: sub_825A65A8+1F4↑j
+.text:825A6850                 slwi      r11, r7, 2
+.text:825A6854                 addi      r9, r1, 0x3D0+var_370
+.text:825A6858                 addi      r10, r1, 0x3D0+var_310
+.text:825A685C                 lwzx      r9, r11, r9
+.text:825A6860                 sraw      r9, r6, r9
+.text:825A6864                 subf.     r8, r9, r8
+.text:825A6868                 lwzx      r9, r11, r10
+.text:825A686C                 addi      r9, r9, 1
+.text:825A6870                 stwx      r9, r11, r10
+.text:825A6874                 bgt       loc_825A678C
+.text:825A6878                 cmpwi     cr6, r8, 0
+.text:825A687C
+.text:825A687C loc_825A687C:                           # CODE XREF: sub_825A65A8+1E0↑j
+.text:825A687C                 bge       cr6, loc_825A6998
+.text:825A6880
+.text:825A6880 loc_825A6880:                           # CODE XREF: sub_825A65A8+3EC↓j
+.text:825A6880                 mr        r7, r29
+.text:825A6884                 fmr       f12, f10
+.text:825A6888                 mr        r9, r29
+.text:825A688C                 cmpwi     cr6, r30, 0
+.text:825A6890                 ble       cr6, loc_825A6970
+.text:825A6894                 mr        r11, r29
+.text:825A6898
+.text:825A6898 loc_825A6898:                           # CODE XREF: sub_825A65A8+3C4↓j
+.text:825A6898                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A689C                 lfsx      f0, r11, r10
+.text:825A68A0                 fabs      f13, f0
+.text:825A68A4                 fcmpu     cr6, f13, f11
+.text:825A68A8                 ble       cr6, loc_825A6904
+.text:825A68AC                 addi      r10, r1, 0x3D0+var_370
+.text:825A68B0                 addi      r28, r1, 0x3D0+var_310
+.text:825A68B4                 lwzx      r10, r11, r10
+.text:825A68B8                 addi      r27, r10, 7
+.text:825A68BC                 lwzx      r10, r11, r28
+.text:825A68C0                 addi      r10, r10, -1
+.text:825A68C4                 extsw     r10, r10
+.text:825A68C8                 std       r10, 0x3D0+var_348(r1)
+.text:825A68CC                 slw       r10, r4, r27
+.text:825A68D0                 extsw     r10, r10
+.text:825A68D4                 std       r10, 0x3D0+var_340(r1)
+.text:825A68D8                 lfd       f13, 0x3D0+var_348(r1)
+.text:825A68DC                 fcfid     f13, f13
+.text:825A68E0                 frsp      f13, f13
+.text:825A68E4                 lfd       f8, 0x3D0+var_340(r1)
+.text:825A68E8                 fcfid     f8, f8
+.text:825A68EC                 frsp      f8, f8
+.text:825A68F0                 fmuls     f0, f8, f0
+.text:825A68F4                 fsubs     f13, f13, f0
+.text:825A68F8                 fdivs     f0, f13, f0
+.text:825A68FC                 fabs      f0, f0
+.text:825A6900                 b         loc_825A6908
+.text:825A6904 # ---------------------------------------------------------------------------
+.text:825A6904
+.text:825A6904 loc_825A6904:                           # CODE XREF: sub_825A65A8+300↑j
+.text:825A6904                 fmr       f0, f10
+.text:825A6908
+.text:825A6908 loc_825A6908:                           # CODE XREF: sub_825A65A8+358↑j
+.text:825A6908                 addi      r10, r1, 0x3D0+var_370
+.text:825A690C                 lwzx      r10, r11, r10
+.text:825A6910                 sraw      r28, r6, r10
+.text:825A6914                 neg       r28, r28
+.text:825A6918                 cmpw      cr6, r8, r28
+.text:825A691C                 bgt       cr6, loc_825A6960
+.text:825A6920                 cmpwi     cr6, r10, 0
+.text:825A6924                 bne       cr6, loc_825A693C
+.text:825A6928                 addi      r28, r1, 0x3D0+var_310
+.text:825A692C                 lwzx      r28, r11, r28
+.text:825A6930                 cmpwi     cr6, r28, 0
+.text:825A6934                 bgt       cr6, loc_825A6950
+.text:825A6938                 cmpwi     cr6, r10, 0
+.text:825A693C
+.text:825A693C loc_825A693C:                           # CODE XREF: sub_825A65A8+37C↑j
+.text:825A693C                 ble       cr6, loc_825A6960
+.text:825A6940                 addi      r10, r1, 0x3D0+var_310
+.text:825A6944                 lwzx      r10, r11, r10
+.text:825A6948                 cmpwi     cr6, r10, -0x100
+.text:825A694C                 ble       cr6, loc_825A6960
+.text:825A6950
+.text:825A6950 loc_825A6950:                           # CODE XREF: sub_825A65A8+38C↑j
+.text:825A6950                 fcmpu     cr6, f0, f12
+.text:825A6954                 bge       cr6, loc_825A6960
+.text:825A6958                 fmr       f12, f0
+.text:825A695C                 mr        r7, r9
+.text:825A6960
+.text:825A6960 loc_825A6960:                           # CODE XREF: sub_825A65A8+374↑j
+.text:825A6960                                         # sub_825A65A8:loc_825A693C↑j ...
+.text:825A6960                 addi      r9, r9, 1
+.text:825A6964                 addi      r11, r11, 4
+.text:825A6968                 cmpw      cr6, r9, r30
+.text:825A696C                 blt       cr6, loc_825A6898
+.text:825A6970
+.text:825A6970 loc_825A6970:                           # CODE XREF: sub_825A65A8+2E8↑j
+.text:825A6970                 slwi      r11, r7, 2
+.text:825A6974                 addi      r9, r1, 0x3D0+var_370
+.text:825A6978                 addi      r10, r1, 0x3D0+var_310
+.text:825A697C                 lwzx      r9, r11, r9
+.text:825A6980                 sraw      r9, r6, r9
+.text:825A6984                 add.      r8, r9, r8
+.text:825A6988                 lwzx      r9, r11, r10
+.text:825A698C                 addi      r9, r9, -1
+.text:825A6990                 stwx      r9, r11, r10
+.text:825A6994                 blt       loc_825A6880
+.text:825A6998
+.text:825A6998 loc_825A6998:                           # CODE XREF: sub_825A65A8:loc_825A687C↑j
+.text:825A6998                 cmpwi     cr6, r30, 0
+.text:825A699C                 ble       cr6, loc_825A69D8
+.text:825A69A0                 mr        r9, r5
+.text:825A69A4                 mr        r11, r29
+.text:825A69A8                 mr        r10, r30
+.text:825A69AC
+.text:825A69AC loc_825A69AC:                           # CODE XREF: sub_825A65A8+42C↓j
+.text:825A69AC                 addi      r8, r1, 0x3D0+var_370
+.text:825A69B0                 addi      r7, r1, 0x3D0+var_310
+.text:825A69B4                 addic.    r10, r10, -1
+.text:825A69B8                 lwzx      r8, r11, r8
+.text:825A69BC                 lwzx      r7, r11, r7
+.text:825A69C0                 addi      r11, r11, 4
+.text:825A69C4                 subfic    r8, r8, 2
+.text:825A69C8                 slw       r8, r7, r8
+.text:825A69CC                 stw       r8, 0(r9)
+.text:825A69D0                 addi      r9, r9, 0x40 # '@'
+.text:825A69D4                 bne       loc_825A69AC
+.text:825A69D8
+.text:825A69D8 loc_825A69D8:                           # CODE XREF: sub_825A65A8+3F4↑j
+.text:825A69D8                 addic.    r31, r31, -1
+.text:825A69DC                 addi      r5, r5, 4
+.text:825A69E0                 bne       loc_825A66C4
+.text:825A69E4                 addi      r1, r1, 0x3D0
+.text:825A69E8                 b         __restgprlr_27
+.text:825A69E8 # End of function sub_825A65A8
+
+.text:825A65A8 sub_825A65A8:                           # CODE XREF: sub_825A7208+294↓p
+.text:825A65A8                                         # DATA XREF: .pdata:820D06B0↑o
+.text:825A65A8
+.text:825A65A8 .set back_chain, -0x3D0
+.text:825A65A8 .set var_380, -0x380
+.text:825A65A8 .set var_370, -0x370
+.text:825A65A8 .set var_348, -0x348
+.text:825A65A8 .set var_340, -0x340
+.text:825A65A8 .set var_338, -0x338
+.text:825A65A8 .set var_330, -0x330
+.text:825A65A8 .set var_328, -0x328
+.text:825A65A8 .set var_320, -0x320
+.text:825A65A8 .set var_310, -0x310
+.text:825A65A8 .set var_2E0, -0x2E0
+.text:825A65A8 .set var_2B0, -0x2B0
+.text:825A65A8
+.text:825A65A8                 mflr      r12
+.text:825A65AC                 bl        __savegprlr_27
+.text:825A65B0                 stwu      r1, back_chain(r1)
+.text:825A65B4                 mr        r30, r5
+.text:825A65B8                 mr        r31, r4
+.text:825A65BC                 slwi.     r11, r30, 4
+.text:825A65C0                 ble       loc_825A65D4
+.text:825A65C4                 mr        r4, r3
+.text:825A65C8                 addi      r3, r1, 0x3D0+var_2B0
+.text:825A65CC                 slwi      r5, r11, 2
+.text:825A65D0                 bl        sub_826BE200
+.text:825A65D4
+.text:825A65D4 loc_825A65D4:                           # CODE XREF: sub_825A65A8+18↑j
+.text:825A65D4                 cmpwi     cr6, r30, 0
+.text:825A65D8                 ble       cr6, loc_825A65FC
+.text:825A65DC                 addi      r11, r1, 0x3D0+var_370
+.text:825A65E0                 li        r10, -1
+.text:825A65E4                 cmplwi    r30, 0
+.text:825A65E8                 beq       loc_825A65FC
+.text:825A65EC                 mtctr     r30
+.text:825A65F0
+.text:825A65F0 loc_825A65F0:                           # CODE XREF: sub_825A65A8+50↓j
+.text:825A65F0                 stw       r10, 0(r11)
+.text:825A65F4                 addi      r11, r11, 4
+.text:825A65F8                 bdnz      loc_825A65F0
+.text:825A65FC
+.text:825A65FC loc_825A65FC:                           # CODE XREF: sub_825A65A8+30↑j
+.text:825A65FC                                         # sub_825A65A8+40↑j
+.text:825A65FC                 srawi     r11, r30, 1
+.text:825A6600                 addi      r10, r30, -1
+.text:825A6604                 addze     r11, r11
+.text:825A6608                 srawi     r10, r10, 1
+.text:825A660C                 li        r29, 0
+.text:825A6610                 addze     r10, r10
+.text:825A6614                 slwi      r11, r11, 2
+.text:825A6618                 addi      r9, r1, 0x3D0+var_370
+.text:825A661C                 slwi      r10, r10, 2
+.text:825A6620                 addi      r8, r1, 0x3D0+var_370
+.text:825A6624                 cmpwi     cr6, r30, 2
+.text:825A6628                 li        r4, 1
+.text:825A662C                 stwx      r29, r11, r9
+.text:825A6630                 stwx      r29, r10, r8
+.text:825A6634                 beq       cr6, loc_825A6668
+.text:825A6638                 addi      r11, r30, 2
+.text:825A663C                 addi      r10, r30, -3
+.text:825A6640                 srawi     r11, r11, 1
+.text:825A6644                 addi      r9, r1, 0x3D0+var_370
+.text:825A6648                 addze     r11, r11
+.text:825A664C                 srawi     r10, r10, 1
+.text:825A6650                 slwi      r11, r11, 2
+.text:825A6654                 addze     r10, r10
+.text:825A6658                 addi      r8, r1, 0x3D0+var_370
+.text:825A665C                 slwi      r10, r10, 2
+.text:825A6660                 stwx      r4, r11, r9
+.text:825A6664                 stwx      r4, r10, r8
+.text:825A6668
+.text:825A6668 loc_825A6668:                           # CODE XREF: sub_825A65A8+8C↑j
+.text:825A6668                 cmpwi     cr6, r30, 0
+.text:825A666C                 ble       cr6, loc_825A6698
+.text:825A6670                 addi      r11, r1, 0x3D0+var_370
+.text:825A6674                 mr        r10, r30
+.text:825A6678
+.text:825A6678 loc_825A6678:                           # CODE XREF: sub_825A65A8+EC↓j
+.text:825A6678                 lwz       r9, 0(r11)
+.text:825A667C                 cmpwi     cr6, r9, -1
+.text:825A6680                 bne       cr6, loc_825A668C
+.text:825A6684                 li        r9, 2
+.text:825A6688                 stw       r9, 0(r11)
+.text:825A668C
+.text:825A668C loc_825A668C:                           # CODE XREF: sub_825A65A8+D8↑j
+.text:825A668C                 addic.    r10, r10, -1
+.text:825A6690                 addi      r11, r11, 4
+.text:825A6694                 bne       loc_825A6678
+.text:825A6698
+.text:825A6698 loc_825A6698:                           # CODE XREF: sub_825A65A8+C4↑j
+.text:825A6698                 addi      r11, r1, 0x3D0+var_2B0
+.text:825A669C                 lis       r10, dbl_820B0098@ha
+.text:825A66A0                 subf      r3, r31, r11
+.text:825A66A4                 lis       r11, flt_82062AF4@ha
+.text:825A66A8                 mr        r5, r31
+.text:825A66AC                 addi      r11, r11, flt_82062AF4@l
+.text:825A66B0                 lfd       f9, dbl_820B0098@l(r10)
+.text:825A66B4                 li        r31, 0x10
+.text:825A66B8                 li        r6, 4
+.text:825A66BC                 lfs       f11, (flt_82061CE8 - 0x82062AF4)(r11)
+.text:825A66C0                 lfs       f10, (flt_82062AF4 - 0x82062AF4)(r11)
+.text:825A66C4
+.text:825A66C4 loc_825A66C4:                           # CODE XREF: sub_825A65A8+438↓j
+.text:825A66C4                 li        r8, 0x200
+.text:825A66C8                 cmpwi     cr6, r30, 0
+.text:825A66CC                 ble       cr6, loc_825A678C
+.text:825A66D0                 addi      r9, r1, 0x3D0+var_2E0
+.text:825A66D4                 add       r10, r3, r5
+.text:825A66D8                 mr        r11, r30
+.text:825A66DC
+.text:825A66DC loc_825A66DC:                           # CODE XREF: sub_825A65A8+148↓j
+.text:825A66DC                 lfs       f0, 0(r10)
+.text:825A66E0                 addic.    r11, r11, -1
+.text:825A66E4                 stfs      f0, 0(r9)
+.text:825A66E8                 addi      r10, r10, 0x40 # '@'
+.text:825A66EC                 addi      r9, r9, 4
+.text:825A66F0                 bne       loc_825A66DC
+.text:825A66F4                 mr        r11, r29
+.text:825A66F8                 mr        r9, r30
+.text:825A66FC
+.text:825A66FC loc_825A66FC:                           # CODE XREF: sub_825A65A8+1D8↓j
+.text:825A66FC                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A6700                 addi      r7, r1, 0x3D0+var_380
+.text:825A6704                 lfsx      f0, r11, r10
+.text:825A6708                 addi      r10, r1, 0x3D0+var_370
+.text:825A670C                 fcmpu     cr6, f0, f11
+.text:825A6710                 lwzx      r10, r11, r10
+.text:825A6714                 addi      r28, r10, 7
+.text:825A6718                 slw       r28, r4, r28
+.text:825A671C                 extsw     r28, r28
+.text:825A6720                 ble       cr6, loc_825A6740
+.text:825A6724                 std       r28, 0x3D0+var_320(r1)
+.text:825A6728                 lfd       f13, 0x3D0+var_320(r1)
+.text:825A672C                 fcfid     f13, f13
+.text:825A6730                 frsp      f13, f13
+.text:825A6734                 fmuls     f0, f13, f0
+.text:825A6738                 fadd      f0, f0, f9
+.text:825A673C                 b         loc_825A6758
+.text:825A6740 # ---------------------------------------------------------------------------
+.text:825A6740
+.text:825A6740 loc_825A6740:                           # CODE XREF: sub_825A65A8+178↑j
+.text:825A6740                 std       r28, 0x3D0+var_338(r1)
+.text:825A6744                 lfd       f13, 0x3D0+var_338(r1)
+.text:825A6748                 fcfid     f13, f13
+.text:825A674C                 frsp      f13, f13
+.text:825A6750                 fmuls     f0, f13, f0
+.text:825A6754                 fsub      f0, f0, f9
+.text:825A6758
+.text:825A6758 loc_825A6758:                           # CODE XREF: sub_825A65A8+194↑j
+.text:825A6758                 fctiwz    f0, f0
+.text:825A675C                 stfiwx    f0, 0, r7
+.text:825A6760                 addic.    r9, r9, -1
+.text:825A6764                 subfic    r7, r10, 2
+.text:825A6768                 lwz       r10, 0x3D0+var_380(r1)
+.text:825A676C                 addi      r28, r1, 0x3D0+var_310
+.text:825A6770                 stwx      r10, r11, r28
+.text:825A6774                 addi      r11, r11, 4
+.text:825A6778                 slw       r10, r10, r7
+.text:825A677C                 subf      r8, r10, r8
+.text:825A6780                 bne       loc_825A66FC
+.text:825A6784                 cmpwi     cr6, r8, 0
+.text:825A6788                 ble       cr6, loc_825A687C
+.text:825A678C
+.text:825A678C loc_825A678C:                           # CODE XREF: sub_825A65A8+124↑j
+.text:825A678C                                         # sub_825A65A8+2CC↓j
+.text:825A678C                 mr        r7, r29
+.text:825A6790                 fmr       f12, f10
+.text:825A6794                 mr        r9, r29
+.text:825A6798                 cmpwi     cr6, r30, 0
+.text:825A679C                 ble       cr6, loc_825A6850
+.text:825A67A0                 mr        r11, r29
+.text:825A67A4
+.text:825A67A4 loc_825A67A4:                           # CODE XREF: sub_825A65A8+2A4↓j
+.text:825A67A4                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A67A8                 lfsx      f0, r11, r10
+.text:825A67AC                 fabs      f13, f0
+.text:825A67B0                 fcmpu     cr6, f13, f11
+.text:825A67B4                 ble       cr6, loc_825A6808
+.text:825A67B8                 addi      r10, r1, 0x3D0+var_370
+.text:825A67BC                 addi      r28, r1, 0x3D0+var_310
+.text:825A67C0                 lwzx      r10, r11, r10
+.text:825A67C4                 addi      r10, r10, 7
+.text:825A67C8                 lwax      r28, r11, r28
+.text:825A67CC                 slw       r10, r4, r10
+.text:825A67D0                 extsw     r10, r10
+.text:825A67D4                 std       r28, 0x3D0+var_328(r1)
+.text:825A67D8                 std       r10, 0x3D0+var_330(r1)
+.text:825A67DC                 lfd       f13, 0x3D0+var_328(r1)
+.text:825A67E0                 fcfid     f13, f13
+.text:825A67E4                 lfd       f8, 0x3D0+var_330(r1)
+.text:825A67E8                 fcfid     f8, f8
+.text:825A67EC                 frsp      f13, f13
+.text:825A67F0                 frsp      f8, f8
+.text:825A67F4                 fmuls     f0, f8, f0
+.text:825A67F8                 fsubs     f13, f13, f0
+.text:825A67FC                 fdivs     f0, f13, f0
+.text:825A6800                 fabs      f0, f0
+.text:825A6804                 b         loc_825A680C
+.text:825A6808 # ---------------------------------------------------------------------------
+.text:825A6808
+.text:825A6808 loc_825A6808:                           # CODE XREF: sub_825A65A8+20C↑j
+.text:825A6808                 fmr       f0, f10
+.text:825A680C
+.text:825A680C loc_825A680C:                           # CODE XREF: sub_825A65A8+25C↑j
+.text:825A680C                 addi      r10, r1, 0x3D0+var_310
+.text:825A6810                 lwzx      r10, r11, r10
+.text:825A6814                 cmpwi     cr6, r10, 0xFF
+.text:825A6818                 bge       cr6, loc_825A6840
+.text:825A681C                 addi      r10, r1, 0x3D0+var_370
+.text:825A6820                 lwzx      r10, r11, r10
+.text:825A6824                 sraw      r10, r6, r10
+.text:825A6828                 cmpw      cr6, r8, r10
+.text:825A682C                 blt       cr6, loc_825A6840
+.text:825A6830                 fcmpu     cr6, f0, f12
+.text:825A6834                 bge       cr6, loc_825A6840
+.text:825A6838                 fmr       f12, f0
+.text:825A683C                 mr        r7, r9
+.text:825A6840
+.text:825A6840 loc_825A6840:                           # CODE XREF: sub_825A65A8+270↑j
+.text:825A6840                                         # sub_825A65A8+284↑j ...
+.text:825A6840                 addi      r9, r9, 1
+.text:825A6844                 addi      r11, r11, 4
+.text:825A6848                 cmpw      cr6, r9, r30
+.text:825A684C                 blt       cr6, loc_825A67A4
+.text:825A6850
+.text:825A6850 loc_825A6850:                           # CODE XREF: sub_825A65A8+1F4↑j
+.text:825A6850                 slwi      r11, r7, 2
+.text:825A6854                 addi      r9, r1, 0x3D0+var_370
+.text:825A6858                 addi      r10, r1, 0x3D0+var_310
+.text:825A685C                 lwzx      r9, r11, r9
+.text:825A6860                 sraw      r9, r6, r9
+.text:825A6864                 subf.     r8, r9, r8
+.text:825A6868                 lwzx      r9, r11, r10
+.text:825A686C                 addi      r9, r9, 1
+.text:825A6870                 stwx      r9, r11, r10
+.text:825A6874                 bgt       loc_825A678C
+.text:825A6878                 cmpwi     cr6, r8, 0
+.text:825A687C
+.text:825A687C loc_825A687C:                           # CODE XREF: sub_825A65A8+1E0↑j
+.text:825A687C                 bge       cr6, loc_825A6998
+.text:825A6880
+.text:825A6880 loc_825A6880:                           # CODE XREF: sub_825A65A8+3EC↓j
+.text:825A6880                 mr        r7, r29
+.text:825A6884                 fmr       f12, f10
+.text:825A6888                 mr        r9, r29
+.text:825A688C                 cmpwi     cr6, r30, 0
+.text:825A6890                 ble       cr6, loc_825A6970
+.text:825A6894                 mr        r11, r29
+.text:825A6898
+.text:825A6898 loc_825A6898:                           # CODE XREF: sub_825A65A8+3C4↓j
+.text:825A6898                 addi      r10, r1, 0x3D0+var_2E0
+.text:825A689C                 lfsx      f0, r11, r10
+.text:825A68A0                 fabs      f13, f0
+.text:825A68A4                 fcmpu     cr6, f13, f11
+.text:825A68A8                 ble       cr6, loc_825A6904
+.text:825A68AC                 addi      r10, r1, 0x3D0+var_370
+.text:825A68B0                 addi      r28, r1, 0x3D0+var_310
+.text:825A68B4                 lwzx      r10, r11, r10
+.text:825A68B8                 addi      r27, r10, 7
+.text:825A68BC                 lwzx      r10, r11, r28
+.text:825A68C0                 addi      r10, r10, -1
+.text:825A68C4                 extsw     r10, r10
+.text:825A68C8                 std       r10, 0x3D0+var_348(r1)
+.text:825A68CC                 slw       r10, r4, r27
+.text:825A68D0                 extsw     r10, r10
+.text:825A68D4                 std       r10, 0x3D0+var_340(r1)
+.text:825A68D8                 lfd       f13, 0x3D0+var_348(r1)
+.text:825A68DC                 fcfid     f13, f13
+.text:825A68E0                 frsp      f13, f13
+.text:825A68E4                 lfd       f8, 0x3D0+var_340(r1)
+.text:825A68E8                 fcfid     f8, f8
+.text:825A68EC                 frsp      f8, f8
+.text:825A68F0                 fmuls     f0, f8, f0
+.text:825A68F4                 fsubs     f13, f13, f0
+.text:825A68F8                 fdivs     f0, f13, f0
+.text:825A68FC                 fabs      f0, f0
+.text:825A6900                 b         loc_825A6908
+.text:825A6904 # ---------------------------------------------------------------------------
+.text:825A6904
+.text:825A6904 loc_825A6904:                           # CODE XREF: sub_825A65A8+300↑j
+.text:825A6904                 fmr       f0, f10
+.text:825A6908
+.text:825A6908 loc_825A6908:                           # CODE XREF: sub_825A65A8+358↑j
+.text:825A6908                 addi      r10, r1, 0x3D0+var_370
+.text:825A690C                 lwzx      r10, r11, r10
+.text:825A6910                 sraw      r28, r6, r10
+.text:825A6914                 neg       r28, r28
+.text:825A6918                 cmpw      cr6, r8, r28
+.text:825A691C                 bgt       cr6, loc_825A6960
+.text:825A6920                 cmpwi     cr6, r10, 0
+.text:825A6924                 bne       cr6, loc_825A693C
+.text:825A6928                 addi      r28, r1, 0x3D0+var_310
+.text:825A692C                 lwzx      r28, r11, r28
+.text:825A6930                 cmpwi     cr6, r28, 0
+.text:825A6934                 bgt       cr6, loc_825A6950
+.text:825A6938                 cmpwi     cr6, r10, 0
+.text:825A693C
+.text:825A693C loc_825A693C:                           # CODE XREF: sub_825A65A8+37C↑j
+.text:825A693C                 ble       cr6, loc_825A6960
+.text:825A6940                 addi      r10, r1, 0x3D0+var_310
+.text:825A6944                 lwzx      r10, r11, r10
+.text:825A6948                 cmpwi     cr6, r10, -0x100
+.text:825A694C                 ble       cr6, loc_825A6960
+.text:825A6950
+.text:825A6950 loc_825A6950:                           # CODE XREF: sub_825A65A8+38C↑j
+.text:825A6950                 fcmpu     cr6, f0, f12
+.text:825A6954                 bge       cr6, loc_825A6960
+.text:825A6958                 fmr       f12, f0
+.text:825A695C                 mr        r7, r9
+.text:825A6960
+.text:825A6960 loc_825A6960:                           # CODE XREF: sub_825A65A8+374↑j
+.text:825A6960                                         # sub_825A65A8:loc_825A693C↑j ...
+.text:825A6960                 addi      r9, r9, 1
+.text:825A6964                 addi      r11, r11, 4
+.text:825A6968                 cmpw      cr6, r9, r30
+.text:825A696C                 blt       cr6, loc_825A6898
+.text:825A6970
+.text:825A6970 loc_825A6970:                           # CODE XREF: sub_825A65A8+2E8↑j
+.text:825A6970                 slwi      r11, r7, 2
+.text:825A6974                 addi      r9, r1, 0x3D0+var_370
+.text:825A6978                 addi      r10, r1, 0x3D0+var_310
+.text:825A697C                 lwzx      r9, r11, r9
+.text:825A6980                 sraw      r9, r6, r9
+.text:825A6984                 add.      r8, r9, r8
+.text:825A6988                 lwzx      r9, r11, r10
+.text:825A698C                 addi      r9, r9, -1
+.text:825A6990                 stwx      r9, r11, r10
+.text:825A6994                 blt       loc_825A6880
+.text:825A6998
+.text:825A6998 loc_825A6998:                           # CODE XREF: sub_825A65A8:loc_825A687C↑j
+.text:825A6998                 cmpwi     cr6, r30, 0
+.text:825A699C                 ble       cr6, loc_825A69D8
+.text:825A69A0                 mr        r9, r5
+.text:825A69A4                 mr        r11, r29
+.text:825A69A8                 mr        r10, r30
+.text:825A69AC
+.text:825A69AC loc_825A69AC:                           # CODE XREF: sub_825A65A8+42C↓j
+.text:825A69AC                 addi      r8, r1, 0x3D0+var_370
+.text:825A69B0                 addi      r7, r1, 0x3D0+var_310
+.text:825A69B4                 addic.    r10, r10, -1
+.text:825A69B8                 lwzx      r8, r11, r8
+.text:825A69BC                 lwzx      r7, r11, r7
+.text:825A69C0                 addi      r11, r11, 4
+.text:825A69C4                 subfic    r8, r8, 2
+.text:825A69C8                 slw       r8, r7, r8
+.text:825A69CC                 stw       r8, 0(r9)
+.text:825A69D0                 addi      r9, r9, 0x40 # '@'
+.text:825A69D4                 bne       loc_825A69AC
+.text:825A69D8
+.text:825A69D8 loc_825A69D8:                           # CODE XREF: sub_825A65A8+3F4↑j
+.text:825A69D8                 addic.    r31, r31, -1
+.text:825A69DC                 addi      r5, r5, 4
+.text:825A69E0                 bne       loc_825A66C4
+.text:825A69E4                 addi      r1, r1, 0x3D0
+.text:825A69E8                 b         __restgprlr_27
+.text:825A69E8 # End of function sub_825A65A8
+
+.text:82598A20 sub_82598A20:                           # CODE XREF: sub_82439AF0+10↑p
+.text:82598A20                                         # sub_82458B20+4C↑p ...
+.text:82598A20
+.text:82598A20 .set back_chain, -0x1C0
+.text:82598A20 .set var_16C, -0x16C
+.text:82598A20 .set var_164, -0x164
+.text:82598A20 .set var_160, -0x160
+.text:82598A20 .set var_15C, -0x15C
+.text:82598A20 .set var_158, -0x158
+.text:82598A20 .set var_154, -0x154
+.text:82598A20 .set var_150, -0x150
+.text:82598A20 .set var_14C, -0x14C
+.text:82598A20 .set var_148, -0x148
+.text:82598A20 .set var_138, -0x138
+.text:82598A20 .set var_120, -0x120
+.text:82598A20 .set var_11C, -0x11C
+.text:82598A20 .set var_118, -0x118
+.text:82598A20 .set var_104, -0x104
+.text:82598A20 .set var_100, -0x100
+.text:82598A20 .set var_90, -0x90
+.text:82598A20 .set var_80, -0x80
+.text:82598A20
+.text:82598A20                 mflr      r12
+.text:82598A24                 bl        __savegprlr_24
+.text:82598A28                 stwu      r1, back_chain(r1)
+.text:82598A2C                 mr        r31, r3
+.text:82598A30                 mr        r30, r4
+.text:82598A34                 mr        r27, r5
+.text:82598A38                 bl        KeGetCurrentProcessType
+.text:82598A3C                 lwz       r11, 0(r30)
+.text:82598A40                 lis       r10, 8
+.text:82598A44                 addi      r8, r3, -1
+.text:82598A48                 add       r9, r11, r10
+.text:82598A4C                 lwz       r11, 0x3698(r31)
+.text:82598A50                 cmplwi    r11, 0
+.text:82598A54                 stw       r9, 0(r30)
+.text:82598A58                 cntlzw    r9, r8
+.text:82598A5C                 stw       r30, 0x3698(r31)
+.text:82598A60                 extrwi    r24, r9, 1,26
+.text:82598A64                 beq       loc_82598A90
+.text:82598A68                 lwz       r9, 0(r11)
+.text:82598A6C                 lwz       r8, 0x289C(r31)
+.text:82598A70                 subf      r10, r10, r9
+.text:82598A74                 clrlwi    r9, r10, 8
+.text:82598A78                 stw       r8, 4(r11)
+.text:82598A7C                 stw       r10, 0(r11)
+.text:82598A80                 rlwinm.   r9, r9, 0,24,12
+.text:82598A84                 bne       loc_82598A90
+.text:82598A88                 mr        r3, r11
+.text:82598A8C                 bl        sub_82594CB8
+.text:82598A90
+.text:82598A90 loc_82598A90:                           # CODE XREF: sub_82598A20+44↑j
+.text:82598A90                                         # sub_82598A20+64↑j
+.text:82598A90                 lwz       r10, 0x1C(r30)
+.text:82598A94                 li        r25, 0
+.text:82598A98                 lwz       r7, 0x5038(r31)
+.text:82598A9C                 rlwinm    r9, r10, 2,30,30
+.text:82598AA0                 lwz       r8, 0x35DC(r31)
+.text:82598AA4                 lwz       r10, 0x14(r30)
+.text:82598AA8                 cmpwi     cr6, r7, 0
+.text:82598AAC                 lwz       r11, 0x18(r30)
+.text:82598AB0                 mr        r26, r8
+.text:82598AB4                 clrrwi    r7, r10, 12
+.text:82598AB8                 clrlwi    r10, r10, 26
+.text:82598ABC                 stw       r8, 0x1C0+var_150(r1)
+.text:82598AC0                 clrlwi    r8, r11, 19
+.text:82598AC4                 addi      r9, r9, 1
+.text:82598AC8                 extrwi    r11, r11, 13,6
+.text:82598ACC                 mr        r29, r25
+.text:82598AD0                 stw       r7, 0x1C0+var_160(r1)
+.text:82598AD4                 stw       r10, 0x1C0+var_154(r1)
+.text:82598AD8                 add       r11, r11, r9
+.text:82598ADC                 add       r10, r8, r9
+.text:82598AE0                 stw       r11, 0x1C0+var_15C(r1)
+.text:82598AE4                 stw       r10, 0x1C0+var_158(r1)
+.text:82598AE8                 beq       cr6, loc_82598B54
+.text:82598AEC                 lwz       r10, 0x5030(r31)
+.text:82598AF0                 lwz       r11, 0x5034(r31)
+.text:82598AF4                 subf      r10, r10, r11
+.text:82598AF8                 cmplwi    cr6, r10, 6
+.text:82598AFC                 bge       cr6, loc_82598B54
+.text:82598B00                 clrlwi    r11, r11, 29
+.text:82598B04                 lwz       r10, 0x2890(r31)
+.text:82598B08                 mr        r3, r31
+.text:82598B0C                 addi      r11, r11, 0x10
+.text:82598B10                 slwi      r11, r11, 2
+.text:82598B14                 stwx      r25, r11, r10
+.text:82598B18                 lwz       r11, 0x5034(r31)
+.text:82598B1C                 lwz       r10, 0x2890(r31)
+.text:82598B20                 addi      r11, r11, 1
+.text:82598B24                 clrlwi    r11, r11, 29
+.text:82598B28                 addi      r11, r11, 0x10
+.text:82598B2C                 slwi      r11, r11, 2
+.text:82598B30                 stwx      r25, r11, r10
+.text:82598B34                 lwz       r11, 0x5034(r31)
+.text:82598B38                 lwz       r10, 0x2890(r31)
+.text:82598B3C                 clrlwi    r11, r11, 29
+.text:82598B40                 addi      r11, r11, 0x10
+.text:82598B44                 slwi      r11, r11, 2
+.text:82598B48                 add       r4, r11, r10
+.text:82598B4C                 bl        sub_825A54F0
+.text:82598B50                 li        r29, 1
+.text:82598B54
+.text:82598B54 loc_82598B54:                           # CODE XREF: sub_82598A20+C8↑j
+.text:82598B54                                         # sub_82598A20+DC↑j
+.text:82598B54                 addi      r4, r1, 0x1C0+var_14C
+.text:82598B58                 addi      r3, r1, 0x1C0+var_120
+.text:82598B5C                 bl        VdGetSystemCommandBuffer
+.text:82598B60                 li        r4, 0x40 # '@'
+.text:82598B64                 mr        r3, r31
+.text:82598B68                 bl        sub_82595FC8
+.text:82598B6C                 addi      r11, r1, 0x1C0+var_15C
+.text:82598B70                 addi      r5, r1, 0x1C0+var_158
+.text:82598B74                 lwz       r7, 0x1C0+var_14C(r1)
+.text:82598B78                 mr        r28, r3
+.text:82598B7C                 addi      r10, r1, 0x1C0+var_150
+.text:82598B80                 addi      r9, r1, 0x1C0+var_154
+.text:82598B84                 stw       r11, 0x1C0+var_164(r1)
+.text:82598B88                 addi      r8, r1, 0x1C0+var_160
+.text:82598B8C                 lwz       r11, 0x2890(r31)
+.text:82598B90                 addi      r6, r1, 0x1C0+var_120
+.text:82598B94                 stw       r5, 0x1C0+var_16C(r1)
+.text:82598B98                 addi      r4, r30, 0x10
+.text:82598B9C                 addi      r3, r28, 4
+.text:82598BA0                 addi      r5, r11, 8
+.text:82598BA4                 bl        VdSwap
+.text:82598BA8                 lwz       r10, 0x1C0+var_11C(r1)
+.text:82598BAC                 addi      r11, r28, 0x100
+.text:82598BB0                 cmpwi     cr6, r29, 0
+.text:82598BB4                 stw       r10, 0x5058(r31)
+.text:82598BB8                 stw       r11, 0(r31)
+.text:82598BBC                 beq       cr6, loc_82598BF0
+.text:82598BC0                 lwz       r11, 0x5034(r31)
+.text:82598BC4                 mr        r3, r31
+.text:82598BC8                 lwz       r10, 0x2890(r31)
+.text:82598BCC                 addi      r11, r11, 1
+.text:82598BD0                 clrlwi    r11, r11, 29
+.text:82598BD4                 addi      r11, r11, 0x10
+.text:82598BD8                 slwi      r11, r11, 2
+.text:82598BDC                 add       r4, r11, r10
+.text:82598BE0                 bl        sub_825A54F0
+.text:82598BE4                 lwz       r11, 0x5034(r31)
+.text:82598BE8                 addi      r11, r11, 2
+.text:82598BEC                 stw       r11, 0x5034(r31)
+.text:82598BF0
+.text:82598BF0 loc_82598BF0:                           # CODE XREF: sub_82598A20+19C↑j
+.text:82598BF0                 lbz       r11, 0x28C1(r31)
+.text:82598BF4                 mr        r29, r25
+.text:82598BF8                 mr        r30, r25
+.text:82598BFC                 rlwinm.   r11, r11, 0,26,26
+.text:82598C00                 beq       loc_82598C14
+.text:82598C04                 mr        r5, r24
+.text:82598C08                 addi      r4, r31, 0x3598
+.text:82598C0C                 mr        r3, r31
+.text:82598C10                 bl        sub_825A84B8
+.text:82598C14
+.text:82598C14 loc_82598C14:                           # CODE XREF: sub_82598A20+1E0↑j
+.text:82598C14                 cmplwi    cr6, r27, 0
+.text:82598C18                 beq       cr6, loc_82598C90
+.text:82598C1C                 addi      r9, r31, 0x35F8
+.text:82598C20                 mr        r11, r27
+.text:82598C24                 mr        r10, r9
+.text:82598C28                 addi      r8, r11, 0x1C
+.text:82598C2C
+.text:82598C2C loc_82598C2C:                           # CODE XREF: sub_82598A20+228↓j
+.text:82598C2C                 lbz       r7, 0(r11)
+.text:82598C30                 lbz       r6, 0(r10)
+.text:82598C34                 subf.     r7, r6, r7
+.text:82598C38                 bne       loc_82598C4C
+.text:82598C3C                 addi      r11, r11, 1
+.text:82598C40                 addi      r10, r10, 1
+.text:82598C44                 cmpw      cr6, r11, r8
+.text:82598C48                 bne       cr6, loc_82598C2C
+.text:82598C4C
+.text:82598C4C loc_82598C4C:                           # CODE XREF: sub_82598A20+218↑j
+.text:82598C4C                 cmpwi     r7, 0
+.text:82598C50                 beq       loc_82598C90
+.text:82598C54                 mr        r10, r9
+.text:82598C58                 mr        r11, r27
+.text:82598C5C                 li        r9, 7
+.text:82598C60                 mtctr     r9
+.text:82598C64
+.text:82598C64 loc_82598C64:                           # CODE XREF: sub_82598A20+254↓j
+.text:82598C64                 lwz       r9, 0(r11)
+.text:82598C68                 addi      r11, r11, 4
+.text:82598C6C                 stw       r9, 0(r10)
+.text:82598C70                 addi      r10, r10, 4
+.text:82598C74                 bdnz      loc_82598C64
+.text:82598C78                 addi      r5, r1, 0x1C0+var_80
+.text:82598C7C                 mr        r4, r27
+.text:82598C80                 mr        r3, r31
+.text:82598C84                 bl        sub_825A7DE8
+.text:82598C88                 addi      r4, r1, 0x1C0+var_80
+.text:82598C8C                 bl        sub_825A7F10
+.text:82598C90
+.text:82598C90 loc_82598C90:                           # CODE XREF: sub_82598A20+1F8↑j
+.text:82598C90                                         # sub_82598A20+230↑j
+.text:82598C90                 lwz       r11, 0x1C0+var_118(r1)
+.text:82598C94                 cmplwi    cr6, r11, 0
+.text:82598C98                 beq       cr6, loc_82598D94
+.text:82598C9C                 lwz       r11, 0x1C0+var_150(r1)
+.text:82598CA0                 cmplw     cr6, r11, r26
+.text:82598CA4                 bne       cr6, loc_82598D94
+.text:82598CA8                 lwz       r11, 0x1C0+var_104(r1)
+.text:82598CAC                 cmplwi    cr6, r11, 0
+.text:82598CB0                 beq       cr6, loc_82598D38
+.text:82598CB4                 addi      r9, r31, 0x3614
+.text:82598CB8                 addi      r11, r1, 0x1C0+var_100
+.text:82598CBC                 mr        r10, r9
+.text:82598CC0                 addi      r8, r11, 0x38 # '8'
+.text:82598CC4
+.text:82598CC4 loc_82598CC4:                           # CODE XREF: sub_82598A20+2C0↓j
+.text:82598CC4                 lbz       r7, 0(r11)
+.text:82598CC8                 lbz       r6, 0(r10)
+.text:82598CCC                 subf.     r7, r6, r7
+.text:82598CD0                 bne       loc_82598CE4
+.text:82598CD4                 addi      r11, r11, 1
+.text:82598CD8                 addi      r10, r10, 1
+.text:82598CDC                 cmpw      cr6, r11, r8
+.text:82598CE0                 bne       cr6, loc_82598CC4
+.text:82598CE4
+.text:82598CE4 loc_82598CE4:                           # CODE XREF: sub_82598A20+2B0↑j
+.text:82598CE4                 cmpwi     r7, 0
+.text:82598CE8                 beq       loc_82598D38
+.text:82598CEC                 mr        r10, r9
+.text:82598CF0                 addi      r11, r1, 0x1C0+var_100
+.text:82598CF4                 li        r9, 0xE
+.text:82598CF8                 mtctr     r9
+.text:82598CFC
+.text:82598CFC loc_82598CFC:                           # CODE XREF: sub_82598A20+2EC↓j
+.text:82598CFC                 lwz       r9, 0(r11)
+.text:82598D00                 addi      r11, r11, 4
+.text:82598D04                 stw       r9, 0(r10)
+.text:82598D08                 addi      r10, r10, 4
+.text:82598D0C                 bdnz      loc_82598CFC
+.text:82598D10                 addi      r6, r1, 0x1C0+var_100
+.text:82598D14                 lwz       r5, 0x1C0+var_15C(r1)
+.text:82598D18                 mr        r3, r31
+.text:82598D1C                 lwz       r4, 0x1C0+var_158(r1)
+.text:82598D20                 li        r29, 1
+.text:82598D24                 bl        sub_825A7B78
+.text:82598D28                 lbz       r11, 0x28C2(r31)
+.text:82598D2C                 ori       r11, r11, 0x40 # '@'
+.text:82598D30                 stb       r11, 0x28C2(r31)
+.text:82598D34                 b         loc_82598D54
+.text:82598D38 # ---------------------------------------------------------------------------
+.text:82598D38
+.text:82598D38 loc_82598D38:                           # CODE XREF: sub_82598A20+290↑j
+.text:82598D38                                         # sub_82598A20+2C8↑j
+.text:82598D38                 lbz       r11, 0x28C2(r31)
+.text:82598D3C                 rlwinm.   r11, r11, 0,25,25
+.text:82598D40                 beq       loc_82598D54
+.text:82598D44                 lwz       r11, 0x1C0+var_90(r1)
+.text:82598D48                 cmplwi    cr6, r11, 0
+.text:82598D4C                 bne       cr6, loc_82598D54
+.text:82598D50                 li        r30, 1
+.text:82598D54
+.text:82598D54 loc_82598D54:                           # CODE XREF: sub_82598A20+314↑j
+.text:82598D54                                         # sub_82598A20+320↑j ...
+.text:82598D54                 lwz       r11, 0x1C0+var_154(r1)
+.text:82598D58                 lis       r4, 0x2828
+.text:82598D5C                 ori       r4, r4, 0x106 # 0x28280106
+.text:82598D60                 cmplwi    cr6, r11, 7
+.text:82598D64                 bne       cr6, loc_82598D70
+.text:82598D68                 lis       r4, 0x2828
+.text:82598D6C                 ori       r4, r4, 0x136 # 0x28280136
+.text:82598D70
+.text:82598D70 loc_82598D70:                           # CODE XREF: sub_82598A20+344↑j
+.text:82598D70                 lbz       r11, 0x28C2(r31)
+.text:82598D74                 clrlwi.   r11, r11, 31
+.text:82598D78                 bne       loc_82598D88
+.text:82598D7C                 li        r5, 0
+.text:82598D80                 mr        r3, r31
+.text:82598D84                 bl        sub_825986F8
+.text:82598D88
+.text:82598D88 loc_82598D88:                           # CODE XREF: sub_82598A20+358↑j
+.text:82598D88                 lbz       r11, 0x28C2(r31)
+.text:82598D8C                 ori       r11, r11, 1
+.text:82598D90                 b         loc_82598DE4
+.text:82598D94 # ---------------------------------------------------------------------------
+.text:82598D94
+.text:82598D94 loc_82598D94:                           # CODE XREF: sub_82598A20+278↑j
+.text:82598D94                                         # sub_82598A20+284↑j
+.text:82598D94                 lbz       r11, 0x28C2(r31)
+.text:82598D98                 rlwinm.   r11, r11, 0,25,25
+.text:82598D9C                 beq       loc_82598DC0
+.text:82598DA0                 li        r30, 1
+.text:82598DA4                 addi      r10, r31, 0x3614
+.text:82598DA8                 mr        r9, r25
+.text:82598DAC                 li        r11, 0xE
+.text:82598DB0                 mtctr     r11
+.text:82598DB4
+.text:82598DB4 loc_82598DB4:                           # CODE XREF: sub_82598A20+39C↓j
+.text:82598DB4                 stw       r9, 0(r10)
+.text:82598DB8                 addi      r10, r10, 4
+.text:82598DBC                 bdnz      loc_82598DB4
+.text:82598DC0
+.text:82598DC0 loc_82598DC0:                           # CODE XREF: sub_82598A20+37C↑j
+.text:82598DC0                 lbz       r11, 0x28C2(r31)
+.text:82598DC4                 clrlwi.   r11, r11, 31
+.text:82598DC8                 beq       loc_82598DDC
+.text:82598DCC                 addi      r5, r31, 0x36EC
+.text:82598DD0                 lwz       r4, 0x35D8(r31)
+.text:82598DD4                 mr        r3, r31
+.text:82598DD8                 bl        sub_825986F8
+.text:82598DDC
+.text:82598DDC loc_82598DDC:                           # CODE XREF: sub_82598A20+3A8↑j
+.text:82598DDC                 lbz       r11, 0x28C2(r31)
+.text:82598DE0                 clrrwi    r11, r11, 1
+.text:82598DE4
+.text:82598DE4 loc_82598DE4:                           # CODE XREF: sub_82598A20+370↑j
+.text:82598DE4                 stb       r11, 0x28C2(r31)
+.text:82598DE8                 cmpwi     cr6, r30, 0
+.text:82598DEC                 beq       cr6, loc_82598E14
+.text:82598DF0                 clrlwi    r11, r11, 24
+.text:82598DF4                 lwz       r5, 0x1C0+var_15C(r1)
+.text:82598DF8                 addi      r6, r31, 0x364C
+.text:82598DFC                 lwz       r4, 0x1C0+var_158(r1)
+.text:82598E00                 mr        r3, r31
+.text:82598E04                 li        r29, 1
+.text:82598E08                 andi.     r11, r11, 0xBF
+.text:82598E0C                 stb       r11, 0x28C2(r31)
+.text:82598E10                 bl        sub_825A7B78
+.text:82598E14
+.text:82598E14 loc_82598E14:                           # CODE XREF: sub_82598A20+3CC↑j
+.text:82598E14                 lwz       r11, 0x4FE4(r31)
+.text:82598E18                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E1C                 cmplw     cr6, r11, r10
+.text:82598E20                 beq       cr6, loc_82598E9C
+.text:82598E24                 lwz       r11, 0(r31)
+.text:82598E28                 lwz       r10, 8(r31)
+.text:82598E2C                 cmplw     cr6, r11, r10
+.text:82598E30                 ble       cr6, loc_82598E40
+.text:82598E34                 mr        r3, r31
+.text:82598E38                 bl        sub_825972B0
+.text:82598E3C                 mr        r11, r3
+.text:82598E40
+.text:82598E40 loc_82598E40:                           # CODE XREF: sub_82598A20+410↑j
+.text:82598E40                 li        r10, 0x1844
+.text:82598E44                 stwu      r10, 4(r11)
+.text:82598E48                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E4C                 srwi      r8, r10, 20
+.text:82598E50                 clrlwi    r9, r10, 3
+.text:82598E54                 addi      r10, r8, 0x200
+.text:82598E58                 rlwinm    r10, r10, 0,19,19
+.text:82598E5C                 add       r10, r10, r9
+.text:82598E60                 stwu      r10, 4(r11)
+.text:82598E64                 lbz       r9, 0x28C1(r31)
+.text:82598E68                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E6C                 stw       r11, 0(r31)
+.text:82598E70                 stw       r10, 0x4FE4(r31)
+.text:82598E74                 rlwinm.   r9, r9, 0,29,29
+.text:82598E78                 beq       loc_82598E9C
+.text:82598E7C                 srwi      r11, r10, 20
+.text:82598E80                 clrlwi    r10, r10, 3
+.text:82598E84                 addi      r11, r11, 0x200
+.text:82598E88                 lis       r9, 0x7FC8
+.text:82598E8C                 rlwinm    r11, r11, 0,19,19
+.text:82598E90                 add       r11, r11, r10
+.text:82598E94                 stw       r11, 0x6110(r9)
+.text:82598E98                 eieio
+.text:82598E9C
+.text:82598E9C loc_82598E9C:                           # CODE XREF: sub_82598A20+400↑j
+.text:82598E9C                                         # sub_82598A20+458↑j
+.text:82598E9C                 cmpwi     cr6, r29, 0
+.text:82598EA0                 beq       cr6, loc_82598F18
+.text:82598EA4                 lwz       r11, 0(r31)
+.text:82598EA8                 lwz       r10, 8(r31)
+.text:82598EAC                 cmplw     cr6, r11, r10
+.text:82598EB0                 ble       cr6, loc_82598EC0
+.text:82598EB4                 mr        r3, r31
+.text:82598EB8                 bl        sub_825972B0
+.text:82598EBC                 mr        r11, r3
+.text:82598EC0
+.text:82598EC0 loc_82598EC0:                           # CODE XREF: sub_82598A20+490↑j
+.text:82598EC0                 li        r10, 0x1838
+.text:82598EC4                 mr        r9, r25
+.text:82598EC8                 lis       r8, -0x3FFC
+.text:82598ECC                 li        r7, 3
+.text:82598ED0                 ori       r8, r8, 0x3C00 # 0xC0043C00
+.text:82598ED4                 stwu      r10, 4(r11)
+.text:82598ED8                 li        r10, 0x1973
+.text:82598EDC                 mr        r6, r25
+.text:82598EE0                 li        r5, 1
+.text:82598EE4                 li        r4, 0x100
+.text:82598EE8                 li        r3, 0x1852
+.text:82598EEC                 stwu      r9, 4(r11)
+.text:82598EF0                 li        r30, 1
+.text:82598EF4                 stwu      r8, 4(r11)
+.text:82598EF8                 stwu      r7, 4(r11)
+.text:82598EFC                 stwu      r10, 4(r11)
+.text:82598F00                 stwu      r6, 4(r11)
+.text:82598F04                 stwu      r5, 4(r11)
+.text:82598F08                 stwu      r4, 4(r11)
+.text:82598F0C                 stwu      r3, 4(r11)
+.text:82598F10                 stwu      r30, 4(r11)
+.text:82598F14                 stw       r11, 0(r31)
+.text:82598F18
+.text:82598F18 loc_82598F18:                           # CODE XREF: sub_82598A20+480↑j
+.text:82598F18                 lbz       r11, 0x28C1(r31)
+.text:82598F1C                 rlwinm.   r11, r11, 0,26,26
+.text:82598F20                 beq       loc_82598FA8
+.text:82598F24                 cmpwi     cr6, r24, 0
+.text:82598F28                 beq       cr6, loc_82598F9C
+.text:82598F2C                 lwz       r11, 0(r31)
+.text:82598F30                 lwz       r10, 8(r31)
+.text:82598F34                 cmplw     cr6, r11, r10
+.text:82598F38                 ble       cr6, loc_82598F48
+.text:82598F3C                 mr        r3, r31
+.text:82598F40                 bl        sub_825972B0
+.text:82598F44                 mr        r11, r3
+.text:82598F48
+.text:82598F48 loc_82598F48:                           # CODE XREF: sub_82598A20+518↑j
+.text:82598F48                 lis       r10, -0x3FFE
+.text:82598F4C                 li        r8, 0x1E4E
+.text:82598F50                 ori       r9, r10, 0x2100 # 0xC0022100
+.text:82598F54                 li        r7, -2
+.text:82598F58                 mr        r6, r25
+.text:82598F5C                 addi      r10, r1, 0x1C0+var_148
+.text:82598F60                 addi      r4, r1, 0x1C0+var_138
+.text:82598F64                 stwu      r9, 4(r11)
+.text:82598F68                 addi      r3, r1, 0x1C0+var_148
+.text:82598F6C                 stwu      r8, 4(r11)
+.text:82598F70                 stwu      r7, 4(r11)
+.text:82598F74                 stwu      r6, 4(r11)
+.text:82598F78                 std       r25, 0(r10)
+.text:82598F7C                 stw       r25, 8(r10)
+.text:82598F80                 stw       r11, 0(r31)
+.text:82598F84                 bl        VdPersistDisplay
+.text:82598F88                 cmplwi    r3, 0
+.text:82598F8C                 beq       loc_82598F9C
+.text:82598F90                 li        r3, 1
+.text:82598F94                 lwz       r4, 0x1C0+var_138(r1)
+.text:82598F98                 bl        MmFreePhysicalMemory
+.text:82598F9C
+.text:82598F9C loc_82598F9C:                           # CODE XREF: sub_82598A20+508↑j
+.text:82598F9C                                         # sub_82598A20+56C↑j
+.text:82598F9C                 lbz       r11, 0x28C1(r31)
+.text:82598FA0                 andi.     r11, r11, 0xDF
+.text:82598FA4                 stb       r11, 0x28C1(r31)
+.text:82598FA8
+.text:82598FA8 loc_82598FA8:                           # CODE XREF: sub_82598A20+500↑j
+.text:82598FA8                 mr        r3, r31
+.text:82598FAC                 lwz       r30, 0x289C(r31)
+.text:82598FB0                 bl        sub_825972B0
+.text:82598FB4                 li        r5, 0
+.text:82598FB8                 li        r4, 0
+.text:82598FBC                 mr        r3, r31
+.text:82598FC0                 bl        sub_825A97B8
+.text:82598FC4                 lwz       r11, 0x36AC(r31)
+.text:82598FC8                 mr        r3, r31
+.text:82598FCC                 srwi      r4, r11, 2
+.text:82598FD0                 bl        sub_82596978
+.text:82598FD4                 lbz       r11, 0x28C1(r31)
+.text:82598FD8                 mr        r3, r31
+.text:82598FDC                 andi.     r11, r11, 0xBF
+.text:82598FE0                 stb       r11, 0x28C1(r31)
+.text:82598FE4                 lwz       r11, 0x36C8(r31)
+.text:82598FE8                 stw       r30, 0x36C8(r31)
+.text:82598FEC                 stw       r11, 0x36CC(r31)
+.text:82598FF0                 bl        sub_825A55D0
+.text:82598FF4                 li        r4, 0
+.text:82598FF8                 mr        r3, r31
+.text:82598FFC                 bl        sub_8258ACC0
+.text:82599000                 addi      r1, r1, 0x1C0
+.text:82599004                 b         __restgprlr_24
+.text:82599004 # End of function sub_82598A20

@@ -47,6 +47,15 @@ static std::array<std::string_view, 3> g_D3D12RequiredModules =
 };
 #endif
 
+// Optional installer for generated indirect redirects (defined by generator TU)
+#if MW05_GEN_INDIRECT_REDIRECTS
+#  if !defined(_MSC_VER)
+extern "C" __attribute__((weak)) void MwInstallGeneratedIndirectRedirects();
+#  else
+extern "C" void MwInstallGeneratedIndirectRedirects();
+#  endif
+#endif
+
 const size_t XMAIOBegin = 0x7FEA0000;
 const size_t XMAIOEnd = XMAIOBegin + 0x0000FFFF;
 
@@ -74,6 +83,16 @@ void KiSystemStartup()
     }
 
     g_userHeap.Init();
+
+    // Install any generated indirect redirects after memory init
+    #if MW05_GEN_INDIRECT_REDIRECTS
+        #if !defined(_MSC_VER)
+            if (&MwInstallGeneratedIndirectRedirects)
+                MwInstallGeneratedIndirectRedirects();
+        #else
+            MwInstallGeneratedIndirectRedirects();
+        #endif
+    #endif
 
     const auto gameContent = XamMakeContent(XCONTENTTYPE_RESERVED, "Game");
     const auto updateContent = XamMakeContent(XCONTENTTYPE_RESERVED, "Update");
@@ -218,6 +237,12 @@ int main(int argc, char *argv[])
     }
 #endif
     if (verbose) { printf("[boot] entering main()\n"); fflush(stdout); }
+
+    // Unify MW_VERBOSE hint behavior: if --verbose or MW_VERBOSE env is set,
+    // set the SDL hint so all SDL_GetHintBoolean("MW_VERBOSE") checks succeed.
+    if (verbose || std::getenv("MW_VERBOSE")) {
+        SDL_SetHint("MW_VERBOSE", "1");
+    }
 #ifdef _WIN32
     timeBeginPeriod(1);
 #endif
@@ -451,6 +476,15 @@ int main(int argc, char *argv[])
         {
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), Localise("Video_BackendError").c_str(), GameWindow::s_pWindow);
             std::_Exit(1);
+        }
+
+        // Optional heartbeat: present once or twice immediately to verify renderer path
+        if (const char* hb = std::getenv("MW05_FORCE_PRESENT"))
+        {
+            if (!(hb[0] == '0' && hb[1] == '\0'))
+            {
+                Video::Present();
+            }
         }
     }
 

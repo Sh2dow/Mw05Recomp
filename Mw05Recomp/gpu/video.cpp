@@ -10,6 +10,7 @@
 #include <cpu/guest_thread.h>
 #include <decompressor.h>
 #include <kernel/function.h>
+#include <kernel/trace.h>
 #include <kernel/heap.h>
 #include <hid/hid.h>
 #include <kernel/memory.h>
@@ -199,6 +200,11 @@ static RenderRect g_scissorRect;
 static RenderVertexBufferView g_vertexBufferViews[16];
 static RenderInputSlot g_inputSlots[16];
 static RenderIndexBufferView g_indexBufferView({}, 0, RenderFormat::R16_UINT);
+// Emit a HOST.* trace entry if kernel tracing is enabled.
+static inline void GpuTraceHostCall(const char* name)
+{
+    KernelTraceHostOp(name);
+}
 
 struct DirtyStates
 {
@@ -2846,6 +2852,8 @@ static std::atomic<bool> g_executedCommandList;
 
 void Video::Present() 
 {
+    // Always write a host trace entry when Present is entered to diagnose bring-up
+    KernelTraceHostOp("HOST.VideoPresent.enter");
     // Avoid any work until renderer is initialized
     if (!g_rendererReady || !g_device || !g_queue)
         return;
@@ -3414,6 +3422,7 @@ static void SetDefaultViewport(GuestDevice* device, GuestSurface* surface)
 
 static void SetRenderTarget(GuestDevice* device, uint32_t index, GuestSurface* renderTarget) 
 {
+    GpuTraceHostCall("HOST.SetRenderTarget");
     RenderCommand cmd;
     cmd.type = RenderCommandType::SetRenderTarget;
     cmd.setRenderTarget.renderTarget = renderTarget;
@@ -3436,6 +3445,7 @@ static void ProcSetRenderTarget(const RenderCommand& cmd)
 
 static void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil) 
 {
+    GpuTraceHostCall("HOST.SetDepthStencilSurface");
     RenderCommand cmd;
     cmd.type = RenderCommandType::SetDepthStencilSurface;
     cmd.setDepthStencilSurface.depthStencil = depthStencil;
@@ -3753,6 +3763,7 @@ static void SetFramebuffer(GuestSurface* renderTarget, GuestSurface* depthStenci
 
 static void Clear(GuestDevice* device, uint32_t flags, uint32_t, be<float>* color, double z) 
 {
+    GpuTraceHostCall("HOST.Clear");
     RenderCommand cmd;
     cmd.type = RenderCommandType::Clear;
     cmd.clear.flags = flags;
@@ -3805,6 +3816,7 @@ static void ProcClear(const RenderCommand& cmd)
 
 static void SetViewport(GuestDevice* device, GuestViewport* viewport)
 {
+    GpuTraceHostCall("HOST.SetViewport");
     RenderCommand cmd;
     cmd.type = RenderCommandType::SetViewport;
     cmd.setViewport.x = viewport->x;
@@ -3847,6 +3859,7 @@ static void ProcSetViewport(const RenderCommand& cmd)
 
 static void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture) 
 {
+    GpuTraceHostCall("HOST.SetTexture");
     auto isPlayStation = Config::ControllerIcons == EControllerIcons::PlayStation;
 
     if (Config::ControllerIcons == EControllerIcons::Auto)
@@ -3923,6 +3936,7 @@ static void ProcSetTexture(const RenderCommand& cmd)
 
 static void SetScissorRect(GuestDevice* device, GuestRect* rect)
 {
+    GpuTraceHostCall("HOST.SetScissorRect");
     RenderCommand cmd;
     cmd.type = RenderCommandType::SetScissorRect;
     cmd.setScissorRect.top = rect->top;
@@ -4701,6 +4715,7 @@ static void UnsetInstancingStream()
 
 static void DrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount) 
 {
+    GpuTraceHostCall("HOST.DrawPrimitive");
     LocalRenderCommandQueue queue;
     FlushRenderStateForMainThread(device, queue);
 
@@ -4743,6 +4758,7 @@ static void ProcDrawPrimitive(const RenderCommand& cmd)
 
 static void DrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount)
 {
+    GpuTraceHostCall("HOST.DrawIndexedPrimitive");
     LocalRenderCommandQueue queue;
     FlushRenderStateForMainThread(device, queue);
 
@@ -4772,6 +4788,7 @@ static void ProcDrawIndexedPrimitive(const RenderCommand& cmd)
 
 static void DrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t primitiveCount, void* vertexStreamZeroData, uint32_t vertexStreamZeroStride)
 {
+    GpuTraceHostCall("HOST.DrawPrimitiveUP");
     LocalRenderCommandQueue queue;
     FlushRenderStateForMainThread(device, queue);
 
@@ -7666,6 +7683,8 @@ PPC_FUNC(sub_82E3B1C0)
         g_userHeap.Free(newIndices);
 }
 
+#if MW05_ENABLE_UNLEASHED
+// Unleashed (Hedgehog) hooks
 GUEST_FUNCTION_HOOK(sub_82BD99B0, CreateDevice);
 
 GUEST_FUNCTION_HOOK(sub_82BE6230, DestructResource);
@@ -7730,11 +7749,32 @@ GUEST_FUNCTION_HOOK(sub_82E43FC8, MakePictureData);
 GUEST_FUNCTION_HOOK(sub_82E9EE38, SetResolution);
 
 GUEST_FUNCTION_HOOK(sub_82AE2BF8, ScreenShaderInit);
+#else
+// MW05 hooks (identified from MW05 recompiled mapping / IDA HTML)
+// - Present path calls VdGetSystemCommandBuffer + VdSwap
+GUEST_FUNCTION_HOOK(sub_82598A20, Video::Present);
+// - Initial video bring-up: initialize engines + set graphics interrupt callback
+GUEST_FUNCTION_HOOK(sub_825A85E0, CreateDevice);
+// - Apply/set display mode and update cached display info
+GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
+
+// - Viewport setup: packs x/y/w/h + depth to command buffer
+//   sub_825A7B78 takes (device, GuestViewport*) among others; we only consume first two.
+GUEST_FUNCTION_HOOK(sub_825A7B78, SetViewport);
+
+// Note: Additional MW05-specific hooks (CreateTexture/VertexBuffer/etc.)
+// should be added once their entrypoints are identified in MW05. For now,
+// the import-layer hooks in kernel/imports.cpp (Vd*, etc.) cover core display.
+//
+// Temporary research shims moved to gpu/mw05_trace_shims.cpp
+// They log callsites and tail-call the original recompiled routines.
+#endif
 
 // This is a buggy function that recreates framebuffers
 // if the inverse capture ratio is not 2.0, but the parameter
 // is completely unused and not stored, so it ends up
 // recreating framebuffers every single frame instead.
+#if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_STUB(sub_82BAAD38);
 
 GUEST_FUNCTION_STUB(sub_822C15D8);
@@ -7748,6 +7788,7 @@ GUEST_FUNCTION_STUB(sub_82BEA308);
 GUEST_FUNCTION_STUB(sub_82CD5D68);
 GUEST_FUNCTION_STUB(sub_82BE9B28);
 GUEST_FUNCTION_STUB(sub_82BEA018);
+#endif
 GUEST_FUNCTION_STUB(sub_82BEA7C0);
 GUEST_FUNCTION_STUB(sub_82BFFF88); // D3DXFilterTexture
 GUEST_FUNCTION_STUB(sub_82BD96D0);

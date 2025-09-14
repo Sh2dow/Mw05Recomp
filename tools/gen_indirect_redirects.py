@@ -42,6 +42,22 @@ def parse_indirect_misses(log_path: Path) -> list[int]:
                 s.add(int(m.group(1), 16))
     return sorted(s)
 
+def parse_misses_file(path: Path) -> list[int]:
+    try:
+        lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for l in lines:
+        l = l.strip()
+        if not l or l.startswith('#'):
+            continue
+        try:
+            out.append(int(l, 16))
+        except ValueError:
+            pass
+    return sorted(set(out))
+
 
 def scan_codegen_symbols(ppc_root: Path) -> set[int]:
     rx = re.compile(r"\bsub_([0-9A-Fa-f]{8})\b")
@@ -91,6 +107,9 @@ def emit_cpp(redirects: dict[int, int], stubs: list[int]) -> str:
     lines.append('    __attribute__((constructor)) static void ppc_indirect_redirects_ctor() { RegisterIndirectRedirects(); }')
     lines.append('#endif')
     lines.append('')
+    # Also expose an explicit installer we can call after memory init.
+    lines.append('extern "C" void MwInstallGeneratedIndirectRedirects() { RegisterIndirectRedirects(); }')
+    lines.append('')
     return "\n".join(lines) + "\n"
 
 
@@ -98,16 +117,22 @@ def main() -> int:
     ap = argparse.ArgumentParser(description='Generate indirect redirect mappings using IDA HTML')
     ap.add_argument('--log', type=Path, default=Path('mw05_debug.log'))
     ap.add_argument('--html', type=Path, default=Path('NfsMWEurope.xex.html'))
+    ap.add_argument('--misses', type=Path, default=None)
     ap.add_argument('--ppc-root', type=Path, default=Path('Mw05RecompLib/ppc'))
     ap.add_argument('--app-root', type=Path, default=Path('Mw05Recomp'))
     ap.add_argument('--out-cpp', type=Path, default=Path('ppc_indirect_redirects.gen.cpp'))
     args = ap.parse_args()
 
-    if not args.log.exists() or not args.html.exists():
-        print('Missing inputs; ensure mw05_debug.log and NfsMWEurope.xex.html exist')
+    # Always emit a TU so Ninja's OUTPUT exists even on first configure.
+    if (args.misses is None and not args.log.exists()) or not args.html.exists():
+        args.out_cpp.parent.mkdir(parents=True, exist_ok=True)
+        args.out_cpp.write_text('// No inputs yet; empty redirects/stubs.\n'
+                                'extern "C" void MwInstallGeneratedIndirectRedirects(){}\n',
+                                encoding='utf-8')
+        print('Missing inputs; emitted empty redirects TU')
         return 0
 
-    misses = parse_indirect_misses(args.log)
+    misses = parse_misses_file(args.misses) if args.misses is not None else parse_indirect_misses(args.log)
     starts = parse_html_functions(args.html)
     codegen = scan_codegen_symbols(args.ppc_root)
     hooks = scan_app_hooks(args.app_root)

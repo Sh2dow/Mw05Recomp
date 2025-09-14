@@ -118,14 +118,23 @@ function Invoke-Configure {
     `
     -D MW05_RECOMP_SKIP_CODEGEN=OFF `
     -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
-    -D MW05_GEN_INDIRECT_REDIRECTS=ON `
+    -D MW05_GEN_INDIRECT_REDIRECTS=OFF `
     @pchArg `
     @modArg
 }
 
 # Helper tasks
+function Ensure-Configured {
+  $ninja = Join-Path $buildDir 'build.ninja'
+  if (-not (Test-Path $ninja)) {
+    Write-Host "[Stage] Configure (auto, missing build.ninja)" -ForegroundColor Yellow
+    Invoke-Configure
+  }
+}
+
 function Invoke-Codegen {
   Write-Host "[Stage] Codegen (PPC)" -ForegroundColor Cyan
+  Ensure-Configured
   $xex = "D:/Repos/Games/MW05Recomp/Mw05RecompLib/private/default.xex"
   if (-not (Test-Path $xex)) {
     Write-Host "Missing XEX: $xex" -ForegroundColor Red
@@ -180,8 +189,9 @@ function Invoke-GenList {
     Write-Host "No generated PPC sources yet; using fallback list. Skipping reconfigure." -ForegroundColor Yellow
   }
 }
-function Build-Lib    { cmake --build "$buildDir" --target Mw05RecompLib -j1 -v }
+function Build-Lib    { Ensure-Configured; cmake --build "$buildDir" --target Mw05RecompLib -j1 -v }
 function Build-App    {
+  Ensure-Configured
   # Ensure app PCH is rebuilt with the current toolset
   $appPchDir = "D:/Repos/Games/MW05Recomp/out/build/$preset/Mw05Recomp/CMakeFiles/Mw05Recomp.dir"
   $removedPch = $false

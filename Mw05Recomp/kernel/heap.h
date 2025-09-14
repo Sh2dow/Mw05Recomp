@@ -18,6 +18,7 @@ struct Heap
     void Init();
 
     void* Alloc(size_t size);
+    void* Alloc(size_t size, size_t alignment);
     void* AllocPhysical(size_t size, size_t alignment);
     void Free(void* ptr);
 

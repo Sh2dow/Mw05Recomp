@@ -78,15 +78,15 @@ def main() -> int:
     args = ap.parse_args()
 
     rows = parse_csv(args.csv)
-    if not rows:
-        print('No rows parsed; nothing to emit')
-        return 0
+    # Always emit a valid stub file so builds don't fail when CSV is empty.
     args.out_cpp.parent.mkdir(parents=True, exist_ok=True)
     args.out_cpp.write_text(emit_cpp(rows), encoding='utf-8')
-    print(f'Wrote {args.out_cpp} with {len(rows)} entries')
+    if rows:
+        print(f'Wrote {args.out_cpp} with {len(rows)} entries')
+    else:
+        print(f'Wrote {args.out_cpp} with 0 entries (stub)')
     return 0
 
 
 if __name__ == '__main__':
     raise SystemExit(main())
-

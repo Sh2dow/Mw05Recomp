@@ -115,12 +115,15 @@ endif()
 
 set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/guest_thread.cpp"
+    "cpu/mw05_boot_shims.cpp"
+    "cpu/mw05_trace_threads.cpp"
 )
 
 set(MW05_RECOMP_GPU_CXX_SOURCES
     "gpu/video.cpp"
     "gpu/imgui/imgui_common.cpp"
     "gpu/imgui/imgui_snapshot.cpp"
+    "gpu/mw05_trace_shims.cpp"
 )
 
 set(MW05_RECOMP_APU_CXX_SOURCES
@@ -240,6 +243,7 @@ set(MW05_RECOMP_CXX_SOURCES
     "sdl_listener.cpp"
     "stdafx.cpp"
     "version.cpp"
+    "ppc_indirect_hardfix.cpp"
     
     ${MW05_RECOMP_KERNEL_CXX_SOURCES}
     ${MW05_RECOMP_LOCALE_CXX_SOURCES}
@@ -272,6 +276,22 @@ add_custom_command(
 )
 list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_OVERRIDES_CPP})
 
+# Optional: generate app hook overrides from CSV mapping (tools/hooks_mw05.csv)
+set(PPC_HOOK_OVERRIDES_CPP "${CMAKE_BINARY_DIR}/ppc_hook_overrides.gen.cpp")
+add_custom_command(
+    OUTPUT ${PPC_HOOK_OVERRIDES_CPP}
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+            ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_hook_overrides_from_csv.py
+                              -D_csv=${CMAKE_SOURCE_DIR}/tools/hooks_mw05.csv
+                              -D_out=${PPC_HOOK_OVERRIDES_CPP}
+                              -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_hooks.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_hook_overrides_from_csv.py
+            ${CMAKE_SOURCE_DIR}/tools/hooks_mw05.csv
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_hooks.cmake
+    COMMENT "Generating app hook overrides from tools/hooks_mw05.csv"
+    VERBATIM)
+list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_HOOK_OVERRIDES_CPP})
+
 # Optional: generate stubs for indirect-miss addresses from mw05_debug.log
 option(MW05_GEN_INDIRECT_STUBS "Generate stub mappings from mw05_debug.log" OFF)
 if (MW05_GEN_INDIRECT_STUBS)
@@ -292,6 +312,18 @@ if (MW05_GEN_INDIRECT_STUBS)
     list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_CPP})
 endif()
 
+### Always: extract indirect-miss targets from the runtime log to a stable byproduct
+set(PPC_INDIRECT_MISSES_TXT "${CMAKE_CURRENT_BINARY_DIR}/indirect_misses.txt")
+add_custom_target(ExtractIndirectMisses
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+            ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/extract_indirect_misses.py
+                              -D_log=${CMAKE_BINARY_DIR}/Mw05Recomp/mw05_debug.log
+                              -D_out=${PPC_INDIRECT_MISSES_TXT}
+                              -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_extract.cmake
+    BYPRODUCTS ${PPC_INDIRECT_MISSES_TXT}
+    COMMENT "Updating indirect-miss list from mw05_debug.log"
+    VERBATIM)
+
 option(MW05_GEN_INDIRECT_REDIRECTS "Redirect indirect-miss addresses to nearest function start from IDA HTML" OFF)
 if (MW05_GEN_INDIRECT_REDIRECTS)
     set(PPC_INDIRECT_REDIRECTS_CPP "${CMAKE_BINARY_DIR}/ppc_indirect_redirects.gen.cpp")
@@ -301,6 +333,7 @@ if (MW05_GEN_INDIRECT_REDIRECTS)
                 ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_redirects.py
                                   -D_out=${PPC_INDIRECT_REDIRECTS_CPP}
                                   -D_log=${CMAKE_BINARY_DIR}/Mw05Recomp/mw05_debug.log
+                                  -D_misses=${PPC_INDIRECT_MISSES_TXT}
                                   -D_html=${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
                                   -D_ppc=${CMAKE_SOURCE_DIR}/Mw05RecompLib/ppc
                                   -D_src=${CMAKE_CURRENT_SOURCE_DIR}
@@ -308,9 +341,33 @@ if (MW05_GEN_INDIRECT_REDIRECTS)
         DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_indirect_redirects.py
                 ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
+                ${PPC_INDIRECT_MISSES_TXT}
         COMMENT "Generating indirect-call redirects using IDA HTML"
         VERBATIM)
     list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_REDIRECTS_CPP})
+endif()
+
+# Generate a hardfix TU directly from extracted misses to ensure exact-address coverage
+set(PPC_INDIRECT_HARDFIX_CPP "${CMAKE_BINARY_DIR}/ppc_indirect_hardfix.gen.cpp")
+add_custom_command(
+    OUTPUT ${PPC_INDIRECT_HARDFIX_CPP}
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+            ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
+                              -D_misses=${PPC_INDIRECT_MISSES_TXT}
+                              -D_html=${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+                              -D_out=${PPC_INDIRECT_HARDFIX_CPP}
+                              -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_hardfix.cmake
+    DEPENDS ${PPC_INDIRECT_MISSES_TXT}
+            ${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
+            ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
+    COMMENT "Generating hardfix indirect redirects from misses file"
+    VERBATIM)
+list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_HARDFIX_CPP})
+
+# Ensure the misses list is updated before compiling the app
+if (TARGET Mw05Recomp)
+    add_dependencies(Mw05Recomp ExtractIndirectMisses)
 endif()
 
 # Optional: auto-generate import stubs for __imp__ functions
@@ -441,6 +498,7 @@ endif()
 # Propagate feature defines
 target_compile_definitions(Mw05Recomp PRIVATE
     SDL_ENABLE_OLD_NAMES=1
+    MW05_GEN_INDIRECT_REDIRECTS=$<BOOL:${MW05_GEN_INDIRECT_REDIRECTS}>
     MW05_ENABLE_UNLEASHED=$<BOOL:${MW05_ENABLE_UNLEASHED}>
     MW05_ENABLE_IMPLOT=$<BOOL:${MW05_ENABLE_IMPLOT}>)
 

@@ -35,13 +35,10 @@ Memory::Memory()
     // Populate recompiled guest->host function mappings if available.
     // Do not gate on SWA/UNLEASHED; MW05 uses its own generated mappings too.
     extern PPCFuncMapping PPCFuncMappings[];
-    if (PPCFuncMappings != nullptr)
+    for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
     {
-        for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
-        {
-            if (PPCFuncMappings[i].host != nullptr)
-                InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
-        }
+        if (PPCFuncMappings[i].host != nullptr)
+            InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
     }
 }
 

@@ -58,6 +58,60 @@ void* Heap::Alloc(size_t size)
     return out;
 }
 
+void* Heap::Alloc(size_t size, size_t alignment)
+{
+    std::lock_guard lock(mutex);
+    size = std::max<size_t>(1, size);
+    alignment = alignment == 0 ? 16 : std::max<size_t>(16, alignment);
+
+    {
+        const char* t1 = std::getenv("MW05_TRACE_HEAP");
+        const char* t2 = std::getenv("MW05_TRACE_MEM");
+        const bool on = (t1 && !(t1[0]=='0' && t1[1]=='\0')) || (t2 && !(t2[0]=='0' && t2[1]=='\0'));
+        if (on)
+        {
+            const auto d = o1heapGetDiagnostics(heap);
+            bool ok = o1heapDoInvariantsHold(heap);
+            LOGFN("[heap] user pre-alloc(aligned) size={} align={} alloc={}/{} oom={} invariants={} ",
+                  size, alignment, d.allocated, d.capacity, (unsigned long long)d.oom_count, ok ? "ok" : "bad");
+        }
+    }
+
+    // Reserve extra slack so we can always place a tag before the aligned pointer.
+    void* base = o1heapAllocate(heap, size + (alignment * 2));
+    size_t aligned = ((size_t)base + alignment) & ~(alignment - 1);
+    if (aligned - (size_t)base < 16)
+        aligned += alignment; // ensure at least 16 bytes for the tag
+
+    // Mark aligned interior pointer and keep original base for recovery.
+    *((uint64_t*)aligned - 2) = Heap::kAlignedMagic;
+    *((void**)aligned - 1) = base;
+
+    void* out = (void*)aligned;
+    {
+        const char* t1 = std::getenv("MW05_TRACE_HEAP");
+        const char* t2 = std::getenv("MW05_TRACE_MEM");
+        const bool on = (t1 && !(t1[0]=='0' && t1[1]=='\0')) || (t2 && !(t2[0]=='0' && t2[1]=='\0'));
+        if (on)
+        {
+            const auto d = o1heapGetDiagnostics(heap);
+            LOGFN("[heap] user alloc(aligned) size={} align={} host_base={} host_aligned={} guest=0x{:08X} alloc={}/{} oom={}",
+                  size, alignment, (const void*)base, out, g_memory.MapVirtual(out), d.allocated, d.capacity, (unsigned long long)d.oom_count);
+        }
+    }
+    if (const char* chk = std::getenv("MW05_HEAP_CHECK"))
+    {
+        if (chk[0] && !(chk[0]=='0' && chk[1]=='\0'))
+        {
+            if (!o1heapDoInvariantsHold(heap))
+            {
+                LOGFN("[heap] user invariants FAILED after alloc(aligned) size={} host_base={} host_aligned={}", size, (const void*)base, out);
+            }
+        }
+    }
+    return out;
+}
+
 void* Heap::AllocPhysical(size_t size, size_t alignment)
 {
     size = std::max<size_t>(1, size);

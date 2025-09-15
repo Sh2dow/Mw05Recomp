@@ -31,11 +31,12 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>  // for memset in VdQueryVideoMode
+#include <cstdlib>   // std::getenv
+#include <atomic>
 
 #ifdef _WIN32
   #include <windows.h>
 #endif
-
 
 // NtDuplicateObject.cpp (fixed)
 #include <cpu/guest_stack_var.h>   // CURRENT_THREAD_HANDLE
@@ -99,11 +100,56 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, 
 static std::atomic<uint32_t> g_RbWriteBackPtr{0};
 static std::atomic<uint32_t> g_RbBase{0}, g_RbLen{0};
 
+
+extern "C" bool Mw05FastBootEnabled() {
+    static const bool enabled = []() -> bool {
+        if (const char* v = std::getenv("MW05_FAST_BOOT"))
+            return !(v[0] == '0' && v[1] == '\0');
+        return false;
+    }();
+    return enabled;
+}
+
+extern "C" bool Mw05ListShimsEnabled() {
+    static const bool enabled = []() -> bool {
+        if (const char* v = std::getenv("MW05_LIST_SHIMS"))
+            return !(v[0] == '0' && v[1] == '\0');
+        return false;
+    }();
+    return enabled;
+}
+
+// helpers
+inline void HostSleepTiny() {
+    // use whichever you prefer in your project
+    host_sleep(0);
+    // or: std::this_thread::yield();
+}
+
 // helper (place near the top of the file with other helpers)
 inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
     if (off == 0) return false;
     if (off < 4096) return false; // guard page
     return (size_t)off + bytes <= PPC_MEMORY_SIZE;
+}
+
+inline static void DumpRawHeader16(uint32_t ea) {
+    if (!GuestOffsetInRange(ea, sizeof(XDISPATCHER_HEADER))) return;
+    const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(ea));
+    // print 16 bytes (header is 16)
+    KernelTraceHostOpF("DISP RAW %08X: %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X",
+        ea, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
+}
+
+inline static void DumpRawHeader(uint32_t ea) {
+    uint8_t buf[32]{};
+    std::memcpy(buf, g_memory.Translate(ea), sizeof(buf));
+    KernelTraceHostOpF("DISP RAW %08X: "
+                       "%02X %02X %02X %02X  %02X %02X %02X %02X  "
+                       "%02X %02X %02X %02X  %02X %02X %02X %02X",
+                       ea,
+                       buf[0],buf[1],buf[2],buf[3], buf[4],buf[5],buf[6],buf[7],
+                       buf[8],buf[9],buf[10],buf[11], buf[12],buf[13],buf[14],buf[15]);
 }
 
 struct Event final : KernelObject, HostObject<XKEVENT>
@@ -183,6 +229,11 @@ struct Event final : KernelObject, HostObject<XKEVENT>
 };
 
 static std::atomic<uint32_t> g_keSetEventGeneration;
+
+static inline void NudgeEventWaiters() {
+    g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
+    g_keSetEventGeneration.notify_all();
+}
 
 // Minimal reservation tracking for NtAllocateVirtualMemory reserve/commit emulation
 struct NtReservation
@@ -514,44 +565,104 @@ uint32_t FscSetCacheElementCount()
 }
 
 // 2) Typical wait path (single-object) without IsSignaled() or wrong table name
-uint32_t NtWaitForSingleObjectEx(uint32_t Handle, uint32_t /*WaitMode*/, uint32_t /*Alertable*/, be<int64_t>* Timeout)
+// Decls for pass-through (match your existing linkage)
+extern "C" NTSTATUS __imp__NtWaitForSingleObjectEx(
+    void* Handle, BOOLEAN Alertable, LARGE_INTEGER* Timeout, ULONG Mode);
+
+// Helpers you already have:
+//  - Mw05FastBootEnabled()
+//  - Mw05ListShimsEnabled()
+//  - GuestOffsetInRange(...)
+//  - KeWaitForSingleObject(...)
+//  - GuestTimeoutToMilliseconds(...)
+//  - IsKernelObject(...), GetKernelObject(...)
+//  - GuestThread::LookupHandleByThreadId(...)
+extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
+                                            uint32_t WaitMode,
+                                            uint32_t Alertable,
+                                            be<int64_t>* Timeout)
 {
-    // Fast-boot: short-circuit early boot waits to allow other threads to progress to video init
-    static const bool s_fastBoot = []{
-        if (const char* v = std::getenv("MW05_FAST_BOOT"))
-            return !(v[0] == '0' && v[1] == '\0');
-        return false;
-    }();
-    static const auto s_t0 = std::chrono::steady_clock::now();
-    if (s_fastBoot) {
-        auto elapsed = std::chrono::steady_clock::now() - s_t0;
-        // During the first phase of boot, return success immediately for single-object waits
-        if (elapsed < std::chrono::seconds(30)) {
-            // If Handle looks like a guest dispatcher header pointer, mark it signaled.
-            KernelTraceHostOp("HOST.FastWait.NtWaitForSingleObjectEx");
-            if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
-                auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
-                hdr->SignalState = 1;
-            }
-            return STATUS_SUCCESS;
-        }
-    }
+    const bool fastBoot  = Mw05FastBootEnabled();
+    const bool listShims = Mw05ListShimsEnabled();
+    static const auto t0 = std::chrono::steady_clock::now();
+
     const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
 
-    // Kernel handle path
-    if (IsKernelObject(Handle))
-        return GetKernelObject(Handle)->Wait(timeout);
+    // --- TEMP diagnostics (rate-limited) ---
+    static std::atomic<int> s_diagOnce{0};
+    auto log_once = [&](const char* tag){
+        int expected = 0;
+        if (s_diagOnce.compare_exchange_strong(expected, 1)) {
+            const char* tag = "HOST.Wait.NtWaitForSingleObjectEx";   // neutral fallback
+            if (fastBoot) {
+                tag = "HOST.FastWait.NtWaitForSingleObjectEx";
+            } else if (listShims) {
+                tag = "HOST.MW05_LIST_SHIMS.NtWaitForSingleObjectEx";
+            }
+            
+            KernelTraceHostOp(fastBoot
+                ? "HOST.FastWait.NtWaitForSingleObjectEx"
+                : listShims
+                  ? "HOST.MW05_LIST_SHIMS.NtWaitForSingleObjectEx"
+                  : "HOST.Wait.NtWaitForSingleObjectEx");
+        }
+    };
 
-    // Thread-id path -> map to a known kernel handle if we track it
-    if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle))
-        return GetKernelObject(kh)->Wait(timeout);
-
-    // Dispatcher-pointer path (guest address to XDISPATCHER_HEADER)
-    if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
-        auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
-        return KeWaitForSingleObject(hdr, /*WaitReason*/0, /*WaitMode*/0, /*Alertable*/false, Timeout);
+    // --- FAST BOOT: return immediately, don't try to wait ---
+    if (fastBoot && (std::chrono::steady_clock::now() - t0) < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.FastWait.NtWaitForSingleObjectEx");
+        if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
+            if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle))) {
+                hdr->SignalState = 1; // nudge to signaled
+            }
+        }
+        HostSleepTiny();
+        return STATUS_SUCCESS;
+    }
+    
+    // --- LIST_SHIMS: optional heuristic, but non-blocking and guarded ---
+    if (listShims && (std::chrono::steady_clock::now() - t0) < std::chrono::seconds(30)) {
+        // If it's not a known dispatcher EA, but looks like one, try a 0ms poll.
+        if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
+            if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle))) {
+                KernelTraceHostOp("HOST.MW05_LIST_SHIMS.NtWaitForSingleObjectEx.EAOverride");
+                be<int64_t> zero{}; // 0ms poll
+                return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, &zero);
+            }
+        }
     }
 
+    // Kernel handle path
+    if (IsKernelObject(Handle)) {
+        log_once("WAIT classify: kernel-handle");
+        return GetKernelObject(Handle)->Wait(timeout);
+    }
+
+    // Thread-id path
+    if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle)) {
+        log_once("WAIT classify: thread-id->kernel-handle");
+        return GetKernelObject(kh)->Wait(timeout);
+    }
+
+    // Dispatcher-pointer path (guest EA)
+    if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
+        log_once("WAIT classify: dispatcher-EA");
+        DumpRawHeader16(Handle);  // see helper below
+
+        auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
+        const uint8_t  T   = hdr->Type;        // byte 0
+        const uint8_t  Abs = hdr->Absolute;    // byte 1 (union)
+        const uint8_t  Sz  = hdr->Size;        // byte 2
+        const uint8_t  Ins = hdr->Inserted;    // byte 3
+        const int32_t  Sig = hdr->SignalState; // 32-bit at 0x04 (big-endian wrapper handles byte order)
+
+        KernelTraceHostOpF("HOST.Wait.Disp ea=%08X T=%u Abs=%u Sz=%u Ins=%u Sig=%d",
+                       Handle, T, Abs, Sz, Ins, Sig);
+
+        return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
+    }
+
+    log_once("WAIT classify: INVALID_HANDLE");
     return STATUS_INVALID_HANDLE;
 }
 
@@ -777,52 +888,57 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
 extern "C"
 NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
                                 BOOLEAN /*Alertable*/,
-                                PLARGE_INTEGER IntervalGuest /*guest ptr*/) {
-  // Fast-boot: bypass delays entirely during early boot so threads progress
-  static const bool s_fastBoot = []{
-    if (const char* v = std::getenv("MW05_FAST_BOOT"))
-      return !(v[0] == '0' && v[1] == '\0');
-    return false;
-  }();
-  static const auto s_t0 = std::chrono::steady_clock::now();
-  if (s_fastBoot) {
-    auto elapsed = std::chrono::steady_clock::now() - s_t0;
-    if (elapsed < std::chrono::seconds(30)) {
-      KernelTraceHostOp("HOST.FastDelay.KeDelayExecutionThread");
-      return STATUS_SUCCESS;
-    }
-  }
-  // 1) Read SIGNED 64-bit ticks from *guest* memory (100-ns units)
-  const int64_t ticks = read_guest_i64(IntervalGuest); // negative = relative
+                                PLARGE_INTEGER IntervalGuest)
+{
+    const bool fastBoot  = Mw05FastBootEnabled();
+    const bool listShims = Mw05ListShimsEnabled();
 
-  if (ticks == 0) {
-    // Yield-only
-    host_sleep(0);
-    return STATUS_SUCCESS;
-  }
+    static const auto t0 = std::chrono::steady_clock::now();
+    const auto elapsed   = std::chrono::steady_clock::now() - t0;
 
-  if (ticks < 0) {
-    // 2) Relative delay: sleep the full duration (chunked to stay responsive)
-    int64_t remaining100 = -ticks;
-    while (remaining100 > 0) {
-      const int chunk_ms = std::min(ceil_ms_from_100ns(remaining100), 100);
-      host_sleep(std::max(chunk_ms, 1));
-      remaining100 -= (int64_t)chunk_ms * 10'000;
+    // Fast-boot: bypass during early boot only
+    if (fastBoot && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.FastDelay.KeDelayExecutionThread");
+        NudgeEventWaiters();                 // <--- wake pollers using generation waits
+        return STATUS_SUCCESS;
     }
-    return STATUS_SUCCESS;
-  } else {
-    // 3) Absolute delay: loop until we reach the target time
+
+    // LIST_SHIMS: also bypass during early boot (trace + nudge instead of sleeping)
+    if (listShims && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.MW05_LIST_SHIMS.KeDelayExecutionThread");
+        NudgeEventWaiters();                 // <--- critical to avoid “stale” loops
+        return STATUS_SUCCESS;
+    }
+
+    // Read SIGNED 64-bit ticks from guest (100ns units; negative = relative)
+    const int64_t ticks = read_guest_i64(IntervalGuest);
+
+    if (ticks == 0) {
+        host_sleep(0);                       // yield only
+        return STATUS_SUCCESS;
+    }
+
+    if (ticks < 0) {
+        // Relative delay
+        int64_t remaining100 = -ticks;
+        while (remaining100 > 0) {
+            const int chunk_ms = std::min(ceil_ms_from_100ns(remaining100), 100);
+            host_sleep(std::max(chunk_ms, 1));
+            remaining100 -= int64_t(chunk_ms) * 10'000;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    // Absolute delay
     const int64_t deadline100 = ticks;
-    while (true) {
-      const int64_t now100 = query_system_time_100ns();
-      if (now100 >= deadline100)
-        break;
-      const int64_t remain100 = deadline100 - now100;
-      const int chunk_ms = std::min(ceil_ms_from_100ns(remain100), 100);
-      host_sleep(std::max(chunk_ms, 1));
+    for (;;) {
+        const int64_t now100 = query_system_time_100ns();
+        if (now100 >= deadline100) break;
+        const int64_t remain100 = deadline100 - now100;
+        const int chunk_ms = std::min(ceil_ms_from_100ns(remain100), 100);
+        host_sleep(std::max(chunk_ms, 1));
     }
     return STATUS_SUCCESS;
-  }
 }
 
 // Some titles gate functionality behind kernel privilege checks. Be permissive by default.
@@ -1113,41 +1229,48 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
                                bool /*Alertable*/,
                                be<int64_t>* Timeout)
 {
-    uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
-    // Fast-boot: avoid long waits during early boot
-    static const bool s_fastBoot = []{
-        if (const char* v = std::getenv("MW05_FAST_BOOT"))
-            return !(v[0] == '0' && v[1] == '\0');
-        return false;
-    }();
-    static const auto s_t0 = std::chrono::steady_clock::now();
-    if (s_fastBoot) {
-        auto elapsed = std::chrono::steady_clock::now() - s_t0;
-        if (elapsed < std::chrono::seconds(30)) {
-            KernelTraceHostOp("HOST.FastWait.KeWaitForSingleObject");
-            if (Object) Object->SignalState = 1; // mark signaled so caller observes state change
-            return STATUS_SUCCESS;
-        }
-        if (timeout > 5'000) timeout = 1; // cap long timeouts after the initial window
+    if (!Object) return STATUS_INVALID_PARAMETER;
+
+    uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
+
+    const bool fastBoot  = Mw05FastBootEnabled();
+    const bool listShims = Mw05ListShimsEnabled();
+
+    static const auto t0 = std::chrono::steady_clock::now();
+    const auto elapsed   = std::chrono::steady_clock::now() - t0;
+
+    // FAST_BOOT: bypass early in boot
+    // FAST_BOOT: bypass early in boot
+    if (fastBoot && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.FastWait.KeWaitForSingleObject");
+        Object->SignalState = 1;      // let caller observe a state change
+        NudgeEventWaiters();          // wake pollers using generation waits
+        return STATUS_SUCCESS;        // consistent with your Event::Wait()
     }
 
-    switch (Object->Type)
-    {
+    // Optionally cap very long waits in fast-boot after the initial window
+    if (fastBoot && timeout_ms > 5000) {
+        timeout_ms = 1;
+    }
+
+    // LIST_SHIMS: trace only; DO NOT bypass the wait
+    if (listShims && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.MW05_LIST_SHIMS.KeWaitForSingleObject");
+        // fall through to real wait logic
+    }
+
+    switch (Object->Type) {
         case 0: // NotificationEvent
         case 1: // SynchronizationEvent
-            QueryKernelObject<Event>(*Object)->Wait(timeout);
-            break;
+            return QueryKernelObject<Event>(*Object)->Wait(timeout_ms);
 
         case 5: // Semaphore
-            QueryKernelObject<Semaphore>(*Object)->Wait(timeout);
-            break;
+            return QueryKernelObject<Semaphore>(*Object)->Wait(timeout_ms);
 
         default:
-            // Better than assert(false): treat as timed-out/unsupported waitable.
+            // Unknown dispatcher type; avoid assert — treat as timeout/unsupported.
             return STATUS_TIMEOUT;
     }
-
-    return STATUS_SUCCESS;
 }
 
 uint32_t ObDereferenceObject(uint32_t Object)
@@ -2026,10 +2149,278 @@ uint32_t NtReleaseSemaphore(Semaphore* Handle, uint32_t ReleaseCount, int32_t* P
     return STATUS_SUCCESS;
 }
 
-void NtWaitForMultipleObjectsEx()
-{
-    LOG_UTILITY("!!! STUB !!!");
+// ===== helpers =====
+static inline bool EarlyBootGate(const char* env_name, const char* trace_tag, std::chrono::steady_clock::time_point t0) {
+    static const bool on = [] (const char* key) {
+        if (const char* v = std::getenv(key)) return !(v[0] == '0' && v[1] == '\0');
+        return false;
+    }(env_name);
+    if (!on) return false;
+    if (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(30)) {
+        KernelTraceHostOp(trace_tag);
+        return true;
+    }
+    return false;
 }
+
+// Shared “start time” for early-boot gates
+static const auto g_waits_t0 = std::chrono::steady_clock::now();
+
+
+// ===== core impl (Objects = xpointer array) =====
+static uint32_t KeWaitForMultipleObjects_Impl(
+    uint32_t Count,
+    xpointer<XDISPATCHER_HEADER>* Objects,
+    uint32_t WaitType,          // 0=any, !=0=all
+    uint32_t /*WaitReason*/,
+    uint32_t /*WaitMode*/,
+    uint32_t Alertable,
+    be<int64_t>* Timeout,
+    be<uint32_t>* /*WaitBlockArray*/)
+{
+    // Early-boot/list-shims fast path (same behavior no matter who calls us)
+    if (EarlyBootGate("MW05_FAST_BOOT",   "HOST.FastWait.KeWaitForMultipleObjects",   g_waits_t0) ||
+        EarlyBootGate("MW05_LIST_SHIMS",  "HOST.MW05_LIST_SHIMS.KeWaitForMultipleObjects", g_waits_t0)) {
+        // Pretend “wait any” hit index 0; “wait all” -> success
+        return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
+    }
+
+    const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
+    const bool wait_all = (WaitType != 0);
+
+    // ---- Fast path: if everything are Events, use the generation wait ----
+    {
+        bool all_events = true;
+        thread_local std::vector<Event*> s_events;
+        s_events.resize(Count);
+
+        for (uint32_t i = 0; i < Count; ++i) {
+            // Deref xpointer — if invalid EA, your operator* should fail/assert similarly
+            XDISPATCHER_HEADER& hdr = *Objects[i];
+            Event* ev = nullptr;
+            if (hdr.Type == 0 || hdr.Type == 1)
+                ev = QueryKernelObject<Event>(hdr);
+            if (!ev) { all_events = false; break; }
+            s_events[i] = ev;
+        }
+
+        if (all_events) {
+            const auto start = std::chrono::steady_clock::now();
+            auto expired = [&]{
+                if (timeout_ms == INFINITE) return false;
+                uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - start).count();
+                return ms >= timeout_ms;
+            };
+
+            for (;;) {
+                uint32_t ready = 0, signaled = UINT32_MAX;
+                for (uint32_t i = 0; i < Count; ++i) {
+                    if (s_events[i]->Wait(0) == STATUS_SUCCESS) {
+                        ++ready; if (!wait_all) { signaled = i; break; }
+                    }
+                }
+                if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
+                else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
+
+                if (Alertable) { /* TODO: APC handling if you wire it up */ }
+                if (expired()) return STATUS_TIMEOUT;
+
+                // If your KeSetEvent/ResetEvent signal a gen var, the wait below will block nicely.
+                // Otherwise, temporarily replace with sleep_for(1ms).
+                uint32_t gen = g_keSetEventGeneration.load(std::memory_order_acquire);
+                g_keSetEventGeneration.wait(gen, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    // ---- Generic path: build KernelObject* table and poll with light backoff ----
+    std::vector<KernelObject*> objs;
+    objs.reserve(Count);
+
+    for (uint32_t i = 0; i < Count; ++i) {
+        XDISPATCHER_HEADER& hdr = *Objects[i];   // deref xpointer
+        KernelObject* ko = nullptr;
+        switch (hdr.Type) {
+            case 0: // NotificationEvent
+            case 1: // SynchronizationEvent
+                ko = static_cast<KernelObject*>(QueryKernelObject<Event>(hdr));
+                break;
+            case 5: // Semaphore
+                ko = static_cast<KernelObject*>(QueryKernelObject<Semaphore>(hdr));
+                break;
+            default:
+                return STATUS_INVALID_HANDLE;
+        }
+        if (!ko) return STATUS_INVALID_HANDLE;
+        objs.push_back(ko);
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    auto expired = [&]{
+        if (timeout_ms == INFINITE) return false;
+        uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start).count();
+        return ms >= timeout_ms;
+    };
+
+    for (;;) {
+        uint32_t ready = 0, signaled = UINT32_MAX;
+
+        for (uint32_t i = 0; i < Count; ++i) {
+            if (objs[i]->Wait(0) == STATUS_SUCCESS) {
+                ++ready; if (!wait_all) { signaled = i; break; }
+            }
+        }
+        if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
+        else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
+
+        if (Alertable) { /* APC if needed */ }
+        if (expired()) return STATUS_TIMEOUT;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+
+// ===== public exports =====
+
+// Kernel surface: already has xpointer[] — forward to impl.
+uint32_t KeWaitForMultipleObjects(
+    uint32_t Count,
+    xpointer<XDISPATCHER_HEADER>* Objects,
+    uint32_t WaitType,
+    uint32_t WaitReason,
+    uint32_t WaitMode,
+    uint32_t Alertable,
+    be<int64_t>* Timeout,
+    be<uint32_t>* WaitBlockArray)
+{
+    KernelTraceHostOp("HOST.MW05_LIST_SHIMS.KeWaitForMultipleObjects.enter");
+    return KeWaitForMultipleObjects_Impl(Count, Objects, WaitType, WaitReason, WaitMode,
+                                         Alertable, Timeout, WaitBlockArray);
+}
+
+// NTDLL surface: handles/dispatcher EAs -> build xpointer[] then forward.
+// --- NtWaitForMultipleObjectsEx: handles or dispatcher EAs ---
+// No xpointer construction, no DispatcherEA(), no duplicate KeWaitForMultipleObjects.
+// Optional: if you already expose this elsewhere, reuse it.
+static inline void Mw05NudgeEventWaiters() {
+    g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
+    g_keSetEventGeneration.notify_all();
+}
+
+extern "C" uint32_t NtWaitForMultipleObjectsEx(
+    uint32_t Count,
+    uint32_t* HandlesOrDispatchers,   // guest EAs or kernel handles
+    uint32_t WaitType,                // 0 = wait-any, !=0 = wait-all
+    uint32_t WaitMode,
+    uint32_t Alertable,
+    be<int64_t>* Timeout)
+{
+    // Guards
+    if (!HandlesOrDispatchers) return STATUS_INVALID_PARAMETER;
+    // NT has a limit (64). Use your project’s constant if it exists.
+    if (Count == 0 || Count > 64) return STATUS_INVALID_PARAMETER;
+
+    const bool fastBoot  = Mw05FastBootEnabled();
+    const bool listShims = Mw05ListShimsEnabled();
+    static const auto t0 = std::chrono::steady_clock::now();
+    const auto elapsed   = std::chrono::steady_clock::now() - t0;
+
+    // Early-boot short-circuit ONLY for fast-boot
+    if (fastBoot && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.FastWait.NtWaitForMultipleObjectsEx");
+        // Heuristically mark dispatcher headers signaled
+        for (uint32_t i = 0; i < Count; ++i) {
+            const uint32_t v = HandlesOrDispatchers[i];
+            if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
+                auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
+                hdr->SignalState = 1;
+            }
+        }
+        Mw05NudgeEventWaiters();
+        // For wait-any, pretend index 0 fired; for wait-all, success.
+        return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
+    }
+
+    // LIST_SHIMS: trace only (no bypass)
+    if (listShims && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.MW05_LIST_SHIMS.NtWaitForMultipleObjectsEx");
+    }
+
+    const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
+    const bool wait_all = (WaitType != 0);
+
+    // Build a vector of KernelObject* from mixed inputs
+    std::vector<KernelObject*> objs;
+    objs.reserve(Count);
+
+    for (uint32_t i = 0; i < Count; ++i) {
+        const uint32_t v = HandlesOrDispatchers[i];
+
+        if (IsKernelObject(v)) {
+            KernelObject* ko = GetKernelObject(v);
+            if (!ko) return STATUS_INVALID_HANDLE;
+            objs.push_back(ko);
+            continue;
+        }
+
+        // Treat as guest dispatcher pointer (EA)
+        if (!GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER)))
+            return STATUS_INVALID_HANDLE;
+
+        auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
+        KernelObject* ko = nullptr;
+        switch (hdr->Type) {
+            case 0: // NotificationEvent
+            case 1: // SynchronizationEvent
+                ko = static_cast<KernelObject*>(QueryKernelObject<Event>(*hdr));
+                break;
+            case 5: // Semaphore
+                ko = static_cast<KernelObject*>(QueryKernelObject<Semaphore>(*hdr));
+                break;
+            default:
+                return STATUS_INVALID_HANDLE;
+        }
+        if (!ko) return STATUS_INVALID_HANDLE;
+        objs.push_back(ko);
+    }
+
+    // Portable polling loop (you can swap in your generation-wait fast path later)
+    const auto start = std::chrono::steady_clock::now();
+    auto expired = [&]{
+        if (timeout_ms == INFINITE) return false;
+        const uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - start).count();
+        return ms >= timeout_ms;
+    };
+
+    for (;;) {
+        uint32_t ready = 0, signaled = UINT32_MAX;
+
+        for (uint32_t i = 0; i < Count; ++i) {
+            if (objs[i]->Wait(0) == STATUS_SUCCESS) {
+                ++ready;
+                if (!wait_all) { signaled = i; break; }
+            }
+        }
+
+        if (wait_all) {
+            if (ready == Count) return STATUS_SUCCESS;
+        } else {
+            if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF);
+        }
+
+        if (Alertable) {
+            // TODO: if you wire APCs, return STATUS_USER_APC where appropriate
+        }
+        if (expired()) return STATUS_TIMEOUT;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // light backoff
+    }
+}
+
 
 void RtlCompareStringN()
 {
@@ -2164,107 +2555,6 @@ void NetDll_XNetStartup()
 void NetDll_XNetGetTitleXnAddr()
 {
     LOG_UTILITY("!!! STUB !!!");
-}
-
-uint32_t KeWaitForMultipleObjects(
-    uint32_t Count,
-    xpointer<XDISPATCHER_HEADER>* Objects,
-    uint32_t WaitType,          // 0=any, !=0=all
-    uint32_t /*WaitReason*/,
-    uint32_t /*WaitMode*/,
-    uint32_t Alertable,
-    be<int64_t>* Timeout,
-    be<uint32_t>* /*WaitBlockArray*/)
-{
-    const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
-    const bool wait_all = (WaitType != 0);
-
-    // --- Fast path: all are Events -> use generation wait
-    {
-        bool all_events = true;
-        thread_local std::vector<Event*> s_events;
-        s_events.resize(Count);
-
-        for (uint32_t i = 0; i < Count; ++i) {
-            Event* ev = QueryKernelObject<Event>(*Objects[i]);
-            if (!ev) { all_events = false; break; }
-            s_events[i] = ev;
-        }
-
-        if (all_events) {
-            const auto start = std::chrono::steady_clock::now();
-            auto expired = [&]{
-                if (timeout_ms == INFINITE) return false;
-                uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now() - start).count();
-                return ms >= timeout_ms;
-            };
-
-            for (;;) {
-                uint32_t ready = 0, signaled = UINT32_MAX;
-                for (uint32_t i = 0; i < Count; ++i) {
-                    if (s_events[i]->Wait(0) == STATUS_SUCCESS) {
-                        ++ready; if (!wait_all) { signaled = i; break; }
-                    }
-                }
-                if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
-                else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
-
-                if (Alertable) { /* APC check here if you wire it up; could return STATUS_USER_APC */ }
-                if (expired()) return STATUS_TIMEOUT;
-
-                uint32_t gen = g_keSetEventGeneration.load();
-                g_keSetEventGeneration.wait(gen); // sleep until an Event changes
-            }
-        }
-    }
-
-    // --- Generic path: support known types (Event/Semaphore) via KernelObject*
-    std::vector<KernelObject*> objs;
-    objs.reserve(Count);
-
-    for (uint32_t i = 0; i < Count; ++i) {
-        XDISPATCHER_HEADER& hdr = *Objects[i];
-        KernelObject* ko = nullptr;
-        switch (hdr.Type) {
-            case 0: // NotificationEvent
-            case 1: // SynchronizationEvent
-                ko = static_cast<KernelObject*>(QueryKernelObject<Event>(hdr));
-                break;
-            case 5: // Semaphore
-                ko = static_cast<KernelObject*>(QueryKernelObject<Semaphore>(hdr));
-                break;
-            default:
-                return STATUS_INVALID_HANDLE; // unsupported waitable here
-        }
-        if (!ko) return STATUS_INVALID_HANDLE;
-        objs.push_back(ko);
-    }
-
-    const auto start = std::chrono::steady_clock::now();
-    auto expired = [&]{
-        if (timeout_ms == INFINITE) return false;
-        uint32_t ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - start).count();
-        return ms >= timeout_ms;
-    };
-
-    for (;;) {
-        uint32_t ready = 0, signaled = UINT32_MAX;
-
-        for (uint32_t i = 0; i < Count; ++i) {
-            if (objs[i]->Wait(0) == STATUS_SUCCESS) {
-                ++ready; if (!wait_all) { signaled = i; break; }
-            }
-        }
-        if (wait_all) { if (ready == Count) return STATUS_SUCCESS; }
-        else          { if (signaled != UINT32_MAX) return STATUS_WAIT_0 + (signaled & 0xFF); }
-
-        if (Alertable) { /* APC check here if present */ }
-        if (expired()) return STATUS_TIMEOUT;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // light backoff
-    }
 }
 
 uint32_t KeRaiseIrqlToDpcLevel()

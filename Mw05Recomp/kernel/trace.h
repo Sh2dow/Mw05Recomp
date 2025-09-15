@@ -19,3 +19,4 @@ void KernelTraceDumpRecent(int maxCount = 16);
 void KernelTraceHostBegin(PPCContext& ctx);
 void KernelTraceHostEnd();
 void KernelTraceHostOp(const char* name);
+void KernelTraceHostOpF(const char* fmt, ...);

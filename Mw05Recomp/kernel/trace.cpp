@@ -7,6 +7,7 @@
 #include <atomic>
 #include <fstream>
 #include <mutex>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -181,6 +182,17 @@ void KernelTraceHostOp(const char* name)
     } catch (...) {
         // best-effort
     }
+}
+
+// Minimal printf-style wrapper around KernelTraceHostOp.
+// Safe to call from multiple threads (each gets its own buffer).
+void KernelTraceHostOpF(const char* fmt, ...) {
+    thread_local char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    KernelTraceHostOp(buf);
 }
 
 extern "C" void MwTraceIndirectMiss(unsigned int addr)

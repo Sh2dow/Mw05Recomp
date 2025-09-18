@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug, crash, or other type of error in Unleashed Recompiled
+description: Report a bug, crash, or other type of error in MW05 Recompiled
 type: Bug
 body:
   - id: validation
@@ -7,26 +7,9 @@ body:
     attributes:
       label: Validation
       options:
-      - label: I have checked the [Issues](https://github.com/hedge-dev/UnleashedRecomp/issues) page to see if my problem has already been reported
+      - label: I have checked the [Issues](https://github.com/sh2dow/Mw05Recomp/issues) page to see if my problem has already been reported
         required: true
       - label: I have confirmed that this bug does not occur in the original game running on original Xbox 360 hardware
-        required: false
-  - id: dlc-installed
-    type: checkboxes
-    attributes:
-      label: If you have DLC installed, please specify which ones you have.
-      options:
-      - label: Apotos & Shamar Adventure Pack
-        required: false
-      - label: Chun-nan Adventure Pack
-        required: false
-      - label: Empire City & Adabat Adventure Pack
-        required: false
-      - label: Holoska Adventure Pack
-        required: false
-      - label: Mazuri Adventure Pack
-        required: false
-      - label: Spagonia Adventure Pack
         required: false
   - id: mods-used
     type: textarea
@@ -79,7 +62,7 @@ body:
       required: true
     attributes:
       label: Version
-      description: The version of Unleashed Recompiled you are running (e.g. **v1.0.0**). This can be found at the bottom right corner of the installer wizard, options menu, or in the application metadata.
+      description: The version of MW05 Recompiled you are running (e.g. **v1.0.0**). This can be found at the bottom right corner of the installer wizard, options menu, or in the application metadata.
   - id: specs-cpu
     type: input
     validations:

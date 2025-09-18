@@ -94,11 +94,17 @@ struct KernelObject
     }
 };
 
+void RegisterKernelObject(KernelObject* obj);
+void UnregisterKernelObject(KernelObject* obj);
+bool IsKernelObjectAlive(const KernelObject* obj);
+
 template<typename T, typename... Args>
 inline T* CreateKernelObject(Args&&... args)
 {
     static_assert(std::is_base_of_v<KernelObject, T>);
-    return g_userHeap.AllocPhysical<T>(std::forward<Args>(args)...);
+    auto* obj = g_userHeap.AllocPhysical<T>(std::forward<Args>(args)...);
+    RegisterKernelObject(obj);
+    return obj;
 }
 
 template<typename T = KernelObject>

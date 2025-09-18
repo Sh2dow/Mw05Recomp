@@ -34,6 +34,10 @@
 #include <cstdlib>   // std::getenv
 #include <atomic>
 
+extern "C" uint32_t Mw05ConsumeSchedulerBlockEA();
+extern "C" uint32_t Mw05GetSchedulerHandleEA();
+extern "C" uint32_t Mw05GetSchedulerTimeoutEA();
+
 #ifdef _WIN32
   #include <windows.h>
 #endif
@@ -85,8 +89,14 @@
 #ifndef HAVE_READ_GUEST_HELPERS
   // Define this macro in your build if you already have read_guest_i64/host_sleep.
   static inline int64_t read_guest_i64(const void* p) {
-    // Fallback assumes guest pointer is directly addressable (dev-only).
-    return p ? *reinterpret_cast<const int64_t*>(p) : 0;
+    if (!p) return 0;
+    uint64_t raw = *reinterpret_cast<const uint64_t*>(p);
+  #if defined(_MSC_VER)
+    raw = _byteswap_uint64(raw);
+  #else
+    raw = __builtin_bswap64(raw);
+  #endif
+    return static_cast<int64_t>(raw);
   }
   static inline void host_sleep(int ms) {
     if (ms <= 0) std::this_thread::yield();
@@ -412,6 +422,15 @@ static void Mw05StartVblankPumpOnce() {
 void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset)
 {
     const bool valid = eventEA && GuestOffsetInRange(eventEA, sizeof(XDISPATCHER_HEADER));
+    if (valid) {
+        const uint32_t prev = g_vdInterruptEventEA.load(std::memory_order_acquire);
+        if (prev == eventEA) {
+            if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(eventEA))) {
+                hdr->SignalState = be<int32_t>(1);
+            }
+            return;
+        }
+    }
     g_vdInterruptEventEA.store(valid ? eventEA : 0u, std::memory_order_release);
     if (valid) {
         KernelTraceHostOpF("HOST.VdInterruptEvent.register ea=%08X manual=%u", eventEA, manualReset ? 1u : 0u);
@@ -443,6 +462,27 @@ static bool Mw05SignalVdInterruptEvent()
         hdr->SignalState = be<int32_t>(1);
         NudgeEventWaiters();
         signaled = true;
+    }
+
+    if (signaled) {
+        if (uint32_t blockEA = Mw05ConsumeSchedulerBlockEA()) {
+            if (GuestOffsetInRange(blockEA + 8, sizeof(uint64_t))) {
+                if (auto* block = reinterpret_cast<uint32_t*>(g_memory.Translate(blockEA))) {
+                    auto* fence64 = reinterpret_cast<uint64_t*>(block + 2);
+                    uint64_t before = fence64 ? *fence64 : 0;
+                    if (fence64) *fence64 = 0;
+                    KernelTraceHostOpF("HOST.VdInterruptEvent.ack block=%08X before=%016llX",
+                                       blockEA, static_cast<unsigned long long>(before));
+                } else {
+                    KernelTraceHostOpF("HOST.VdInterruptEvent.ack block=%08X (unmapped)", blockEA);
+                }
+            }
+        }
+        if (const uint32_t cb = VdGetGraphicsInterruptCallback()) {
+            const uint32_t ctx = VdGetGraphicsInterruptContext();
+            KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
+            GuestToHostFunction<void>(cb, ctx);
+        }
     }
 
     return signaled;
@@ -780,6 +820,10 @@ uint32_t NtClose(uint32_t handle)
         }
 
         KernelObject* obj = GetKernelObject(handle);
+        if (!IsKernelObjectAlive(obj))
+        {
+            return STATUS_INVALID_HANDLE;
+        }
 
         // Ensure the object pointer lies within one of our heaps before
         // invoking the destructor. This prevents accidental calls on random
@@ -885,13 +929,21 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     // Kernel handle path
     if (IsKernelObject(Handle)) {
         log_once("WAIT classify: kernel-handle");
-        return GetKernelObject(Handle)->Wait(timeout);
+        KernelObject* kernel = GetKernelObject(Handle);
+        if (!IsKernelObjectAlive(kernel)) {
+            return STATUS_INVALID_HANDLE;
+        }
+        return kernel->Wait(timeout);
     }
 
     // Thread-id path
     if (uint32_t kh = GuestThread::LookupHandleByThreadId(Handle)) {
         log_once("WAIT classify: thread-id->kernel-handle");
-        return GetKernelObject(kh)->Wait(timeout);
+        KernelObject* kernel = GetKernelObject(kh);
+        if (!IsKernelObjectAlive(kernel)) {
+            return STATUS_INVALID_HANDLE;
+        }
+        return kernel->Wait(timeout);
     }
 
     // Dispatcher-pointer path (guest EA)
@@ -920,9 +972,15 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                 const uint32_t reg_ea = g_vdInterruptEventEA.load(std::memory_order_acquire);
                 if (reg_ea != 0 && Handle == reg_ea) {
                     if (auto* ev = TryQueryKernelObject<Event>(*hdr)) {
-                        ev->Reset();
+                        if (!ev->manualReset) {
+                            ev->Reset();
+                            hdr->SignalState = be<int32_t>(0);
+                        } else {
+                            hdr->SignalState = be<int32_t>(1);
+                        }
+                    } else {
+                        hdr->SignalState = be<int32_t>(0);
                     }
-                    hdr->SignalState = be<int32_t>(0);
                 }
             }
             KernelTraceHostOpF("HOST.Wait.Disp.rc ea=%08X rc=%08X Sig=%d", Handle, rc, hdr ? static_cast<int32_t>(hdr->SignalState.get()) : -1);
@@ -1174,7 +1232,7 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
     // LIST_SHIMS: also bypass during early boot (trace + nudge instead of sleeping)
     if (listShims && elapsed < std::chrono::seconds(30)) {
         KernelTraceHostOp("HOST.MW05_LIST_SHIMS.KeDelayExecutionThread");
-        NudgeEventWaiters();                 // <--- critical to avoid “stale” loops
+        NudgeEventWaiters();                 // <--- critical to avoid вЂњstaleвЂќ loops
         return STATUS_SUCCESS;
     }
 
@@ -1276,7 +1334,7 @@ uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
     // Normalize pseudo process handles (caller uses -1/-2/etc. for current)
     const bool srcIsCurrent = IsPseudoHandle(SourceProcessHandle);
     const bool dstIsCurrent = IsPseudoHandle(TargetProcessHandle);
-    (void)srcIsCurrent; (void)dstIsCurrent; // in this shim they’re informational
+    (void)srcIsCurrent; (void)dstIsCurrent; // in this shim theyвЂ™re informational
 
     // If SAME_ACCESS is set, ignore DesiredAccess (Windows semantics)
     if (Options & DUPLICATE_SAME_ACCESS) {
@@ -1294,7 +1352,7 @@ uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
         return STATUS_SUCCESS;
     }
 
-    // Non-kernel/guest handles: if your runtime doesn’t create a *new* slot,
+    // Non-kernel/guest handles: if your runtime doesnвЂ™t create a *new* slot,
     // just mirror the value as well (most titles only require this).
     *TargetHandle = SourceHandle;
 
@@ -1546,7 +1604,7 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
             return QueryKernelObject<Semaphore>(*Object)->Wait(timeout_ms);
 
         default:
-            // Unknown dispatcher type; avoid assert — treat as timeout/unsupported.
+            // Unknown dispatcher type; avoid assert вЂ” treat as timeout/unsupported.
             return STATUS_TIMEOUT;
     }
 }
@@ -2425,7 +2483,7 @@ static inline bool EarlyBootGate(const char* env_name, const char* trace_tag, st
     return false;
 }
 
-// Shared “start time” for early-boot gates
+// Shared вЂњstart timeвЂќ for early-boot gates
 static const auto g_waits_t0 = std::chrono::steady_clock::now();
 
 
@@ -2443,7 +2501,7 @@ static uint32_t KeWaitForMultipleObjects_Impl(
     // Early-boot/list-shims fast path (same behavior no matter who calls us)
     if (EarlyBootGate("MW05_FAST_BOOT",   "HOST.FastWait.KeWaitForMultipleObjects",   g_waits_t0) ||
         EarlyBootGate("MW05_LIST_SHIMS",  "HOST.MW05_LIST_SHIMS.KeWaitForMultipleObjects", g_waits_t0)) {
-        // Pretend “wait any” hit index 0; “wait all” -> success
+        // Pretend вЂњwait anyвЂќ hit index 0; вЂњwait allвЂќ -> success
         return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
     }
 
@@ -2457,7 +2515,7 @@ static uint32_t KeWaitForMultipleObjects_Impl(
         s_events.resize(Count);
 
         for (uint32_t i = 0; i < Count; ++i) {
-            // Deref xpointer — if invalid EA, your operator* should fail/assert similarly
+            // Deref xpointer вЂ” if invalid EA, your operator* should fail/assert similarly
             XDISPATCHER_HEADER& hdr = *Objects[i];
             Event* ev = nullptr;
             if (hdr.Type == 0 || hdr.Type == 1)
@@ -2547,7 +2605,7 @@ static uint32_t KeWaitForMultipleObjects_Impl(
 
 // ===== public exports =====
 
-// Kernel surface: already has xpointer[] — forward to impl.
+// Kernel surface: already has xpointer[] вЂ” forward to impl.
 uint32_t KeWaitForMultipleObjects(
     uint32_t Count,
     xpointer<XDISPATCHER_HEADER>* Objects,
@@ -2582,7 +2640,7 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
 {
     // Guards
     if (!HandlesOrDispatchers) return STATUS_INVALID_PARAMETER;
-    // NT has a limit (64). Use your project’s constant if it exists.
+    // NT has a limit (64). Use your projectвЂ™s constant if it exists.
     if (Count == 0 || Count > 64) return STATUS_INVALID_PARAMETER;
 
     const bool fastBoot  = Mw05FastBootEnabled();
@@ -2623,7 +2681,7 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
 
         if (IsKernelObject(v)) {
             KernelObject* ko = GetKernelObject(v);
-            if (!ko) return STATUS_INVALID_HANDLE;
+            if (!IsKernelObjectAlive(ko)) return STATUS_INVALID_HANDLE;
             objs.push_back(ko);
             continue;
         }

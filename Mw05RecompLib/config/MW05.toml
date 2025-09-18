@@ -18706,7 +18706,6 @@ functions = [
     { address = 0x82621320, size = 0x8C },
     { address = 0x826213B0, size = 0x2374 },
     { address = 0x826214C0, size = 0x180 },
-    { address = 0x82621640, size = 0xE8 },
     { address = 0x82621728, size = 0xB8 },
     { address = 0x826217E0, size = 0xD8 },
     { address = 0x826218B8, size = 0x240 },
@@ -24114,7 +24113,9 @@ functions = [
     { address = 0x828C4900, size = 0xFC8 },
     { address = 0x828C58C8, size = 0x538 },
     { address = 0x828C5E00, size = 0xE00 },
-    { address = 0x828C6C00, size = 0x0 },
+    { address = 0x828C6C00, size = 0x21A0 },
 ]
 
-invalid_instructions = {}
+invalid_instructions = [
+    { data = 0x82621640, size = 232 }, # Padding
+]

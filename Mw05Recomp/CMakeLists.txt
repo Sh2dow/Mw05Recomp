@@ -118,6 +118,7 @@ set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/mw05_boot_shims.cpp"
     "cpu/mw05_trace_threads.cpp"
     "cpu/ppc_list_shims.cpp"
+    "cpu/mw05_scheduler_shims.cpp"
 )
 
 set(MW05_RECOMP_GPU_CXX_SOURCES

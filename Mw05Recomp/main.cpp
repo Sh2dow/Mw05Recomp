@@ -33,6 +33,10 @@
 #include <preload_executable.h>
 #include <kernel/trace.h>
 
+#include <ppc/ppc_context.h>
+
+PPC_EXTERN_FUNC(sub_82621640);
+
 #ifdef _WIN32
 #include <timeapi.h>
 #include <windows.h>
@@ -493,6 +497,8 @@ int main(int argc, char *argv[])
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
+    g_memory.InsertFunction(0x82621640, sub_82621640);
+    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p", reinterpret_cast<const void*>(sub_82621640), reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
 
     // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
     extern uint32_t KeTlsAlloc();

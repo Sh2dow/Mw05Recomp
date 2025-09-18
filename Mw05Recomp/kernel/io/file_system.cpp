@@ -86,6 +86,46 @@ struct FindHandle : KernelObject
     }
 };
 
+namespace
+{
+    void SetInvalidHandleError()
+    {
+#ifdef _WIN32
+        GuestThread::SetLastError(ERROR_INVALID_HANDLE);
+#else
+        GuestThread::SetLastError(6); // ERROR_INVALID_HANDLE
+#endif
+    }
+
+    bool EnsureLiveFileHandle(FileHandle* handle)
+    {
+        if (!IsKernelObjectAlive(handle))
+        {
+            SetInvalidHandleError();
+            return false;
+        }
+
+        if (!handle->stream.is_open())
+        {
+            SetInvalidHandleError();
+            return false;
+        }
+
+        return true;
+    }
+
+    bool EnsureLiveFindHandle(FindHandle* handle)
+    {
+        if (!IsKernelObjectAlive(handle))
+        {
+            SetInvalidHandleError();
+            return false;
+        }
+
+        return true;
+    }
+}
+
 FileHandle* XCreateFileA
 (
     const char* lpFileName,
@@ -130,6 +170,16 @@ FileHandle* XCreateFileA
 
 static uint32_t XGetFileSizeA(FileHandle* hFile, be<uint32_t>* lpFileSizeHigh)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpFileSizeHigh != nullptr)
+        {
+            *lpFileSizeHigh = 0;
+        }
+
+        return INVALID_FILE_SIZE;
+    }
+
     std::error_code ec;
     auto fileSize = std::filesystem::file_size(hFile->path, ec);
     if (!ec)
@@ -138,15 +188,26 @@ static uint32_t XGetFileSizeA(FileHandle* hFile, be<uint32_t>* lpFileSizeHigh)
         {
             *lpFileSizeHigh = uint32_t(fileSize >> 32U);
         }
-    
-        return (uint32_t)(fileSize);
+
+        return static_cast<uint32_t>(fileSize);
     }
 
+    GuestThread::SetLastError(ec.value());
     return INVALID_FILE_SIZE;
 }
 
 uint32_t XGetFileSizeExA(FileHandle* hFile, LARGE_INTEGER* lpFileSize)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpFileSize != nullptr)
+        {
+            lpFileSize->QuadPart = 0;
+        }
+
+        return FALSE;
+    }
+
     std::error_code ec;
     auto fileSize = std::filesystem::file_size(hFile->path, ec);
     if (!ec)
@@ -159,6 +220,7 @@ uint32_t XGetFileSizeExA(FileHandle* hFile, LARGE_INTEGER* lpFileSize)
         return TRUE;
     }
 
+    GuestThread::SetLastError(ec.value());
     return FALSE;
 }
 
@@ -171,6 +233,16 @@ uint32_t XReadFile
     XOVERLAPPED* lpOverlapped
 )
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpNumberOfBytesRead != nullptr)
+        {
+            *lpNumberOfBytesRead = 0;
+        }
+
+        return FALSE;
+    }
+
     uint32_t result = FALSE;
     if (lpOverlapped != nullptr)
     {
@@ -209,6 +281,16 @@ uint32_t XReadFile
 
 uint32_t XSetFilePointer(FileHandle* hFile, int32_t lDistanceToMove, be<int32_t>* lpDistanceToMoveHigh, uint32_t dwMoveMethod)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpDistanceToMoveHigh != nullptr)
+        {
+            *lpDistanceToMoveHigh = 0;
+        }
+
+        return INVALID_SET_FILE_POINTER;
+    }
+
     int32_t distanceToMoveHigh = lpDistanceToMoveHigh ? lpDistanceToMoveHigh->get() : 0;
     std::streamoff streamOffset = lDistanceToMove + (std::streamoff(distanceToMoveHigh) << 32U);
     std::fstream::seekdir streamSeekDir = {};
@@ -244,6 +326,16 @@ uint32_t XSetFilePointer(FileHandle* hFile, int32_t lDistanceToMove, be<int32_t>
 
 uint32_t XSetFilePointerEx(FileHandle* hFile, int32_t lDistanceToMove, LARGE_INTEGER* lpNewFilePointer, uint32_t dwMoveMethod)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpNewFilePointer != nullptr)
+        {
+            lpNewFilePointer->QuadPart = 0;
+        }
+
+        return FALSE;
+    }
+
     std::fstream::seekdir streamSeekDir = {};
     switch (dwMoveMethod)
     {
@@ -304,6 +396,11 @@ FindHandle* XFindFirstFileA(const char* lpFileName, WIN32_FIND_DATAA* lpFindFile
 
 uint32_t XFindNextFileA(FindHandle* Handle, WIN32_FIND_DATAA* lpFindFileData)
 {
+    if (!EnsureLiveFindHandle(Handle))
+    {
+        return FALSE;
+    }
+
     Handle->iterator++;
 
     if (Handle->iterator == Handle->searchResult.end())
@@ -319,6 +416,11 @@ uint32_t XFindNextFileA(FindHandle* Handle, WIN32_FIND_DATAA* lpFindFileData)
 
 uint32_t XReadFileEx(FileHandle* hFile, void* lpBuffer, uint32_t nNumberOfBytesToRead, XOVERLAPPED* lpOverlapped, uint32_t lpCompletionRoutine)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        return FALSE;
+    }
+
     uint32_t result = FALSE;
     uint32_t numberOfBytesRead;
     std::streamoff streamOffset = lpOverlapped->Offset + (std::streamoff(lpOverlapped->OffsetHigh.get()) << 32U);
@@ -356,6 +458,16 @@ uint32_t XGetFileAttributesA(const char* lpFileName)
 
 uint32_t XWriteFile(FileHandle* hFile, const void* lpBuffer, uint32_t nNumberOfBytesToWrite, be<uint32_t>* lpNumberOfBytesWritten, void* lpOverlapped)
 {
+    if (!EnsureLiveFileHandle(hFile))
+    {
+        if (lpNumberOfBytesWritten != nullptr)
+        {
+            *lpNumberOfBytesWritten = 0;
+        }
+
+        return FALSE;
+    }
+
     assert(lpOverlapped == nullptr && "Overlapped not implemented.");
 
     hFile->stream.write((const char *)(lpBuffer), nNumberOfBytesToWrite);

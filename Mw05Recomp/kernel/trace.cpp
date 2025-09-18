@@ -14,7 +14,7 @@
 
 static std::atomic<int> g_traceEnabled{-1}; // -1 = unknown, 0 = no, 1 = yes
 struct TraceEntry {
-    char name[48];
+    char name[160];
     uint32_t tid;
     uint32_t r3, r4, r5, r6;
     uint32_t lr;

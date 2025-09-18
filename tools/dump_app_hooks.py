@@ -32,7 +32,7 @@ def scan_hooks(src_root: Path):
 def main() -> int:
     ap = argparse.ArgumentParser(description='Dump app PPC hooks into CSV skeleton')
     ap.add_argument('--src-root', type=Path, default=Path('Mw05Recomp'))
-    ap.add_argument('--out-csv', type=Path, default=Path('tools/hooks_unleashed.csv'))
+    ap.add_argument('--out-csv', type=Path, default=Path('tools/hooks_mw05.csv'))
     args = ap.parse_args()
 
     hooks = scan_hooks(args.src_root)

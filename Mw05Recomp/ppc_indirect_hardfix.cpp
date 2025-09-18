@@ -3,11 +3,8 @@
 
 #include <kernel/memory.h>
 #include <cpu/ppc_context.h>
+#include <ppc/ppc_recomp_shared.h>
 
-// Forward declarations of the recompiled functions we want to target
-void sub_821816F8(PPCContext& __restrict, uint8_t*);
-void sub_821D6FF8(PPCContext& __restrict, uint8_t*);
-void sub_821D6528(PPCContext& __restrict, uint8_t*);
 
 static void RegisterIndirectHardfixes() {
     // From log: [ppc][indirect-miss] target=0x82181688
@@ -29,4 +26,8 @@ static void RegisterIndirectHardfixes() {
 #else
     __attribute__((constructor)) static void ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
 #endif
+
+
+
+
 

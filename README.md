@@ -21,6 +21,7 @@
 - [Features](#features)
 - [FAQ](#faq)
 - [Building](#building)
+- [Debugging](#debugging)
 - [Credits](#credits)
 
 ## Minimum System Requirements
@@ -161,17 +162,22 @@ This project does not plan to support any more platforms other than Windows, Lin
 ## Building
 
 Default is MSVC compiler:
-### ``./build_cmd.ps1``
+### ``pwsh ./build_cmd.ps1``
 or
-### ``./build_cmd.ps1 -Stage all -Config Release -Clean``
+### ``pwsh ./build_cmd.ps1 -Stage all -Config Release -Clean``
 
-You can also use build switcher:
+For Clang use build switcher:
+
+### Clang (clang-cl), x64, Debug, with an extra CMake flag
+``pwsh ./build_switch.ps1 -Compiler Clang -Arch x64 -Config Release -CMakeArgs "-DUSE_IMGUI=ON"``
 
 ### MSVC, x64, Release
 ``pwsh ./build_switch.ps1 -Compiler MSVC -Arch x64 -Config Release``
 
-### Clang (clang-cl), x86, Debug, with an extra CMake flag
-``pwsh ./build_switch.ps1 -Compiler Clang -Arch x64 -Config Release -CMakeArgs "-DUSE_IMGUI=ON"``
+
+## Debugging
+
+``pwsh $env:MW05_FORCE_PRESENT=0;$env:MW05_KICK_VIDEO=0;$env:MW05_AUTO_VIDEO=1;$env:MW05_VBLANK_PUMP=1;$env:MW05_VBLANK_CB=1;$env:MW05_PUMP_EVENTS=0;$env:MW05_LIST_SHIMS=0;$env:MW05_BREAK_82813514=0;$env:MW05_FAST_BOOT=0;$env:MW05_TRACE_KERNEL=1;$env:MW05_HOST_TRACE_IMPORTS=1;$env:MW05_HOST_TRACE_HOSTOPS=1;$env:MW_VERBOSE=0;.\Mw05Recomp.exe``
 
 ### Special Thanks
 - [Mr-Wiseguy](https://github.com/Mr-Wiseguy): Creator of [N64: Recompiled](https://github.com/N64Recomp/N64Recomp), which was the inspiration behind the creation of this project. Provided information and assistance at the beginning of development.

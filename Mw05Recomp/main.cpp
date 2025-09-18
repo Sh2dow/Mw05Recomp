@@ -373,19 +373,19 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    #if MW05_ENABLE_UNLEASHED
     // Check the time since the last time an update was checked. Store the new time if the difference is more than six hours.
     constexpr double TimeBetweenUpdateChecksInSeconds = 6 * 60 * 60;
     time_t timeNow = std::time(nullptr);
     double timeDifferenceSeconds = difftime(timeNow, Config::LastChecked);
     if (timeDifferenceSeconds > TimeBetweenUpdateChecksInSeconds)
     {
-    #if MW05_ENABLE_UNLEASHED
         UpdateChecker::initialize();
         UpdateChecker::start();
-    #endif
         Config::LastChecked = timeNow;
         Config::Save();
     }
+#endif
 
     if (Config::ShowConsole)
         os::process::ShowConsole();
@@ -498,9 +498,43 @@ int main(int argc, char *argv[])
     extern uint32_t KeTlsAlloc();
     g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
 
-    GuestThread::Start({ entry, 0, 0 });
+    // Start the guest main thread
+    // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events
+    GuestThread::Start({ entry, 0, 0 }, nullptr);
 
-    return 0;
+    // Optional continuous present (safe, main-thread only)
+    const bool force_present_main = []{
+        if (const char* v = std::getenv("MW05_FORCE_PRESENT"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+
+    // Keep the main thread alive and pump SDL events to avoid an unresponsive window
+    // while the guest initializes. Optionally present to keep swapchain/fps moving.
+    using namespace std::chrono;
+    auto next_present = steady_clock::now();
+    const auto present_period = milliseconds(16);
+    for (;;) {
+        // Block briefly for events to reduce CPU and keep message pump serviced
+        SDL_Event ev;
+        (void)SDL_WaitEventTimeout(&ev, 16);
+        // Drain any remaining events; GameWindow installs an event watch to handle them.
+        while (SDL_PollEvent(&ev)) { /* no-op; watchers handle */ }
+        // Allow window bookkeeping (size/position/title) to update
+        GameWindow::Update();
+
+        if (force_present_main) {
+            auto now = steady_clock::now();
+            if (now >= next_present) {
+                // Safe main-thread present cadence
+                Video::Present();
+                next_present = now + present_period;
+            }
+        }
+    }
+
+    // Unreachable
+    // return 0;
 }
 
 // main.cpp (near the bottom)

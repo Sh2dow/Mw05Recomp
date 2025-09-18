@@ -126,6 +126,52 @@ inline void HostSleepTiny() {
     // or: std::this_thread::yield();
 }
 
+// ---- optional auto video bring-up (small ring + write-back) ----
+static std::atomic<bool> g_autoVideoDone{false};
+static inline bool Mw05AutoVideoEnabled() {
+    // Default ON; disable with MW05_AUTO_VIDEO=0 if needed
+    if (const char* v = std::getenv("MW05_AUTO_VIDEO"))
+        return !(v[0]=='0' && v[1]=='\0');
+    return true;
+}
+
+// fwd-decls for helpers defined later in this file
+extern uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
+extern void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
+extern void VdEnableRingBufferRPtrWriteBack(uint32_t base);
+extern void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
+
+static void Mw05AutoVideoInitIfNeeded() {
+    if (!Mw05AutoVideoEnabled()) return;
+    bool expected = false;
+    if (!g_autoVideoDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+
+    // If a ring and write-back already exist, skip.
+    if (g_RbLen.load(std::memory_order_relaxed) != 0 &&
+        g_RbWriteBackPtr.load(std::memory_order_relaxed) != 0) {
+        return;
+    }
+
+    // Ensure a system command buffer exists for callers that query it later.
+    VdGetSystemCommandBuffer(nullptr, nullptr);
+
+    const uint32_t len_log2 = 12; // 4 KiB ring
+    const uint32_t size_bytes = 1u << len_log2;
+    void* ring_host = g_userHeap.Alloc(size_bytes, 0x100);
+    if (!ring_host) return;
+    const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
+
+    void* wb_host = g_userHeap.Alloc(64, 4);
+    if (!wb_host) return;
+    const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
+
+    KernelTraceHostOpF("HOST.AutoVideo.Init ring=%08X len_log2=%u wb=%08X", ring_guest, len_log2, wb_guest);
+    VdInitializeRingBuffer(ring_guest, len_log2);
+    VdEnableRingBufferRPtrWriteBack(wb_guest);
+    VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
+}
+
 // helper (place near the top of the file with other helpers)
 inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
     if (off == 0) return false;
@@ -151,6 +197,17 @@ inline static void DumpRawHeader(uint32_t ea) {
                        buf[0],buf[1],buf[2],buf[3], buf[4],buf[5],buf[6],buf[7],
                        buf[8],buf[9],buf[10],buf[11], buf[12],buf[13],buf[14],buf[15]);
 }
+
+
+
+// --- Minimal stateful Vd* bridge (enough to unblock guest expectations) ---
+static std::atomic<uint32_t> g_VdSystemCommandBuffer{0};
+static std::atomic<uint32_t> g_VdSystemCommandBufferGpuIdAddr{0};
+static std::atomic<uint32_t> g_VdGraphicsCallback{0};
+static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
+
+extern "C" uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
+extern "C" uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
 
 struct Event final : KernelObject, HostObject<XKEVENT>
 {
@@ -229,10 +286,177 @@ struct Event final : KernelObject, HostObject<XKEVENT>
 };
 
 static std::atomic<uint32_t> g_keSetEventGeneration;
+static std::atomic<uint32_t> g_vdInterruptEventEA{0};
+static std::atomic<bool> g_vdInterruptPending{false};
+static std::atomic<bool> g_vblankPumpRun{false};
 
 static inline void NudgeEventWaiters() {
     g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
     g_keSetEventGeneration.notify_all();
+}
+static bool Mw05SignalVdInterruptEvent();
+static void Mw05DispatchVdInterruptIfPending();
+
+static inline bool Mw05VblankPumpEnabled() {
+    // Default ON to improve bring-up, allow disabling with MW05_VBLANK_PUMP=0
+    static const bool on = [](){
+        if (const char* v = std::getenv("MW05_VBLANK_PUMP"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true;
+    }();
+    return on;
+}
+
+void VdSwap()
+{
+    KernelTraceHostOp("HOST.VdSwap");
+    // Present the current backbuffer and advance frame state
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[boot] VdSwap()\n"); fflush(stdout);
+    }
+    Video::Present();
+
+    // Nudge ring-buffer RPtr write-back so guest polling sees forward progress
+    uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
+    if (wb)
+    {
+        if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
+        {
+            uint32_t cur = *rptr;
+            uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
+            uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
+            uint32_t next = (cur + 0x80u) & mask;
+            *rptr = next ? next : 0x40u;
+        }
+    }
+
+    // Option A: drive display waiters forward by signaling the registered
+    // Vd interrupt event once per present.
+    (void)Mw05SignalVdInterruptEvent();
+}
+
+static void Mw05StartVblankPumpOnce() {
+    if (!Mw05VblankPumpEnabled()) return;
+    bool expected = false;
+    if (!g_vblankPumpRun.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+    KernelTraceHostOp("HOST.VblankPump.start");
+    std::thread([]{
+        using namespace std::chrono;
+        const auto period = milliseconds(16);
+        // Env toggles (latched once)
+        static const bool s_force_present = [](){
+            if (const char* v = std::getenv("MW05_FORCE_PRESENT"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
+        static const bool s_pump_events = [](){
+            if (const char* v = std::getenv("MW05_PUMP_EVENTS"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false; // default OFF: only pump events on main thread
+        }();
+        while (g_vblankPumpRun.load(std::memory_order_acquire)) {
+            // Keep a pending interrupt flowing; if event not yet registered,
+            // Mw05SignalVdInterruptEvent() will fail and we keep the pending flag.
+            if (!Mw05SignalVdInterruptEvent()) {
+                g_vdInterruptPending.store(true, std::memory_order_release);
+            }
+
+            // Advance the ring-buffer write-back pointer a bit so guest
+            // polling sees steady GPU progress even before the first present.
+            uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
+            if (wb) {
+                if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb))) {
+                    uint32_t cur = *rptr;
+                    uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
+                    uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
+                    uint32_t next = (cur + 0x40u) & mask; // smaller step than present
+                    *rptr = next ? next : 0x20u;
+                }
+            }
+
+            // Optionally invoke the guest graphics interrupt callback at vblank.
+            // Many titles rely on this ISR to drive internal state machines.
+            static const bool cb_on = [](){
+                if (const char* v = std::getenv("MW05_VBLANK_CB"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return true;
+            }();
+            if (cb_on) {
+                const uint32_t cb = VdGetGraphicsInterruptCallback();
+                if (cb) {
+                    const uint32_t ctx = VdGetGraphicsInterruptContext();
+                    // GuestToHostFunction safely constructs a PPCContext and calls the guest function.
+                    GuestToHostFunction<void>(cb, ctx);
+                }
+            }
+
+            // Optional: force a present each vblank to keep swapchain moving
+            if (s_force_present) {
+                VdSwap();
+            }
+
+            // Keep the SDL window responsive even if the guest is idle.
+            if (s_pump_events) {
+                // WARNING: SDL event APIs should generally be used on the main thread.
+                // Enable this only for diagnostics when no main-loop is pumping events.
+                SDL_PumpEvents();
+            }
+            // Also nudge generic waiters relying on generation variable.
+            NudgeEventWaiters();
+            std::this_thread::sleep_for(period);
+        }
+    }).detach();
+}
+
+void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset)
+{
+    const bool valid = eventEA && GuestOffsetInRange(eventEA, sizeof(XDISPATCHER_HEADER));
+    g_vdInterruptEventEA.store(valid ? eventEA : 0u, std::memory_order_release);
+    if (valid) {
+        KernelTraceHostOpF("HOST.VdInterruptEvent.register ea=%08X manual=%u", eventEA, manualReset ? 1u : 0u);
+        Mw05DispatchVdInterruptIfPending();
+        Mw05AutoVideoInitIfNeeded();
+        Mw05StartVblankPumpOnce();
+    }
+}
+
+static bool Mw05SignalVdInterruptEvent()
+{
+    const uint32_t eventEA = g_vdInterruptEventEA.load(std::memory_order_acquire);
+    if (!eventEA || !GuestOffsetInRange(eventEA, sizeof(XDISPATCHER_HEADER)))
+        return false;
+
+    auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(eventEA));
+    if (!hdr)
+        return false;
+
+    bool signaled = false;
+    if (auto* ev = QueryKernelObject<Event>(*hdr)) {
+        KernelTraceHostOpF("HOST.VdInterruptEvent.signal ea=%08X", eventEA);
+        ev->Set();
+        // Keep guest header in sync for pollers
+        hdr->SignalState = be<int32_t>(1);
+        signaled = true;
+    } else {
+        KernelTraceHostOpF("HOST.VdInterruptEvent.signal.raw ea=%08X", eventEA);
+        hdr->SignalState = be<int32_t>(1);
+        NudgeEventWaiters();
+        signaled = true;
+    }
+
+    return signaled;
+}
+
+static void Mw05DispatchVdInterruptIfPending()
+{
+    bool expected = true;
+    if (!g_vdInterruptPending.compare_exchange_strong(expected, false, std::memory_order_acq_rel))
+        return;
+
+    if (!Mw05SignalVdInterruptEvent()) {
+        g_vdInterruptPending.store(true, std::memory_order_release);
+    }
 }
 
 // Minimal reservation tracking for NtAllocateVirtualMemory reserve/commit emulation
@@ -539,19 +763,45 @@ uint32_t NtCreateFile
 
 uint32_t NtClose(uint32_t handle)
 {
+    // Guard obvious invalid sentinel
     if (handle == GUEST_INVALID_HANDLE_VALUE)
         return STATUS_INVALID_HANDLE; // 0xC0000008
 
+    // Only attempt to destroy kernel objects if the handle is sane and maps
+    // to memory we control. Some call sites erroneously pass NTSTATUS values
+    // (e.g., 0xC00002F0) to NtClose during bring-up; those should not be
+    // treated as valid kernel handles.
     if (IsKernelObject(handle))
     {
-        DestroyKernelObject(handle);
-        return 0;
+        // Validate guest offset before translating to host to avoid AV.
+        if (!GuestOffsetInRange(handle, sizeof(void*)))
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+
+        KernelObject* obj = GetKernelObject(handle);
+
+        // Ensure the object pointer lies within one of our heaps before
+        // invoking the destructor. This prevents accidental calls on random
+        // guest pointers or status codes misinterpreted as handles.
+        auto in_range = [](void* p, void* base, size_t size) -> bool {
+            return p >= base && p < (static_cast<uint8_t*>(base) + size);
+        };
+
+        const bool in_user_heap = in_range(obj, g_userHeap.heapBase, g_userHeap.heapSize);
+        const bool in_phys_heap = in_range(obj, g_userHeap.physicalBase, g_userHeap.physicalSize);
+
+        if (obj != nullptr && (in_user_heap || in_phys_heap))
+        {
+            DestroyKernelObject(handle);
+            return STATUS_SUCCESS;
+        }
+
+        return STATUS_INVALID_HANDLE;
     }
-    else
-    {
-        assert(false && "Unrecognized kernel object.");
-        return 0xFFFFFFFF;
-    }
+
+    // Not a kernel object handle we recognize; treat as invalid for now.
+    return STATUS_INVALID_HANDLE;
 }
 
 void NtSetInformationFile()
@@ -613,7 +863,7 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
         KernelTraceHostOp("HOST.FastWait.NtWaitForSingleObjectEx");
         if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
             if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle))) {
-                hdr->SignalState = 1; // nudge to signaled
+                hdr->SignalState = be<int32_t>(1); // nudge to signaled
             }
         }
         HostSleepTiny();
@@ -647,19 +897,37 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     // Dispatcher-pointer path (guest EA)
     if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
         log_once("WAIT classify: dispatcher-EA");
-        DumpRawHeader16(Handle);  // see helper below
+        // DumpRawHeader16(Handle);  // see helper below
 
         auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
-        const uint8_t  T   = hdr->Type;        // byte 0
-        const uint8_t  Abs = hdr->Absolute;    // byte 1 (union)
-        const uint8_t  Sz  = hdr->Size;        // byte 2
-        const uint8_t  Ins = hdr->Inserted;    // byte 3
-        const int32_t  Sig = hdr->SignalState; // 32-bit at 0x04 (big-endian wrapper handles byte order)
+        if (hdr) {
+            Mw05RegisterVdInterruptEvent(Handle, hdr->Type == 0);
+        }
+        const uint8_t  T   = hdr ? hdr->Type : 0;        // byte 0
+        const uint8_t  Abs = hdr ? hdr->Absolute : 0;    // byte 1 (union)
+        const uint8_t  Sz  = hdr ? hdr->Size : 0;        // byte 2
+        const uint8_t  Ins = hdr ? hdr->Inserted : 0;    // byte 3
+        const int32_t  Sig = hdr ? static_cast<int32_t>(hdr->SignalState.get()) : 0; // 32-bit at 0x04 (big-endian wrapper handles byte order)
 
         KernelTraceHostOpF("HOST.Wait.Disp ea=%08X T=%u Abs=%u Sz=%u Ins=%u Sig=%d",
                        Handle, T, Abs, Sz, Ins, Sig);
 
-        return KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
+        {
+            const uint32_t rc = KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
+            // Treat the registered Vd interrupt event as pulse-like to avoid
+            // a tight re-wait loop on manual-reset events that remain signaled.
+            if (rc == STATUS_SUCCESS) {
+                const uint32_t reg_ea = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                if (reg_ea != 0 && Handle == reg_ea) {
+                    if (auto* ev = TryQueryKernelObject<Event>(*hdr)) {
+                        ev->Reset();
+                    }
+                    hdr->SignalState = be<int32_t>(0);
+                }
+            }
+            KernelTraceHostOpF("HOST.Wait.Disp.rc ea=%08X rc=%08X Sig=%d", Handle, rc, hdr ? static_cast<int32_t>(hdr->SignalState.get()) : -1);
+            return rc;
+        }
     }
 
     log_once("WAIT classify: INVALID_HANDLE");
@@ -1261,8 +1529,18 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
 
     switch (Object->Type) {
         case 0: // NotificationEvent
-        case 1: // SynchronizationEvent
+        {
             return QueryKernelObject<Event>(*Object)->Wait(timeout_ms);
+        }
+        case 1: // SynchronizationEvent (auto-reset)
+        {
+            uint32_t st = QueryKernelObject<Event>(*Object)->Wait(timeout_ms);
+            if (st == STATUS_SUCCESS) {
+                // Reflect auto-reset consumption in guest header
+                Object->SignalState = 0;
+            }
+            return st;
+        }
 
         case 5: // Semaphore
             return QueryKernelObject<Semaphore>(*Object)->Wait(timeout_ms);
@@ -1491,39 +1769,6 @@ bool VdPersistDisplay(uint32_t /*a1*/, uint32_t* a2)
     return true;
 }
 
-void VdSwap()
-{
-    KernelTraceHostOp("HOST.VdSwap");
-    // Present the current backbuffer and advance frame state
-    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
-        printf("[boot] VdSwap()\n"); fflush(stdout);
-    }
-    Video::Present();
-
-    // Nudge ring-buffer RPtr write-back so guest polling sees forward progress
-    uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
-    if (wb)
-    {
-        if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
-        {
-            uint32_t cur = *rptr;
-            uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
-            uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
-            uint32_t next = (cur + 0x80u) & mask;
-            *rptr = next ? next : 0x40u;
-        }
-    }
-}
-
-// --- Minimal stateful Vd* bridge (enough to unblock guest expectations) ---
-static std::atomic<uint32_t> g_VdSystemCommandBuffer{0};
-static std::atomic<uint32_t> g_VdSystemCommandBufferGpuIdAddr{0};
-static std::atomic<uint32_t> g_VdGraphicsCallback{0};
-static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
-
-extern "C" uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
-extern "C" uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
-
 // Minimal emulation of the system command buffer used by the guest.
 // We expose a guest-visible buffer and return its address via both return value
 // and out-parameters to satisfy MW'05 call sites.
@@ -1588,14 +1833,18 @@ uint32_t KiApcNormalRoutineNop()
 
 void VdEnableRingBufferRPtrWriteBack(uint32_t base)
 {
+    KernelTraceHostOpF("HOST.VdEnableRingBufferRPtrWriteBack base=%08X", base);
     // Record write-back pointer; zero it to indicate idle.
     g_RbWriteBackPtr = base;
     auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(base));
     if (p) *p = 0;
+    g_vdInterruptPending.store(true, std::memory_order_release);
+    Mw05DispatchVdInterruptIfPending();
 }
 
 void VdInitializeRingBuffer(uint32_t base, uint32_t len)
 {
+    KernelTraceHostOpF("HOST.VdInitializeRingBuffer base=%08X len_log2=%u", base, len);
     // MW05 (and Xenia logs) pass the ring buffer size as log2(len).
     // Convert to bytes to ensure we zero the correct range so readers see a clean buffer.
     g_RbBase = base;
@@ -1613,6 +1862,8 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
         if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
             *rptr = 0x20; // small non-zero value
     }
+    g_vdInterruptPending.store(true, std::memory_order_release);
+    Mw05DispatchVdInterruptIfPending();
 }
 
 uint32_t MmGetPhysicalAddress(uint32_t address)
@@ -1623,6 +1874,7 @@ uint32_t MmGetPhysicalAddress(uint32_t address)
 
 void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr)
 {
+    KernelTraceHostOpF("HOST.VdSetSystemCommandBufferGpuIdentifierAddress addr=%08X", addr);
     g_VdSystemCommandBufferGpuIdAddr = addr;
 }
 
@@ -1631,6 +1883,7 @@ void VdSetSystemCommandBuffer(uint32_t base, uint32_t len)
     // Trust guest-provided base/len; ensure our cache matches for VdGetSystemCommandBuffer callers.
     if (base != 0)
     {
+        KernelTraceHostOpF("HOST.VdSetSystemCommandBuffer base=%08X len=%u", base, len);
         g_VdSystemCommandBuffer.store(base);
         g_SysCmdBufGuest = base;
         g_SysCmdBufHost = g_memory.Translate(base);
@@ -1660,6 +1913,7 @@ void ExRegisterTitleTerminateNotification()
 void VdShutdownEngines()
 {
     LOG_UTILITY("!!! STUB !!!");
+    g_vblankPumpRun.store(false, std::memory_order_release);
 }
 
 void VdQueryVideoMode(XVIDEO_MODE* vm)
@@ -1713,7 +1967,10 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 
 void VdInitializeEngines()
 {
-    // Consider engines initialized; nothing to do in host.
+    // Consider engines initialized; also start the vblank pump to ensure
+    // display-related waiters can make progress during bring-up.
+    Mw05AutoVideoInitIfNeeded();
+    Mw05StartVblankPumpOnce();
 }
 
 uint32_t VdIsHSIOTrainingSucceeded()
@@ -1814,6 +2071,9 @@ bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait)
     {
         LOGFN("[ke.set] obj=0x{:08X} type={} state={}", g_memory.MapVirtual(pEvent), (unsigned)pEvent->Type, (unsigned)pEvent->SignalState);
     }
+    // Reflect signaled state in the guest-visible header so code that polls
+    // XDISPATCHER_HEADER::SignalState observes progress.
+    pEvent->SignalState = 1;
     bool result = QueryKernelObject<Event>(*pEvent)->Set();
 
     ++g_keSetEventGeneration;
@@ -1828,6 +2088,8 @@ bool KeResetEvent(XKEVENT* pEvent)
     {
         LOGFN("[ke.reset] obj=0x{:08X} type={} state={}", g_memory.MapVirtual(pEvent), (unsigned)pEvent->Type, (unsigned)pEvent->SignalState);
     }
+    // Reflect reset in the guest-visible header.
+    pEvent->SignalState = 0;
     return QueryKernelObject<Event>(*pEvent)->Reset();
 }
 
@@ -2336,7 +2598,7 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
             const uint32_t v = HandlesOrDispatchers[i];
             if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
                 auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
-                hdr->SignalState = 1;
+                hdr->SignalState = be<int32_t>(1);
             }
         }
         Mw05NudgeEventWaiters();

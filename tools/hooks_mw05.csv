@@ -9,59 +9,59 @@ sub_82BD99B0,0x82598230   # CreateDevice (GPU bring-up container: ring buffer in
 
 # Resource creation/destruction
 # Fill the MW’05 guest address (right) using IDA HTML; keep 0x00000000 until known
-sub_82BE9498,0x00000000   # CreateTexture
-sub_82BE6AD0,0x00000000   # CreateVertexBuffer
-sub_82BE6BF8,0x00000000   # CreateIndexBuffer
-sub_82BE95B8,0x00000000   # CreateSurface
-sub_82BE6230,0x00000000   # DestructResource
+sub_82BE9498,0x82BE9498   # CreateTexture
+sub_82BE6AD0,0x82BE6AD0   # CreateVertexBuffer
+sub_82BE6BF8,0x82BE6BF8   # CreateIndexBuffer
+sub_82BE95B8,0x82BE95B8   # CreateSurface
+sub_82BE6230,0x82BE6230   # DestructResource
 
 # Buffer/texture locks and descriptors
-sub_82BE9300,0x00000000   # LockTextureRect
-sub_82BE7780,0x00000000   # UnlockTextureRect
-sub_82BE6B98,0x00000000   # LockVertexBuffer
-sub_82BE6BE8,0x00000000   # UnlockVertexBuffer
-sub_82BE61D0,0x00000000   # GetVertexBufferDesc
-sub_82BE6CA8,0x00000000   # LockIndexBuffer
-sub_82BE6CF0,0x00000000   # UnlockIndexBuffer
-sub_82BE6200,0x00000000   # GetIndexBufferDesc
-sub_82BE96F0,0x00000000   # GetSurfaceDesc
+sub_82BE9300,0x82BE9300   # LockTextureRect
+sub_82BE7780,0x82BE7780   # UnlockTextureRect
+sub_82BE6B98,0x82BE6B98   # LockVertexBuffer
+sub_82BE6BE8,0x82BE6BE8   # UnlockVertexBuffer
+sub_82BE61D0,0x82BE61D0   # GetVertexBufferDesc
+sub_82BE6CA8,0x82BE6CA8   # LockIndexBuffer
+sub_82BE6CF0,0x82BE6CF0   # UnlockIndexBuffer
+sub_82BE6200,0x82BE6200   # GetIndexBufferDesc
+sub_82BE96F0,0x82BE96F0   # GetSurfaceDesc
 
 # Vertex declarations
-sub_82BE0428,0x00000000   # CreateVertexDeclaration
-sub_82BE02E0,0x00000000   # SetVertexDeclaration
-sub_82BE04B0,0x00000000   # GetVertexDeclaration
-sub_82BE0530,0x00000000   # HashVertexDeclaration
+sub_82BE0428,0x82BE0428   # CreateVertexDeclaration
+sub_82BE02E0,0x82BE02E0   # SetVertexDeclaration
+sub_82BE04B0,0x82BE04B0   # GetVertexDeclaration
+sub_82BE0530,0x82BE0530   # HashVertexDeclaration
 
 # Shaders
-sub_82BE1A80,0x00000000   # CreateVertexShader
-sub_82BE0110,0x00000000   # SetVertexShader
-sub_82BE1990,0x00000000   # CreatePixelShader
-sub_82BDFE58,0x00000000   # SetPixelShader
+sub_82BE1A80,0x82BE1A80   # CreateVertexShader
+sub_82BE0110,0x82BE0110   # SetVertexShader
+sub_82BE1990,0x82BE1990   # CreatePixelShader
+sub_82BDFE58,0x82BDFE58   # SetPixelShader
 
 # Pipeline inputs
-sub_82BDD0F8,0x00000000   # SetStreamSource
-sub_82BDD218,0x00000000   # SetIndices
+sub_82BDD0F8,0x82BDD0F8   # SetStreamSource
+sub_82BDD218,0x82BDD218   # SetIndices
 
 # Render state / targets
-sub_82BDD9F0,0x00000000   # SetRenderTarget
-sub_82BDDD38,0x00000000   # SetDepthStencilSurface
-sub_82BFE4C8,0x00000000   # Clear
-sub_82BDD8C0,0x00000000   # SetViewport
-sub_82BE9818,0x00000000   # SetTexture
-sub_82BDCFB0,0x00000000   # SetScissorRect
+sub_82BDD9F0,0x82BDD9F0   # SetRenderTarget
+sub_82BDDD38,0x82BDDD38   # SetDepthStencilSurface
+sub_82BFE4C8,0x82BFE4C8   # Clear
+sub_82BDD8C0,0x82BDD8C0   # SetViewport
+sub_82BE9818,0x82BE9818   # SetTexture
+sub_82BDCFB0,0x82BDCFB0   # SetScissorRect
 
 # Draws
-sub_82BE5900,0x00000000   # DrawPrimitive
-sub_82BE5CF0,0x00000000   # DrawIndexedPrimitive
-sub_82BE52F8,0x00000000   # DrawPrimitiveUP
+sub_82BE5900,0x82BE5900   # DrawPrimitive
+sub_82BE5CF0,0x82BE5CF0   # DrawIndexedPrimitive
+sub_82BE52F8,0x82BE52F8   # DrawPrimitiveUP
 
 # Blit/utility
-sub_82BF6400,0x00000000   # StretchRect
-sub_82BDD330,0x00000000   # GetBackBuffer
-sub_82C003B8,0x00000000   # D3DXFillTexture
-sub_82C00910,0x00000000   # D3DXFillVolumeTexture
+sub_82BF6400,0x82BF6400   # StretchRect
+sub_82BDD330,0x82BDD330   # GetBackBuffer
+sub_82C003B8,0x82C003B8   # D3DXFillTexture
+sub_82C00910,0x82C00910   # D3DXFillVolumeTexture
 
 # Misc MW UI/render helpers
-sub_82E43FC8,0x00000000   # MakePictureData
-sub_82E9EE38,0x00000000   # SetResolution
-sub_82AE2BF8,0x00000000   # ScreenShaderInit
+sub_82E43FC8,0x82E43FC8   # MakePictureData
+sub_82E9EE38,0x82E9EE38   # SetResolution
+sub_82AE2BF8,0x82AE2BF8   # ScreenShaderInit

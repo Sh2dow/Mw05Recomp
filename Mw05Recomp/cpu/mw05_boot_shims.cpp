@@ -12,9 +12,18 @@ extern "C" {
     void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
 }
 
+constexpr uint64_t kPpcMemLimit = static_cast<uint64_t>(PPC_MEMORY_SIZE);
+
 static inline bool FastBootEnabled() {
     if (const char* v = std::getenv("MW05_FAST_BOOT")) {
         // Enable unless explicitly "0"
+        return !(v[0] == '0' && v[1] == '\0');
+    }
+    return false;
+}
+
+static inline bool BreakLoop82813514Enabled() {
+    if (const char* v = std::getenv("MW05_BREAK_82813514")) {
         return !(v[0] == '0' && v[1] == '\0');
     }
     return false;
@@ -57,30 +66,35 @@ void sub_8262F3F0(PPCContext& ctx, uint8_t* base)
 void sub_826346A8(PPCContext& ctx, uint8_t* base)
 {
     KernelTraceHostOp("HOST.sub_826346A8");
-    if (FastBootEnabled()) {
+    if (FastBootEnabled() || BreakLoop82813514Enabled()) {
         // Targeted break for the tight loop at lr=0x82813514
         // Caller is sub_828134E0 pump; it loops until [r29+8] becomes 0.
         // We proactively zero that field to let it exit early during fast boot.
         if (ctx.lr == 0x82813514ull) {
-            constexpr uint32_t kR29_Base = 0x828F1F90u; // computed from lis/addi in caller
-            constexpr uint32_t kR29_Plus8 = kR29_Base + 8u; // ld r11,8(r29)
-            if (kR29_Plus8 < PPC_MEMORY_SIZE) {
-                KernelTraceHostOp("HOST.FastBoot.BreakLoop.82813514");
-                // Zero 64 bits at [r29+8]
-                *reinterpret_cast<uint64_t*>(base + kR29_Plus8) = 0ull;
+            // Use the live r29 value rather than a compiled-in constant; MW05 variants differ.
+            const uint32_t r29  = ctx.r29.u32;
+            const uint64_t addr64 = static_cast<uint64_t>(r29) + 8ull;
+            if (addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
+                const uint32_t addr = static_cast<uint32_t>(addr64); // for logging / pointer math
+                KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 addr=%08X", addr);
+                *reinterpret_cast<uint64_t*>(base + addr) = 0ull;
             }
         }
-        // Mark the dispatcher header as signaled if r3 is a guest pointer
-        const uint32_t handle = ctx.r3.u32;
-        if (handle && handle < PPC_MEMORY_SIZE) {
-            // Best-effort: set SignalState=1 at the expected header location
-            struct XDISPATCHER_HEADER { int8_t Type; int8_t Absolute; int16_t Size; int32_t SignalState; };
-            auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(base + handle);
-            hdr->SignalState = 1;
+        if (FastBootEnabled()) {
+            // Mark the dispatcher header as signaled if r3 is a guest pointer
+            const uint32_t handle = ctx.r3.u32;
+            if (handle != 0) {
+                struct XDISPATCHER_HEADER { int8_t Type; int8_t Absolute; int16_t Size; int32_t SignalState; };
+                const uint64_t h64 = static_cast<uint64_t>(handle);
+                if (h64 + sizeof(XDISPATCHER_HEADER) <= kPpcMemLimit) {
+                    auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(base + handle);
+                    hdr->SignalState = 1;
+                }
+            }
+            // Return success to break the caller's wait loop cleanly
+            ctx.r3.u64 = 0;
+            return;
         }
-        // Return success to break the caller's wait loop cleanly
-        ctx.r3.u64 = 0;
-        return;
     }
     __imp__sub_826346A8(ctx, base);
 }

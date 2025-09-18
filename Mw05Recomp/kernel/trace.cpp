@@ -23,6 +23,10 @@ static TraceEntry g_ring[64];
 static std::atomic<uint32_t> g_ringIndex{0};
 static thread_local PPCContext* g_hostCtx = nullptr; // guest ctx active during a host GPU call
 static std::mutex g_hostFileMutex;
+static std::once_flag g_hostFileInit;
+static std::atomic<int> g_hostTraceImports{-1}; // -1 unknown, 0 no, 1 yes
+static std::atomic<int> g_hostTraceHostOps{-1}; // -1 unknown, 0 no, 1 yes
+
 static const char* GetHostTracePath()
 {
     static const char* path = nullptr;
@@ -32,6 +36,15 @@ static const char* GetHostTracePath()
         path = envp && envp[0] ? envp : "mw05_host_trace.log";
     }
     return path;
+}
+
+static void EnsureHostTraceFileReset()
+{
+    std::call_once(g_hostFileInit, [](){
+        std::lock_guard<std::mutex> lk(g_hostFileMutex);
+        std::ofstream out(GetHostTracePath(), std::ios::trunc);
+        (void)out;
+    });
 }
 
 static bool ReadEnvBool(const char* name)
@@ -55,6 +68,32 @@ bool KernelTraceEnabled()
     {
         s = ReadEnvBool("MW05_TRACE_KERNEL") ? 1 : 0;
         g_traceEnabled.store(s, std::memory_order_relaxed);
+    }
+    return s != 0;
+}
+
+static bool HostTraceImportsEnabled()
+{
+    int s = g_hostTraceImports.load(std::memory_order_relaxed);
+    if (s < 0)
+    {
+        // Default OFF: avoid large logs unless explicitly requested
+        s = ReadEnvBool("MW05_HOST_TRACE_IMPORTS") ? 1 : 0;
+        g_hostTraceImports.store(s, std::memory_order_relaxed);
+    }
+    return s != 0;
+}
+
+static bool HostTraceHostOpsEnabled()
+{
+    int s = g_hostTraceHostOps.load(std::memory_order_relaxed);
+    if (s < 0)
+    {
+        // Default ON: host ops are low volume and useful during bring-up.
+        s = ReadEnvBool("MW05_HOST_TRACE_HOSTOPS") ? 1 : 0;
+        // If not explicitly set, leave enabled by default
+        if (!std::getenv("MW05_HOST_TRACE_HOSTOPS")) s = 1;
+        g_hostTraceHostOps.store(s, std::memory_order_relaxed);
     }
     return s != 0;
 }
@@ -86,6 +125,8 @@ static inline void SafeCopyName(char* dst, size_t dst_cap, const char* src)
 
 void KernelTraceImport(const char* import_name, PPCContext& ctx)
 {
+    if (!KernelTraceEnabled()) return;
+    
     const uint32_t tid = GuestThread::GetCurrentThreadId();
     // Always store to ring buffer for post-mortem diagnostics
     uint32_t idx = g_ringIndex.fetch_add(1, std::memory_order_relaxed);
@@ -95,26 +136,29 @@ void KernelTraceImport(const char* import_name, PPCContext& ctx)
     e.r3 = ctx.r3.u32; e.r4 = ctx.r4.u32; e.r5 = ctx.r5.u32; e.r6 = ctx.r6.u32;
     e.lr = (uint32_t)ctx.lr;
 
-    if (!KernelTraceEnabled()) return;
     LOGFN("[TRACE] import={} tid={:08X} lr=0x{:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X}", e.name, tid, e.lr, e.r3, e.r4, e.r5, e.r6);
 
-    // Always mirror to a simple local file to decouple from logger config.
-    try {
-        std::lock_guard<std::mutex> lk(g_hostFileMutex);
-        std::ofstream out(GetHostTracePath(), std::ios::app);
-        if (out)
-        {
-            out << "[HOST] import=" << e.name
-                << " tid=" << std::hex << tid
-                << " lr=0x" << std::uppercase << std::hex << e.lr
-                << " r3=0x" << std::uppercase << std::hex << e.r3
-                << " r4=0x" << std::uppercase << std::hex << e.r4
-                << " r5=0x" << std::uppercase << std::hex << e.r5
-                << " r6=0x" << std::uppercase << std::hex << e.r6
-                << "\n";
+    // Mirror to a local file only if explicitly enabled. This prevents large
+    // files from frequent imports like KeDelayExecutionThread unless requested.
+    if (HostTraceImportsEnabled()) {
+        EnsureHostTraceFileReset();
+        try {
+            std::lock_guard<std::mutex> lk(g_hostFileMutex);
+            std::ofstream out(GetHostTracePath(), std::ios::app);
+            if (out)
+            {
+                out << "[HOST] import=" << e.name
+                    << " tid=" << std::hex << tid
+                    << " lr=0x" << std::uppercase << std::hex << e.lr
+                    << " r3=0x" << std::uppercase << std::hex << e.r3
+                    << " r4=0x" << std::uppercase << std::hex << e.r4
+                    << " r5=0x" << std::uppercase << std::hex << e.r5
+                    << " r6=0x" << std::uppercase << std::hex << e.r6
+                    << "\n";
+            }
+        } catch (...) {
+            // best-effort
         }
-    } catch (...) {
-        // best-effort
     }
 }
 
@@ -143,6 +187,8 @@ void KernelTraceHostEnd()
 
 void KernelTraceHostOp(const char* name)
 {
+    if (!KernelTraceEnabled()) return;
+    
     // Always log host GPU ops to file to aid mapping, independent of MW05_TRACE_KERNEL.
     // These entries are low volume and essential for wiring MW05 wrappers.
     uint32_t tid = GuestThread::GetCurrentThreadId();
@@ -164,23 +210,26 @@ void KernelTraceHostOp(const char* name)
     // Mirror to logger
     LOGFN("[TRACE] import={} tid={:08X} lr=0x{:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X}", e.name, tid, e.lr, e.r3, e.r4, e.r5, e.r6);
 
-    // Also append to host trace file like KernelTraceImport
-    try {
-        std::lock_guard<std::mutex> lk(g_hostFileMutex);
-        std::ofstream out(GetHostTracePath(), std::ios::app);
-        if (out)
-        {
-            out << "[HOST] import=" << e.name
-                << " tid=" << std::hex << tid
-                << " lr=0x" << std::uppercase << std::hex << e.lr
-                << " r3=0x" << std::uppercase << std::hex << e.r3
-                << " r4=0x" << std::uppercase << std::hex << e.r4
-                << " r5=0x" << std::uppercase << std::hex << e.r5
-                << " r6=0x" << std::uppercase << std::hex << e.r6
-                << "\n";
+    // Append to host trace file only if enabled
+    if (HostTraceHostOpsEnabled()) {
+        EnsureHostTraceFileReset();
+        try {
+            std::lock_guard<std::mutex> lk(g_hostFileMutex);
+            std::ofstream out(GetHostTracePath(), std::ios::app);
+            if (out)
+            {
+                out << "[HOST] import=" << e.name
+                    << " tid=" << std::hex << tid
+                    << " lr=0x" << std::uppercase << std::hex << e.lr
+                    << " r3=0x" << std::uppercase << std::hex << e.r3
+                    << " r4=0x" << std::uppercase << std::hex << e.r4
+                    << " r5=0x" << std::uppercase << std::hex << e.r5
+                    << " r6=0x" << std::uppercase << std::hex << e.r6
+                    << "\n";
+            }
+        } catch (...) {
+            // best-effort
         }
-    } catch (...) {
-        // best-effort
     }
 }
 

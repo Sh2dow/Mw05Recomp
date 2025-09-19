@@ -37,6 +37,23 @@ namespace
 #endif
         return value;
     }
+
+    inline bool GuestCodeRangeContains(uint32_t ea)
+    {
+        const uint64_t codeBegin = static_cast<uint64_t>(PPC_CODE_BASE);
+        const uint64_t codeEnd = codeBegin + static_cast<uint64_t>(PPC_CODE_SIZE);
+        const uint64_t value = static_cast<uint64_t>(ea);
+        return value >= codeBegin && value < codeEnd;
+    }
+
+    inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA)
+    {
+        PPC_STORE_U32(blockEA + 0, 0);
+        PPC_STORE_U32(blockEA + 4, 0);
+        PPC_STORE_U32(blockEA + 8, 0);
+        PPC_STORE_U32(blockEA + 12, 0);
+        PPC_STORE_U32(blockEA + 16, 0);
+    }
 }
 
 static std::atomic<uint32_t> g_lastSchedulerBlockEA{0};
@@ -140,6 +157,12 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base)
             const uint32_t w4 = LoadGuestU32(base, blockEA + 16);
             KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
                                blockEA, w0, w1, w2, w3, w4);
+            if (w4 && !GuestCodeRangeContains(w4)) {
+                KernelTraceHostOpF("HOST.sub_826346A8.invalid_target block=%08X target=%08X", blockEA, w4);
+                ClearSchedulerBlock(base, blockEA);
+                ctx.r3.u64 = 0;
+                return;
+            }
             if (w4) {
                 const uint64_t target64 = static_cast<uint64_t>(w4);
                 const bool inImage = target64 >= kPpcImageBase && target64 < kPpcImageLimit;

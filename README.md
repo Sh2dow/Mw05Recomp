@@ -39,8 +39,7 @@
   - Windows 10 (version 1909)
   - A modern Linux distro such as Ubuntu 22.04 LTS
 - Storage:
-  - With DLC: 10 GiB required
-  - Without DLC: 6 GiB required
+  - 6 GiB required
 
 > [!NOTE]
 > More storage space may be required if uncompressed game files are provided during installation.

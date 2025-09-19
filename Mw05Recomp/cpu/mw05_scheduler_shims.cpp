@@ -5,8 +5,12 @@
 #include <kernel/trace.h>
 #include <ppc/ppc_config.h>
 #include <cstring>
+#include <algorithm>
 #if defined(_MSC_VER)
 #include <intrin.h>
+#endif
+#if defined(_WIN32)
+#include <windows.h>
 #endif
 
 extern "C" void __imp__sub_82621640(PPCContext& ctx, uint8_t* base);
@@ -25,15 +29,71 @@ namespace
         return end <= PPC_MEMORY_SIZE;
     }
 
+    // PPC_LOOKUP_FUNC only maps compiled code; reject anything outside that window.
+    inline bool GuestCodeRangeContains(uint32_t ea)
+    {
+        const uint64_t codeBegin = static_cast<uint64_t>(PPC_CODE_BASE);
+        const uint64_t codeEnd = codeBegin + static_cast<uint64_t>(PPC_CODE_SIZE);
+        const uint64_t value = static_cast<uint64_t>(ea);
+        return value >= codeBegin && value < codeEnd;
+    }
+
+    inline bool GuestPointerReadable(uint8_t* base, uint32_t ea, size_t bytes)
+    {
+        if (!GuestRangeValid(ea, bytes)) {
+            return false;
+        }
+#if defined(_WIN32)
+        const uint8_t* ptr = base + ea;
+        size_t remaining = bytes;
+        while (remaining) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(ptr, &mbi, sizeof(mbi))) {
+                return false;
+            }
+            if ((mbi.State & MEM_COMMIT) == 0) {
+                return false;
+            }
+            const DWORD protect = mbi.Protect & 0xFFu;
+            if (protect == PAGE_NOACCESS || protect == PAGE_EXECUTE || (mbi.Protect & PAGE_GUARD)) {
+                return false;
+            }
+            const auto* regionBegin = static_cast<const uint8_t*>(mbi.BaseAddress);
+            const auto* regionEnd = regionBegin + mbi.RegionSize;
+            if (regionEnd <= ptr) {
+                return false;
+            }
+            const size_t chunk = std::min<size_t>(remaining, static_cast<size_t>(regionEnd - ptr));
+            ptr += chunk;
+            remaining -= chunk;
+        }
+        return true;
+#else
+        (void)base;
+        (void)ea;
+        (void)bytes;
+        return true;
+#endif
+    }
+
+    inline bool TryLoadGuestU32(uint8_t* base, uint32_t ea, uint32_t& outValue)
+    {
+        if (!GuestPointerReadable(base, ea, sizeof(outValue))) {
+            return false;
+        }
+        std::memcpy(&outValue, base + ea, sizeof(outValue));
+#if defined(_MSC_VER)
+        outValue = _byteswap_ulong(outValue);
+#else
+        outValue = __builtin_bswap32(outValue);
+#endif
+        return true;
+    }
+
     inline uint32_t LoadGuestU32(uint8_t* base, uint32_t ea)
     {
         uint32_t value = 0;
-        std::memcpy(&value, base + ea, sizeof(value));
-#if defined(_MSC_VER)
-        value = _byteswap_ulong(value);
-#else
-        value = __builtin_bswap32(value);
-#endif
+        TryLoadGuestU32(base, ea, value);
         return value;
     }
 
@@ -109,7 +169,12 @@ PPC_FUNC(sub_82621640)
         return;
     }
 
-    const uint32_t flagsEA = LoadGuestU32(base, blockEA + 8);
+    uint32_t flagsEA = 0;
+    if (!TryLoadGuestU32(base, blockEA + 8, flagsEA)) {
+        KernelTraceHostOpF("HOST.sub_82621640.read_flags_fail block=%08X", blockEA);
+        TraceSchedulerProducerSnapshot("flags_load_fail", blockEA, 0, 0, 0, 0);
+        return;
+    }
     KernelTraceHostOpF("HOST.sub_82621640.enter block=%08X flags=%08X", blockEA, flagsEA);
 
     uint32_t targetEA = 0;
@@ -120,42 +185,50 @@ PPC_FUNC(sub_82621640)
     const char* skipReason = nullptr;
 
     if (flagsEA) {
-        targetEA = LoadGuestU32(base, blockEA + 16);
-
-        if (!GuestRangeValid(targetEA, 4)) {
+        if (!TryLoadGuestU32(base, blockEA + 16, targetEA)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_target_load block=%08X", blockEA);
+            skipCallback = true;
+            skipReason = "target_load";
+        } else if (!GuestRangeValid(targetEA, 4)) {
             KernelTraceHostOpF("HOST.sub_82621640.bad_target block=%08X target=%08X", blockEA, targetEA);
             skipCallback = true;
             skipReason = "bad_target";
+        } else if (!TryLoadGuestU32(base, targetEA, vtableEA)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_vtable_load block=%08X target=%08X", blockEA, targetEA);
+            skipCallback = true;
+            skipReason = "vtable_load";
+        } else if (!GuestRangeValid(vtableEA, 20)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_vtable block=%08X target=%08X vtable=%08X", blockEA, targetEA, vtableEA);
+            skipCallback = true;
+            skipReason = "bad_vtable";
+        } else if (!GuestRangeValid(vtableEA + 16, 4)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_vtable_slot block=%08X vtable=%08X", blockEA, vtableEA);
+            skipCallback = true;
+            skipReason = "bad_vtable_slot";
+        } else if (!TryLoadGuestU32(base, vtableEA + 16, funcEA)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_func_load block=%08X vtable=%08X", blockEA, vtableEA);
+            skipCallback = true;
+            skipReason = "func_load";
+        } else if (!funcEA) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_func block=%08X func=%08X", blockEA, funcEA);
+            skipCallback = true;
+            skipReason = "bad_func";
+        } else if (!GuestRangeValid(funcEA, 4)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_func_range block=%08X func=%08X", blockEA, funcEA);
+            skipCallback = true;
+            skipReason = "bad_func_range";
+        } else if (!GuestCodeRangeContains(funcEA)) {
+            KernelTraceHostOpF("HOST.sub_82621640.bad_func_segment block=%08X func=%08X", blockEA, funcEA);
+            skipCallback = true;
+            skipReason = "bad_func_segment";
         } else {
-            vtableEA = LoadGuestU32(base, targetEA);
-            if (!GuestRangeValid(vtableEA, 20)) {
-                KernelTraceHostOpF("HOST.sub_82621640.bad_vtable block=%08X target=%08X vtable=%08X", blockEA, targetEA, vtableEA);
+            dispatchFunc = g_memory.FindFunction(funcEA);
+            if (!dispatchFunc) {
+                KernelTraceHostOpF("HOST.sub_82621640.missing_func block=%08X func=%08X", blockEA, funcEA);
                 skipCallback = true;
-                skipReason = "bad_vtable";
-            } else if (!GuestRangeValid(vtableEA + 16, 4)) {
-                KernelTraceHostOpF("HOST.sub_82621640.bad_vtable_slot block=%08X vtable=%08X", blockEA, vtableEA);
-                skipCallback = true;
-                skipReason = "bad_vtable_slot";
+                skipReason = "missing_func";
             } else {
-                funcEA = LoadGuestU32(base, vtableEA + 16);
-                if (!funcEA) {
-                    KernelTraceHostOpF("HOST.sub_82621640.bad_func block=%08X func=%08X", blockEA, funcEA);
-                    skipCallback = true;
-                    skipReason = "bad_func";
-                } else if (!GuestRangeValid(funcEA, 4)) {
-                    KernelTraceHostOpF("HOST.sub_82621640.bad_func_range block=%08X func=%08X", blockEA, funcEA);
-                    skipCallback = true;
-                    skipReason = "bad_func_range";
-                } else {
-                    dispatchFunc = g_memory.FindFunction(funcEA);
-                    if (!dispatchFunc) {
-                        KernelTraceHostOpF("HOST.sub_82621640.missing_func block=%08X func=%08X", blockEA, funcEA);
-                        skipCallback = true;
-                        skipReason = "missing_func";
-                    } else {
-                        KernelTraceHostOpF("HOST.sub_82621640.call block=%08X target=%08X func=%08X host=%p", blockEA, targetEA, funcEA, reinterpret_cast<const void*>(dispatchFunc));
-                    }
-                }
+                KernelTraceHostOpF("HOST.sub_82621640.call block=%08X target=%08X func=%08X host=%p", blockEA, targetEA, funcEA, reinterpret_cast<const void*>(dispatchFunc));
             }
         }
 

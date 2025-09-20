@@ -164,9 +164,11 @@ Default is MSVC compiler:
 ### ``pwsh ./build_cmd.ps1``
 or
 ### ``pwsh ./build_cmd.ps1 -Stage all -Config Release -Clean``
+or
+### ``./build_cmd.ps1 -Stage all -Preset x64-Clang-Debug -Clean``
 
-For Clang use build switcher:
 
+Or use build switcher:
 ### Clang (clang-cl), x64, Debug, with an extra CMake flag
 ``pwsh ./build_switch.ps1 -Compiler Clang -Arch x64 -Config Release -CMakeArgs "-DUSE_IMGUI=ON"``
 

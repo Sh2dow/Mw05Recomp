@@ -12,6 +12,7 @@
 #include <windows.h>
 #endif
 
+std::atomic<uint32_t> g_watchEA{0};
 static std::atomic<int> g_traceEnabled{-1}; // -1 = unknown, 0 = no, 1 = yes
 struct TraceEntry {
     char name[160];

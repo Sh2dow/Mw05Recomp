@@ -5,6 +5,8 @@ param(
   [string]$Stage,
   [ValidateSet('Debug','Release','RelWithDebInfo','MinSizeRel')]
   [string]$Config = 'Release',
+  [ValidateSet('x64-Clang-Debug','x64-Clang-Release','x64-Clang-RelWithDebInfo','x64-Clang-MinSizeRel')]
+  [string]$Preset,
   [switch]$Clean,
   [switch]$DisableAppPch,
   [string]$ModuleName
@@ -50,8 +52,23 @@ $RC    = (Join-Path $root "bin\$latestSdk\x64\rc.exe") -replace '\\','/'
 $MT    = (Join-Path $LLVM "llvm-mt.exe")               -replace '\\','/'
 $D3D12 = (Join-Path $root "Lib\$latestSdk\um\x64\d3d12.lib") -replace '\\','/'
 $toolchain = "D:/Repos/Games/MW05Recomp/thirdparty/vcpkg/scripts/buildsystems/vcpkg.cmake"
-# Derive preset/build dir from configuration
-$preset = "x64-Clang-$Config"
+# Derive preset/build dir from configuration or explicit preset
+if ($PSBoundParameters.ContainsKey('Preset') -and $Preset) {
+  $preset = $Preset
+  if ($PSBoundParameters.ContainsKey('Config')) {
+    if ($preset -match 'x64-Clang-(.+)$') {
+      $presetConfig = $matches[1]
+      if ($Config -ne $presetConfig) {
+        Write-Host "[config] Requested Config '$Config' differs from Preset '$presetConfig'. Using preset." -ForegroundColor Yellow
+        $Config = $presetConfig
+      }
+    }
+  } else {
+    if ($preset -match 'x64-Clang-(.+)$') { $Config = $matches[1] }
+  }
+} else {
+  $preset = "x64-Clang-$Config"
+}
 $buildDir = "D:/Repos/Games/MW05Recomp/out/build/$preset"
 $exe = "D:/Repos/Games/MW05Recomp/out/build/$preset/tools/XenonRecomp/XenonRecomp/XenonRecomp.exe"
 # clean outputs so Ninja MUST run the rule

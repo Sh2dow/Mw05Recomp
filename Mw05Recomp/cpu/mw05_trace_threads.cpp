@@ -6,16 +6,21 @@
 #include <kernel/heap.h>
 #include "xbox.h"
 #include <cstdlib>
+#include <atomic>
+#include <kernel/trace.h>
+
+extern std::atomic<uint32_t> g_watchEA;
 
 extern "C" {
     void __imp__sub_828508A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
+    uint32_t Mw05PeekSchedulerBlockEA();
 }
 
 extern void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
 
 static inline bool KickVideoInitEnabled() {
-    if (const char* v = std::getenv("MW05_KICK_VIDEO")) {
+    if(const char* v = std::getenv("MW05_KICK_VIDEO")) {
         return !(v[0] == '0' && v[1] == '\0');
     }
     return false;
@@ -30,10 +35,9 @@ extern void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
 extern void VdEnableRingBufferRPtrWriteBack(uint32_t base);
 extern void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
 
-static void KickMinimalVideo()
-{
+static void KickMinimalVideo() {
     static bool s_done = false;
-    if (s_done) return;
+    if(s_done) return;
     s_done = true;
 
     // 1) Ensure the system command buffer exists
@@ -43,11 +47,11 @@ static void KickMinimalVideo()
     const uint32_t len_log2 = 12; // 4 KiB ring (small, dev-only)
     const uint32_t size_bytes = 1u << len_log2;
     void* ring_host = g_userHeap.Alloc(size_bytes, 0x100);
-    if (!ring_host) return;
+    if(!ring_host) return;
     const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
 
     void* wb_host = g_userHeap.Alloc(64, 4);
-    if (!wb_host) return;
+    if(!wb_host) return;
     const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
 
     // 3) Seed ring buffer state via host helpers
@@ -57,22 +61,21 @@ static void KickMinimalVideo()
     VdInitializeEngines();
 }
 
-void sub_828508A8(PPCContext& ctx, uint8_t* base)
-{
+void sub_828508A8(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.ThreadEntry.828508A8");
-    if (KickVideoInitEnabled()) KickMinimalVideo();
+    if(KickVideoInitEnabled()) KickMinimalVideo();
     __imp__sub_828508A8(ctx, base);
 }
 
-void sub_82812ED0(PPCContext& ctx, uint8_t* base)
-{
+void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
+    SetPPCContext(ctx);
     KernelTraceHostOp("HOST.ThreadEntry.82812ED0");
 
     const uint32_t block_ptr = ctx.r3.u32;
     KernelTraceHostOpF("HOST.ThreadEntry.82812ED0.block ptr=%08X", block_ptr);
-    if (block_ptr) {
+    if(block_ptr) {
         uint8_t* raw = static_cast<uint8_t*>(g_memory.Translate(block_ptr));
-        if (raw) {
+        if(raw) {
             struct ThreadStartBlock {
                 be<uint32_t> state;
                 be<uint32_t> entry;
@@ -93,9 +96,9 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base)
                                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
                                raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
             const uint32_t eventEA = static_cast<uint32_t>(block->event);
-            if (eventEA) {
+            if(eventEA) {
                 bool manualReset = false;
-                if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(eventEA))) {
+                if(auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(eventEA))) {
                     manualReset = (hdr->Type == 0);
                 }
                 Mw05RegisterVdInterruptEvent(eventEA, manualReset);
@@ -104,6 +107,16 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base)
         }
     }
 
-    if (KickVideoInitEnabled()) KickMinimalVideo();
+    // Arm the writer watch for the scheduler slot as early as possible.
+    // If the pump has already recorded the block EA, this will be non-zero.
+    if(const uint32_t sched = Mw05PeekSchedulerBlockEA()) {
+        const uint32_t watch = sched + 16;
+        if(g_watchEA.load(std::memory_order_relaxed) != watch) {
+            g_watchEA.store(watch, std::memory_order_relaxed);
+            KernelTraceHostOpF("HOST.ThreadEntry.82812ED0.watch arm=%08X", watch);
+        }
+    }
+
+    if(KickVideoInitEnabled()) KickMinimalVideo();
     __imp__sub_82812ED0(ctx, base);
 }

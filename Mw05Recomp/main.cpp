@@ -36,6 +36,12 @@
 #include <ppc/ppc_context.h>
 
 PPC_EXTERN_FUNC(sub_82621640);
+PPC_EXTERN_FUNC(sub_8284E658);
+PPC_EXTERN_FUNC(sub_826346A8);
+PPC_EXTERN_FUNC(sub_82812ED0);
+PPC_EXTERN_FUNC(sub_828134E0);
+
+extern "C" void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/); // declaration with exact signature
 
 #ifdef _WIN32
 #include <timeapi.h>
@@ -497,12 +503,41 @@ int main(int argc, char *argv[])
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
+    KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p", 
+        reinterpret_cast<const void*>(sub_8243B618), 
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x8243B618)));
+
     g_memory.InsertFunction(0x82621640, sub_82621640);
-    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p", reinterpret_cast<const void*>(sub_82621640), reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
+    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p", 
+        reinterpret_cast<const void*>(sub_82621640), 
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
+
+    g_memory.InsertFunction(0x8284E658, sub_8284E658);
+    KernelTraceHostOpF("HOST.sub_8284E658.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_8284E658),
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x8284E658)));
 
     // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
     extern uint32_t KeTlsAlloc();
     g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
+    KernelTraceHostOpF("HOST.KeTlsAlloc.install host=%p entry=%p", 
+        reinterpret_cast<const void*>(KeTlsAlloc), 
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x826BE2A8)));
+
+    g_memory.InsertFunction(0x826346A8, sub_826346A8);
+    KernelTraceHostOpF("HOST.sub_826346A8.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_826346A8),
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
+    
+    g_memory.InsertFunction(0x82812ED0, sub_82812ED0);
+    KernelTraceHostOpF("HOST.sub_82812ED0.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_82812ED0),
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x82812ED0)));
+
+    g_memory.InsertFunction(0x828134E0, sub_828134E0);
+    KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_828134E0),
+        reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
 
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events

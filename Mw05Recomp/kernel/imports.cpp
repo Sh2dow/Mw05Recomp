@@ -33,6 +33,10 @@
 #include <cstring>  // for memset in VdQueryVideoMode
 #include <cstdlib>   // std::getenv
 #include <atomic>
+#include <cctype>
+#include <limits>
+#include <string_view>
+#include <kernel/xdm.h>
 
 extern "C" uint32_t Mw05ConsumeSchedulerBlockEA();
 extern "C" uint32_t Mw05GetSchedulerHandleEA();
@@ -110,6 +114,256 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, 
 static std::atomic<uint32_t> g_RbWriteBackPtr{0};
 static std::atomic<uint32_t> g_RbBase{0}, g_RbLen{0};
 
+#ifndef FILE_SUPERSEDED
+#define FILE_SUPERSEDED        0
+#endif
+#ifndef FILE_OPENED
+#define FILE_OPENED            1
+#endif
+#ifndef FILE_CREATED
+#define FILE_CREATED           2
+#endif
+#ifndef FILE_OVERWRITTEN
+#define FILE_OVERWRITTEN       3
+#endif
+#ifndef FILE_EXISTS
+#define FILE_EXISTS            4
+#endif
+#ifndef FILE_DOES_NOT_EXIST
+#define FILE_DOES_NOT_EXIST    5
+#endif
+
+inline uint32_t GetKernelHandle(void* obj) {
+    return GetKernelHandle(reinterpret_cast<KernelObject*>(obj));
+}
+#include <kernel/io/file_system.h>
+
+uint32_t XSetFilePointer(FileHandle* hFile,
+                         int32_t lDistanceToMove,
+                         be<int32_t>* lpDistanceToMoveHigh,
+                         uint32_t dwMoveMethod);
+uint32_t XSetFilePointerEx(FileHandle* hFile,
+                           int32_t lDistanceToMove,
+                           LARGE_INTEGER* lpNewFilePointer,
+                           uint32_t dwMoveMethod);
+
+#ifndef STATUS_OBJECT_NAME_INVALID
+#define STATUS_OBJECT_NAME_INVALID 0xC0000033
+#endif
+#ifndef STATUS_OBJECT_NAME_NOT_FOUND
+#define STATUS_OBJECT_NAME_NOT_FOUND 0xC0000034
+#endif
+#ifndef STATUS_OBJECT_PATH_NOT_FOUND
+#define STATUS_OBJECT_PATH_NOT_FOUND 0xC000003A
+#endif
+#ifndef STATUS_UNSUCCESSFUL
+#define STATUS_UNSUCCESSFUL 0xC0000001
+#endif
+#ifndef STATUS_END_OF_FILE
+#define STATUS_END_OF_FILE 0xC0000011
+#endif
+#ifndef FILE_SUPERSEDE
+#define FILE_SUPERSEDE 0x00000000
+#endif
+#ifndef FILE_OPEN
+#define FILE_OPEN 0x00000001
+#endif
+#ifndef FILE_CREATE
+#define FILE_CREATE 0x00000002
+#endif
+#ifndef FILE_OPEN_IF
+#define FILE_OPEN_IF 0x00000003
+#endif
+#ifndef FILE_OVERWRITE
+#define FILE_OVERWRITE 0x00000004
+#endif
+#ifndef FILE_OVERWRITE_IF
+#define FILE_OVERWRITE_IF 0x00000005
+#endif
+#ifndef FILE_DIRECTORY_FILE
+#define FILE_DIRECTORY_FILE 0x00000001
+#endif
+#ifndef FILE_ATTRIBUTE_NORMAL
+#define FILE_ATTRIBUTE_NORMAL 0x00000080
+#endif
+#ifndef FILE_ATTRIBUTE_DIRECTORY
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+#endif
+#ifndef FILE_FLAG_BACKUP_SEMANTICS
+#define FILE_FLAG_BACKUP_SEMANTICS 0x02000000
+#endif
+#ifndef CREATE_NEW
+#define CREATE_NEW 1
+#endif
+#ifndef CREATE_ALWAYS
+#define CREATE_ALWAYS 2
+#endif
+#ifndef OPEN_EXISTING
+#define OPEN_EXISTING 3
+#endif
+#ifndef OPEN_ALWAYS
+#define OPEN_ALWAYS 4
+#endif
+#ifndef TRUNCATE_EXISTING
+#define TRUNCATE_EXISTING 5
+#endif
+#ifndef INVALID_SET_FILE_POINTER
+#define INVALID_SET_FILE_POINTER 0xFFFFFFFF
+#endif
+#ifndef FILE_BEGIN
+#define FILE_BEGIN 0
+#endif
+#ifndef FILE_CURRENT
+#define FILE_CURRENT 1
+#endif
+#ifndef FILE_END
+#define FILE_END 2
+#endif
+
+namespace {
+
+std::string ExtractGuestPath(const XOBJECT_ATTRIBUTES* attributes)
+{
+    if (!attributes) {
+        return {};
+    }
+    const auto* name = attributes->Name.get();
+    if (!name) {
+        return {};
+    }
+    const char* buffer = name->Buffer.get();
+    if (!buffer) {
+        return {};
+    }
+    const uint16_t length = name->Length;
+    std::string path(buffer, buffer + length);
+    while (!path.empty() && path.back() == '\0') {
+        path.pop_back();
+    }
+    return path;
+}
+
+    static std::string NormalizeGuestPath(std::string path)
+{
+    if (path.empty()) return path;
+
+    std::replace(path.begin(), path.end(), '/', '\\');
+
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+
+    auto strip_prefix = [&](std::string_view prefix) {
+        if (lower.size() >= prefix.size() &&
+            lower.compare(0, prefix.size(), prefix) == 0) {
+            path.erase(0, prefix.size());
+            lower.erase(0, prefix.size());
+            return true;
+            }
+        return false;
+    };
+
+    strip_prefix(R"(\??\)");
+
+    if (strip_prefix(R"(\device\cdrom0\)")) {
+        path.insert(0, R"(game:\)");
+    } else if (strip_prefix(R"(\device\cdrom1\)")) {
+        path.insert(0, R"(update:\)");
+    } else if (strip_prefix(R"(\device\harddisk0\partition1\)")) {
+        path.insert(0, R"(game:\)");
+    } else if (strip_prefix(R"(\device\harddisk0\partition0\)")) {
+        path.insert(0, R"(hdd:\)");
+    } else if (strip_prefix(R"(\device\harddisk0\partition2\)")) {
+        path.insert(0, R"(cache:\)");
+    }
+
+    if (!path.empty() && path.front() == '\\') {
+        path.erase(path.begin());
+        path.insert(0, R"(game:\)");
+    }
+
+    if (path.size() >= 5 && path[4] == ':' && (path.size() == 5 || path[5] != '\\')) {
+        path.insert(5, R"(\)");
+    }
+
+    return path;
+}
+
+bool MapCreateDisposition(uint32_t createDisposition, uint32_t& out)
+{
+    switch (createDisposition) {
+    case FILE_SUPERSEDE:
+    case FILE_OVERWRITE_IF:
+        out = CREATE_ALWAYS;
+        return true;
+    case FILE_OPEN:
+        out = OPEN_EXISTING;
+        return true;
+    case FILE_CREATE:
+        out = CREATE_NEW;
+        return true;
+    case FILE_OPEN_IF:
+        out = OPEN_ALWAYS;
+        return true;
+    case FILE_OVERWRITE:
+        out = TRUNCATE_EXISTING;
+        return true;
+    default:
+        return false;
+    }
+}
+
+uint32_t MapCreateOptions(uint32_t createOptions, uint32_t fileAttributes)
+{
+    uint32_t flags = fileAttributes ? fileAttributes : FILE_ATTRIBUTE_NORMAL;
+    if (createOptions & FILE_DIRECTORY_FILE) {
+        flags &= ~FILE_ATTRIBUTE_NORMAL;
+        flags |= FILE_ATTRIBUTE_DIRECTORY | FILE_FLAG_BACKUP_SEMANTICS;
+    }
+    return flags;
+}
+
+bool ApplyAbsoluteOffset(FileHandle* file, int64_t offset, LARGE_INTEGER& originalPos, bool& hasOriginal)
+{
+    hasOriginal = false;
+    if (offset < 0) {
+        return true;
+    }
+
+    if (XSetFilePointerEx(file, 0, &originalPos, FILE_CURRENT) != FALSE) {
+        hasOriginal = true;
+    }
+
+    const int32_t low = static_cast<int32_t>(offset & 0xFFFFFFFF);
+    const int32_t high = static_cast<int32_t>(offset >> 32);
+
+    if (high != 0) {
+        be<int32_t> hi(high);
+        return XSetFilePointer(file, low, &hi, FILE_BEGIN) != INVALID_SET_FILE_POINTER;
+    }
+
+    return XSetFilePointerEx(file, low, nullptr, FILE_BEGIN) != FALSE;
+}
+
+void RestoreFileOffset(FileHandle* file, const LARGE_INTEGER& originalPos, bool hasOriginal)
+{
+    if (!hasOriginal) {
+        return;
+    }
+
+    const int64_t offset = originalPos.QuadPart;
+    const int32_t low = static_cast<int32_t>(offset & 0xFFFFFFFF);
+    const int32_t high = static_cast<int32_t>(offset >> 32);
+
+    if (high != 0) {
+        be<int32_t> hi(high);
+        XSetFilePointer(file, low, &hi, FILE_BEGIN);
+    } else {
+        XSetFilePointerEx(file, low, nullptr, FILE_BEGIN);
+    }
+}
+
+} // namespace
 
 extern "C" bool Mw05FastBootEnabled() {
     static const bool enabled = []() -> bool {
@@ -772,11 +1026,6 @@ void XamLoaderLaunchTitle()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void NtOpenFile()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
 void RtlInitAnsiString(XANSI_STRING* destination, char* source)
 {
     const uint16_t length = source ? (uint16_t)strlen(source) : 0;
@@ -785,8 +1034,7 @@ void RtlInitAnsiString(XANSI_STRING* destination, char* source)
     destination->Buffer = source;
 }
 
-uint32_t NtCreateFile
-(
+uint32_t NtCreateFile(
     be<uint32_t>* FileHandle,
     uint32_t DesiredAccess,
     XOBJECT_ATTRIBUTES* Attributes,
@@ -795,11 +1043,76 @@ uint32_t NtCreateFile
     uint32_t FileAttributes,
     uint32_t ShareAccess,
     uint32_t CreateDisposition,
-    uint32_t CreateOptions
-)
+    uint32_t CreateOptions)
 {
-    return 0;
+    (void)AllocationSize;
+
+    if (!FileHandle || !Attributes || !IoStatusBlock) {
+        if (FileHandle) {
+            *FileHandle = GUEST_INVALID_HANDLE_VALUE;
+        }
+        if (IoStatusBlock) {
+            IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+            IoStatusBlock->Information = 0;
+        }
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    std::string guestPath = ExtractGuestPath(Attributes);
+    guestPath = NormalizeGuestPath(std::move(guestPath));
+    if (guestPath.empty()) {
+        *FileHandle = GUEST_INVALID_HANDLE_VALUE;
+        IoStatusBlock->Status = STATUS_OBJECT_NAME_INVALID;
+        IoStatusBlock->Information = 0;
+        return STATUS_OBJECT_NAME_INVALID;
+    }
+
+    uint32_t creation = 0;
+    if (!MapCreateDisposition(CreateDisposition, creation)) {
+        *FileHandle = GUEST_INVALID_HANDLE_VALUE;
+        IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+        IoStatusBlock->Information = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    const uint32_t flags = MapCreateOptions(CreateOptions, FileAttributes);
+    auto* handle = XCreateFileA(guestPath.c_str(), DesiredAccess, ShareAccess, nullptr, creation, flags);
+    if (IsInvalidKernelObject(handle)) {
+        const uint32_t status = (CreateDisposition == FILE_OPEN || CreateDisposition == FILE_OPEN_IF)
+                                    ? STATUS_OBJECT_NAME_NOT_FOUND
+                                    : STATUS_OBJECT_PATH_NOT_FOUND;
+        *FileHandle = GUEST_INVALID_HANDLE_VALUE;
+        IoStatusBlock->Status = status;
+        IoStatusBlock->Information = 0;
+        return status;
+    }
+
+    const uint32_t guestHandle = GetKernelHandle(static_cast<void*>(handle));
+    *FileHandle = guestHandle;
+
+    uint32_t info = FILE_OPENED;
+    if (creation == CREATE_NEW) {
+        info = FILE_CREATED;
+    } else if (creation == CREATE_ALWAYS && (CreateDisposition == FILE_SUPERSEDE || CreateDisposition == FILE_OVERWRITE_IF)) {
+        info = FILE_OVERWRITTEN;
+    }
+
+    IoStatusBlock->Status = STATUS_SUCCESS;
+    IoStatusBlock->Information = info;
+    return STATUS_SUCCESS;
 }
+
+uint32_t NtOpenFile(
+    be<uint32_t>* FileHandle,
+    uint32_t DesiredAccess,
+    XOBJECT_ATTRIBUTES* Attributes,
+    XIO_STATUS_BLOCK* IoStatusBlock,
+    uint32_t ShareAccess,
+    uint32_t OpenOptions)
+{
+    return NtCreateFile(FileHandle, DesiredAccess, Attributes, IoStatusBlock, nullptr, 0, ShareAccess, FILE_OPEN, OpenOptions);
+}
+
 
 uint32_t NtClose(uint32_t handle)
 {
@@ -992,10 +1305,73 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     return STATUS_INVALID_HANDLE;
 }
 
-void NtWriteFile()
+uint32_t NtWriteFile(
+    uint32_t handleId,
+    uint32_t Event,
+    uint32_t ApcRoutine,
+    uint32_t ApcContext,
+    XIO_STATUS_BLOCK* IoStatusBlock,
+    const void* Buffer,
+    uint32_t Length,
+    be<int64_t>* ByteOffset,
+    be<uint32_t>* Key)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    (void)Event;
+    (void)ApcRoutine;
+    (void)ApcContext;
+    (void)Key;
+
+    if (!IoStatusBlock || !Buffer) {
+        if (IoStatusBlock) {
+            IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+            IoStatusBlock->Information = 0;
+        }
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Length == 0) {
+        IoStatusBlock->Status = STATUS_SUCCESS;
+        IoStatusBlock->Information = 0;
+        return STATUS_SUCCESS;
+    }
+
+    if (!IsKernelObject(handleId)) {
+        IoStatusBlock->Status = STATUS_INVALID_HANDLE;
+        IoStatusBlock->Information = 0;
+        return STATUS_INVALID_HANDLE;
+    }
+
+    auto* file = GetKernelObject<FileHandle>(handleId);
+    if (!file || !IsKernelObjectAlive(reinterpret_cast<const KernelObject*>(file))) {
+        return STATUS_INVALID_HANDLE;
+    }
+
+    LARGE_INTEGER originalPos{};
+    bool hasOriginal = false;
+
+    if (ByteOffset) {
+        const int64_t offset = static_cast<int64_t>(*ByteOffset);
+        if (!ApplyAbsoluteOffset(file, offset, originalPos, hasOriginal)) {
+            RestoreFileOffset(file, originalPos, hasOriginal);
+            IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+            IoStatusBlock->Information = 0;
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    be<uint32_t> bytesWritten = 0;
+    const uint32_t rc = XWriteFile(file, Buffer, Length, &bytesWritten, nullptr);
+    const bool ok = (rc != 0);  // optional: if you still want a bool
+
+    RestoreFileOffset(file, originalPos, hasOriginal);
+
+    const uint32_t status = ok ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+
+    IoStatusBlock->Status = status;
+    IoStatusBlock->Information = bytesWritten;
+    return status;
 }
+
 
 void vsprintf_x()
 {
@@ -1157,8 +1533,6 @@ uint32_t NtCreateEvent(be<uint32_t>* handle, void* objAttributes, uint32_t event
     return 0;
 }
 
-
-
 void DbgPrint()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -1273,11 +1647,6 @@ uint32_t XexCheckExecutablePrivilege()
     return 1; // present
 }
 
-void ExFreePool()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
 void NtQueryInformationFile()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -1298,19 +1667,79 @@ void NtReadFileScatter()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void NtReadFile()
+uint32_t NtReadFile(
+    uint32_t handleId,
+    uint32_t Event,
+    uint32_t ApcRoutine,
+    uint32_t ApcContext,
+    XIO_STATUS_BLOCK* IoStatusBlock,
+    void* Buffer,
+    uint32_t Length,
+    be<int64_t>* ByteOffset,
+    be<uint32_t>* Key)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    (void)Event;
+    (void)ApcRoutine;
+    (void)ApcContext;
+    (void)Key;
+
+    if (!IoStatusBlock || !Buffer) {
+        if (IoStatusBlock) {
+            IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+            IoStatusBlock->Information = 0;
+        }
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Length == 0) {
+        IoStatusBlock->Status = STATUS_SUCCESS;
+        IoStatusBlock->Information = 0;
+        return STATUS_SUCCESS;
+    }
+
+    if (!IsKernelObject(handleId)) {
+        IoStatusBlock->Status = STATUS_INVALID_HANDLE;
+        IoStatusBlock->Information = 0;
+        return STATUS_INVALID_HANDLE;
+    }
+
+    auto* file = GetKernelObject<FileHandle>(handleId);
+    if (!file || !IsKernelObjectAlive(reinterpret_cast<const KernelObject*>(file))) {
+        return STATUS_INVALID_HANDLE;
+    }
+
+    LARGE_INTEGER originalPos{};
+    bool hasOriginal = false;
+
+    if (ByteOffset) {
+        const int64_t offset = static_cast<int64_t>(*ByteOffset);
+        if (!ApplyAbsoluteOffset(file, offset, originalPos, hasOriginal)) {
+            RestoreFileOffset(file, originalPos, hasOriginal);
+            IoStatusBlock->Status = STATUS_INVALID_PARAMETER;
+            IoStatusBlock->Information = 0;
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    be<uint32_t> bytesRead = 0;
+    const uint32_t rc = XReadFile(file, Buffer, Length, &bytesRead, nullptr);
+    const bool ok = (rc != 0);  // optional: if you still want a bool
+
+    RestoreFileOffset(file, originalPos, hasOriginal);
+
+    const uint32_t status = ok ? STATUS_SUCCESS
+                               : (bytesRead == 0 ? STATUS_END_OF_FILE : STATUS_UNSUCCESSFUL);
+
+    IoStatusBlock->Status = status;
+    IoStatusBlock->Information = bytesRead;
+    return status;
 }
+
 
 // Pseudo-handle helper: treat any negative handle as "current *"
 static inline bool IsPseudoHandle(uint32_t h) {
     return static_cast<int32_t>(h) < 0;
 }
-
-// Your declared overloads:
-// bool IsKernelObject(uint32_t handle);
-// bool IsKernelObject(void* obj);
 
 // Keep this signature in sync with your import/thunk layer.
 uint32_t NtDuplicateObject(uint32_t SourceProcessHandle,
@@ -2827,11 +3256,6 @@ void IoDeleteDevice()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void ExAllocatePoolTypeWithTag()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
 void RtlTimeFieldsToTime()
 {
     LOG_UTILITY("!!! STUB !!!");
@@ -3017,14 +3441,10 @@ GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderTerminateTitle, XamLoaderTerminateTitle);
 GUEST_FUNCTION_HOOK(__imp__XamGetExecutionId, XamGetExecutionId);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderLaunchTitle, XamLoaderLaunchTitle);
-GUEST_FUNCTION_HOOK(__imp__NtOpenFile, NtOpenFile);
 GUEST_FUNCTION_HOOK(__imp__RtlInitAnsiString, RtlInitAnsiString);
-GUEST_FUNCTION_HOOK(__imp__NtCreateFile, NtCreateFile);
-GUEST_FUNCTION_HOOK(__imp__NtClose, NtClose);
 GUEST_FUNCTION_HOOK(__imp__NtSetInformationFile, NtSetInformationFile);
 GUEST_FUNCTION_HOOK(__imp__FscSetCacheElementCount, FscSetCacheElementCount);
 GUEST_FUNCTION_HOOK(__imp__NtWaitForSingleObjectEx, NtWaitForSingleObjectEx);
-GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
 GUEST_FUNCTION_HOOK(__imp__ExGetXConfigSetting, ExGetXConfigSetting);
 GUEST_FUNCTION_HOOK(__imp__NtQueryVirtualMemory, NtQueryVirtualMemory);
 uint32_t NtProtectVirtualMemory(
@@ -3066,12 +3486,9 @@ GUEST_FUNCTION_HOOK(__imp__XexGetProcedureAddress, XexGetProcedureAddress);
 GUEST_FUNCTION_HOOK(__imp__XexGetModuleSection, XexGetModuleSection);
 GUEST_FUNCTION_HOOK(__imp__RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteN);
 GUEST_FUNCTION_HOOK(__imp__KeDelayExecutionThread, KeDelayExecutionThread);
-GUEST_FUNCTION_HOOK(__imp__ExFreePool, ExFreePool);
 GUEST_FUNCTION_HOOK(__imp__NtQueryInformationFile, NtQueryInformationFile);
 GUEST_FUNCTION_HOOK(__imp__NtQueryVolumeInformationFile, NtQueryVolumeInformationFile);
 GUEST_FUNCTION_HOOK(__imp__NtQueryDirectoryFile, NtQueryDirectoryFile);
-GUEST_FUNCTION_HOOK(__imp__NtReadFileScatter, NtReadFileScatter);
-GUEST_FUNCTION_HOOK(__imp__NtReadFile, NtReadFile);
 GUEST_FUNCTION_HOOK(__imp__NtDuplicateObject, NtDuplicateObject);
 GUEST_FUNCTION_HOOK(__imp__NtAllocateVirtualMemory, NtAllocateVirtualMemory);
 GUEST_FUNCTION_HOOK(__imp__NtFreeVirtualMemory, NtFreeVirtualMemory);
@@ -3191,7 +3608,6 @@ GUEST_FUNCTION_HOOK(__imp__IoInvalidDeviceRequest, IoInvalidDeviceRequest);
 GUEST_FUNCTION_HOOK(__imp__ObReferenceObject, ObReferenceObject);
 GUEST_FUNCTION_HOOK(__imp__IoCreateDevice, IoCreateDevice);
 GUEST_FUNCTION_HOOK(__imp__IoDeleteDevice, IoDeleteDevice);
-GUEST_FUNCTION_HOOK(__imp__ExAllocatePoolTypeWithTag, ExAllocatePoolTypeWithTag);
 GUEST_FUNCTION_HOOK(__imp__RtlTimeFieldsToTime, RtlTimeFieldsToTime);
 GUEST_FUNCTION_HOOK(__imp__IoCompleteRequest, IoCompleteRequest);
 GUEST_FUNCTION_HOOK(__imp__RtlUpcaseUnicodeChar, RtlUpcaseUnicodeChar);
@@ -3327,7 +3743,6 @@ GUEST_FUNCTION_STUB(__imp__NtCreateMutant);
 GUEST_FUNCTION_STUB(__imp__NtReleaseMutant);
 GUEST_FUNCTION_STUB(__imp__NtYieldExecution);
 GUEST_FUNCTION_STUB(__imp__FscGetCacheElementCount);
-GUEST_FUNCTION_STUB(__imp__ExAllocatePool);
 GUEST_FUNCTION_STUB(__imp__XamVoiceHeadsetPresent);
 GUEST_FUNCTION_STUB(__imp__XamVoiceClose);
 GUEST_FUNCTION_STUB(__imp__XMsgCancelIORequest);
@@ -3336,7 +3751,6 @@ GUEST_FUNCTION_STUB(__imp__XamVoiceCreate);
 GUEST_FUNCTION_STUB(__imp__XAudioQueryDriverPerformance);
 GUEST_FUNCTION_STUB(__imp__KeTryToAcquireSpinLockAtRaisedIrql);
 GUEST_FUNCTION_STUB(__imp__KePulseEvent);
-GUEST_FUNCTION_STUB(__imp__ExAllocatePoolWithTag);
 GUEST_FUNCTION_STUB(__imp__MmAllocatePhysicalMemory);
 GUEST_FUNCTION_STUB(__imp__XMASetInputBufferReadOffset);
 GUEST_FUNCTION_STUB(__imp__XMABlockWhileInUse);
@@ -3374,8 +3788,6 @@ GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetBroadcastVersionStatus);
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetQosGetListenStats);
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetGetOpt);
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetSetOpt);
-GUEST_FUNCTION_STUB(__imp__XamFree);
-GUEST_FUNCTION_STUB(__imp__XamAlloc);
 GUEST_FUNCTION_STUB(__imp__XNetLogonGetTitleID);
 GUEST_FUNCTION_STUB(__imp__XamUserWriteProfileSettings);
 GUEST_FUNCTION_STUB(__imp__NetDll_shutdown);

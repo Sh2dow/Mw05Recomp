@@ -7,13 +7,65 @@
 #include <mod/mod_loader.h>
 #endif
 #include <os/logger.h>
+#include <cctype>
+#include <cstdlib>
+#include <kernel/trace.h>
 #include <user/config.h>
 #include <stdafx.h>
+#include <atomic>
+
+uint32_t NtCreateFile(be<uint32_t>* FileHandle, uint32_t DesiredAccess, XOBJECT_ATTRIBUTES* Attributes, XIO_STATUS_BLOCK* IoStatusBlock, uint64_t* AllocationSize, uint32_t FileAttributes, uint32_t ShareAccess, uint32_t CreateDisposition, uint32_t CreateOptions);
+uint32_t NtOpenFile(be<uint32_t>* FileHandle, uint32_t DesiredAccess, XOBJECT_ATTRIBUTES* Attributes, XIO_STATUS_BLOCK* IoStatusBlock, uint32_t ShareAccess, uint32_t OpenOptions);
+uint32_t NtClose(uint32_t handle);
+uint32_t NtReadFile(uint32_t handleId, uint32_t Event, uint32_t ApcRoutine, uint32_t ApcContext, XIO_STATUS_BLOCK* IoStatusBlock, void* Buffer, uint32_t Length, be<int64_t>* ByteOffset, be<uint32_t>* Key);
+uint32_t NtWriteFile(uint32_t handleId, uint32_t Event, uint32_t ApcRoutine, uint32_t ApcContext, XIO_STATUS_BLOCK* IoStatusBlock, const void* Buffer, uint32_t Length, be<int64_t>* ByteOffset, be<uint32_t>* Key);
+static std::atomic<int> g_fileTraceEnabled{-1};
+static std::atomic<int> g_fileTraceAnnounced{0};
+static bool FileTraceEnabled()
+{
+    auto toLower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    auto equalsIgnoreCase = [&](const char* lhs, const char* rhs) {
+        while (*lhs && *rhs) {
+            if (toLower(*lhs++) != toLower(*rhs++)) {
+                return false;
+            }
+        }
+        return *lhs == 0 && *rhs == 0;
+    };
+
+    int s = g_fileTraceEnabled.load(std::memory_order_relaxed);
+    if (s < 0) {
+        const char* envValue = std::getenv("MW05_FILE_LOG");
+        const bool sawEnv = envValue != nullptr;
+        int enabled = 0;
+        if (envValue) {
+            if (!(envValue[0] == '0' && envValue[1] == '\0') && !equalsIgnoreCase(envValue, "false") && !equalsIgnoreCase(envValue, "off") && !equalsIgnoreCase(envValue, "no")) {
+                enabled = 1;
+            }
+        }
+        s = enabled;
+        g_fileTraceEnabled.store(s, std::memory_order_relaxed);
+        if (sawEnv) {
+            const int state = enabled ? 1 : 2;
+            if (g_fileTraceAnnounced.exchange(state, std::memory_order_relaxed) != state) {
+                KernelTraceHostOpF("HOST.FileSystem.trace %s env=MW05_FILE_LOG value=\"%s\"",
+                    enabled ? "enabled" : "disabled", envValue ? envValue : "<null>");
+            }
+        }
+    }
+    return s != 0;
+}
+
+static const bool g_fileTraceInit = []() noexcept {
+    (void)FileTraceEnabled();
+    return true;
+}();
 
 struct FileHandle : KernelObject
 {
     std::fstream stream;
     std::filesystem::path path;
+    std::string guestPath;
 };
 
 struct FindHandle : KernelObject
@@ -138,7 +190,7 @@ FileHandle* XCreateFileA
 {
     assert(((dwDesiredAccess & ~(GENERIC_READ | GENERIC_WRITE | FILE_READ_DATA)) == 0) && "Unknown desired access bits.");
     assert(((dwShareMode & ~(FILE_SHARE_READ | FILE_SHARE_WRITE)) == 0) && "Unknown share mode bits.");
-    assert(((dwCreationDisposition & ~(CREATE_NEW | CREATE_ALWAYS)) == 0) && "Unknown creation disposition bits.");
+    assert(((dwCreationDisposition & ~(CREATE_NEW | CREATE_ALWAYS | OPEN_ALWAYS | OPEN_EXISTING | TRUNCATE_EXISTING)) == 0) && "Unknown creation disposition bits.");
 
     std::filesystem::path filePath = FileSystem::ResolvePath(lpFileName, true);
     std::fstream fileStream;
@@ -156,15 +208,27 @@ FileHandle* XCreateFileA
     fileStream.open(filePath, fileOpenMode);
     if (!fileStream.is_open())
     {
+        if (FileTraceEnabled()) {
+            auto hostPathU8 = filePath.u8string();
+            std::string hostPath(hostPathU8.begin(), hostPathU8.end());
+            KernelTraceHostOpF("HOST.FileSystem.ResolvePath.fail guest=\"%s\" host=\"%s\"", lpFileName ? lpFileName : "<null>", hostPath.c_str());
+        }
 #ifdef _WIN32
         GuestThread::SetLastError(GetLastError());
 #endif
         return GetInvalidKernelObject<FileHandle>();
     }
 
+    if (FileTraceEnabled()) {
+        auto hostPathU8 = filePath.u8string();
+        std::string hostPath(hostPathU8.begin(), hostPathU8.end());
+        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.open guest=\"%s\" host=\"%s\"", lpFileName ? lpFileName : "<null>", hostPath.c_str());
+    }
+
     FileHandle *fileHandle = CreateKernelObject<FileHandle>();
     fileHandle->stream = std::move(fileStream);
     fileHandle->path = std::move(filePath);
+    fileHandle->guestPath = lpFileName ? lpFileName : "";
     return fileHandle;
 }
 
@@ -492,11 +556,17 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
 
         if (!resolvedPath.empty())
         {
-            #if MW05_ENABLE_UNLEASHED
+            if (FileTraceEnabled()) {
+                auto hostU8 = resolvedPath.u8string();
+                std::string hostPath(hostU8.begin(), hostU8.end());
+                std::string guestPath(path);
+                KernelTraceHostOpF("HOST.FileSystem.ResolvePath.map guest=\"%s\" host=\"%s\" source=mod", guestPath.c_str(), hostPath.c_str());
+            }
+#if MW05_ENABLE_UNLEASHED
             if (ModLoader::s_isLogTypeConsole)
-            #else
+#else
             if (false)
-            #endif
+#endif
                 LOGF_IMPL(Utility, "Mod Loader", "Loading file: \"{}\"", reinterpret_cast<const char*>(resolvedPath.u8string().c_str()));
 
             return resolvedPath;
@@ -538,9 +608,15 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
 
     std::replace(builtPath.begin(), builtPath.end(), '\\', '/');
 
+    if (FileTraceEnabled()) {
+        std::string guestPath(path);
+        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.map guest=\"%s\" host=\"%s\" source=default", guestPath.c_str(), builtPath.c_str());
+    }
+
     return std::u8string_view((const char8_t*)builtPath.c_str());
 }
 
+#if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_HOOK(sub_82BD4668, XCreateFileA);
 GUEST_FUNCTION_HOOK(sub_82BD4600, XGetFileSizeA);
 GUEST_FUNCTION_HOOK(sub_82BD5608, XGetFileSizeExA);
@@ -553,3 +629,10 @@ GUEST_FUNCTION_HOOK(sub_831CDF40, XReadFileEx);
 GUEST_FUNCTION_HOOK(sub_831CD6E8, XGetFileAttributesA);
 GUEST_FUNCTION_HOOK(sub_831CE3F8, XCreateFileA);
 GUEST_FUNCTION_HOOK(sub_82BD4860, XWriteFile);
+#else
+GUEST_FUNCTION_HOOK(__imp__NtCreateFile, NtCreateFile);
+GUEST_FUNCTION_HOOK(__imp__NtOpenFile, NtOpenFile);
+GUEST_FUNCTION_HOOK(__imp__NtClose, NtClose);
+GUEST_FUNCTION_HOOK(__imp__NtReadFile, NtReadFile);
+GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
+#endif // MW05_ENABLE_UNLEASHED

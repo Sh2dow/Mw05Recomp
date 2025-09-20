@@ -1,0 +1,384 @@
+Imports:
+ xam - 173 imports
+   Version: 0.0.2135.32
+   Min Version: 0.0.1861.32
+
+         Total:  173
+         Known:  100% (173 known, 0 unknown)
+   Implemented:   67% (117 implemented, 56 unimplemented)
+
+   F 82000600 828A9C4C 28B ( 651)    XNotifyGetNext
+   F 82000604 828A9C5C 1A7 ( 423)    XamLoaderGetLaunchDataSize
+   F 82000608 828A9C6C 3CD ( 973)    XGetLanguage
+   F 8200060C 828A9C7C 3D1 ( 977)    XGetVideoMode
+   F 82000610 828A9C8C 1A8 ( 424)    XamLoaderGetLaunchData
+   F 82000614 828A9C9C 1A6 ( 422)    XamLoaderSetLaunchData
+   F 82000618 828A9CAC 1F7 ( 503)    XMsgStartIORequest
+   F 8200061C 828A9CBC 20E ( 526)    XamUserGetName
+   F 82000620 828A9CCC 210 ( 528)    XamUserGetSigninState
+   F 82000624 828A9CDC 213 ( 531)    XamUserAreUsersFriends
+   F 82000628 828A9CEC 212 ( 530)    XamUserCheckPrivilege
+   F 8200062C 828A9CFC 2F7 ( 759)    XamUserCreateStatsEnumerator
+   F 82000630 828A9D0C 2F5 ( 757)    XamReadTileToTexture
+   F 82000634 828A9D1C 30A ( 778)    XamParseGamerTileKey
+   F 82000638 828A9D2C 2F0 ( 752)    XamWriteGamerTile
+   F 8200063C 828A9D3C 309 ( 777) !! XamUserCreatePlayerEnumerator
+   F 82000640 828A9D4C 2EE ( 750)    XamUserCreateAchievementEnumerator
+   F 82000644 828A9D5C 20A ( 522)    XamUserGetXUID
+   F 82000648 828A9D6C 2BC ( 700)    XamShowSigninUI
+   F 8200064C 828A9D7C 2BE ( 702)    XamShowSigninUIp
+   F 82000650 828A9D8C 2BF ( 703) !! XamShowFriendsUI
+   F 82000654 828A9D9C 2C8 ( 712) !! XamShowPlayersUI
+   F 82000658 828A9DAC 2C0 ( 704) !! XamShowMessagesUI
+   F 8200065C 828A9DBC 2C1 ( 705)    XamShowKeyboardUI
+   F 82000660 828A9DCC 2C2 ( 706) !! XamShowQuickChatUI
+   F 82000664 828A9DDC 2C3 ( 707) !! XamShowVoiceMailUI
+   F 82000668 828A9DEC 2D5 ( 725) !! XamShowGamerCardUIForXUID
+   F 8200066C 828A9DFC 2C5 ( 709)    XamShowAchievementsUI
+   F 82000670 828A9E0C 2C6 ( 710) !! XamShowPlayerReviewUI
+   F 82000674 828A9E1C 2C7 ( 711)    XamShowMarketplaceUI
+   F 82000678 828A9E2C 2CB ( 715)    XamShowDeviceSelectorUI
+   F 8200067C 828A9E3C 2CA ( 714)    XamShowMessageBoxUI
+   F 82000680 828A9E4C 2CC ( 716) !! XamShowMessageComposeUI
+   F 82000684 828A9E5C 2CD ( 717) !! XamShowGameInviteUI
+   F 82000688 828A9E6C 2CE ( 718) !! XamShowFriendRequestUI
+   F 8200068C 828A9E7C 2D9 ( 729)    XamShowDirtyDiscErrorUI
+   F 82000690 828A9E8C 1D7 ( 471)    Refresh
+   F 82000694 828A9E9C 28A ( 650)    XamNotifyCreateListener
+   F 82000698 828A9EAC 1A4 ( 420)    XamLoaderLaunchTitle
+   F 8200069C 828A9EBC 190 ( 400)    XamInputGetCapabilities
+   F 820006A0 828A9ECC 191 ( 401)    XamInputGetState
+   F 820006A4 828A9EDC 192 ( 402)    XamInputSetState
+   F 820006A8 828A9EEC 198 ( 408)    XamInputGetKeystrokeEx
+   F 820006AC 828A9EFC 2DC ( 732)    XamShowMessageBoxUIEx
+   F 820006B0 828A9F0C 1A9 ( 425)    XamLoaderTerminateTitle
+   F 820006B4 828A9F1C 280 ( 640)    XamGetExecutionId
+   F 820006B8 828AB0DC 30C ( 780)    XamVoiceCreate
+   F 820006BC 828AB0CC 30E ( 782)    XamVoiceSubmitPacket
+   F 820006C0 828AB0BC 1F8 ( 504)    XMsgCancelIORequest
+   F 820006C4 828AB0AC 30F ( 783)    XamVoiceClose
+   F 820006C8 828AB09C 30D ( 781)    XamVoiceHeadsetPresent
+   F 820006CC 828AACEC 250 ( 592)    XamEnumerate
+   F 820006D0 828AACDC 263 ( 611) !! XamContentLaunchImage
+   F 820006D4 828AACCC 25F ( 607)    XamContentGetDeviceName
+   F 820006D8 828AACBC 25E ( 606)    XamContentGetDeviceData
+   F 820006DC 828AACAC 265 ( 613)    XamContentGetDeviceState
+   F 820006E0 828AAC9C 25D ( 605)    XamContentCreateDeviceEnumerator
+   F 820006E4 828AAC8C 25C ( 604)    XamContentCreateEnumerator
+   F 820006E8 828AAC7C 266 ( 614)    XamContentGetLicenseMask
+   F 820006EC 828AAC6C 262 ( 610)    XamContentGetCreator
+   F 820006F0 828AAC5C 261 ( 609)    XamContentGetThumbnail
+   F 820006F4 828AAC4C 260 ( 608)    XamContentSetThumbnail
+   F 820006F8 828AAC3C 267 ( 615)    XamContentFlush
+   F 820006FC 828AAC2C 25A ( 602)    XamContentClose
+   F 82000700 828AAC1C 26A ( 618) !! XamContentInstall
+   F 82000704 828AAC0C 25B ( 603)    XamContentDelete
+   F 82000708 828AABFC 259 ( 601)    XamContentCreateEx
+   F 8200070C 828AABEC 258 ( 600)    XamContentCreate
+   F 82000710 828AABDC 316 ( 790)    XamSessionCreateHandle
+   F 82000714 828AABCC 317 ( 791)    XamSessionRefObjByHandle
+   F 82000718 828AABBC 217 ( 535)    XamUserGetMembershipTierFromXUID
+   F 8200071C 828AABAC 218 ( 536)    XamUserGetOnlineCountryFromXUID
+   F 82000720 828AAB9C 135 ( 309) !! XNetLogonGetMachineID
+   F 82000724 828AAB8C 07D ( 125) !! NetDll_XnpUnregisterKeyForCallerType
+   F 82000728 828AAB7C 07C ( 124) !! NetDll_XnpRegisterKeyForCallerType
+   F 8200072C 828AAB6C 07B ( 123) !! NetDll_XnpNoteSystemTime
+   F 82000730 828AAB5C 07A ( 122) !! NetDll_XnpGetActiveSocketList
+   F 82000734 828AAB4C 079 ( 121) !! NetDll_XnpSetVlanXboxName
+   F 82000738 828AAB3C 078 ( 120) !! NetDll_XnpGetVlanXboxName
+   F 8200073C 828AAB2C 077 ( 119) !! NetDll_XnpLogonSetPState
+   F 82000740 828AAB1C 076 ( 118) !! NetDll_XnpLogonSetQVals
+   F 82000744 828AAB0C 075 ( 117) !! NetDll_XnpLogonGetQVals
+   F 82000748 828AAAFC 074 ( 116) !! NetDll_XnpLogonClearQEvent
+   F 8200074C 828AAAEC 073 ( 115) !! NetDll_XnpLogonSetQEvent
+   F 82000750 828AAADC 072 ( 114) !! NetDll_XnpLogonSetQFlags
+   F 82000754 828AAACC 071 ( 113) !! NetDll_XnpLogonGetQFlags
+   F 82000758 828AAABC 070 ( 112) !! NetDll_XnpLogonGetStatus
+   F 8200075C 828AAAAC 06F ( 111) !! NetDll_XnpEthernetInterceptRecv
+   F 82000760 828AAA9C 06E ( 110) !! NetDll_XnpEthernetInterceptXmit
+   F 82000764 828AAA8C 06D ( 109) !! NetDll_XnpEthernetInterceptSetCallbacks
+   F 82000768 828AAA7C 06C ( 108) !! NetDll_XnpCapture
+   F 8200076C 828AAA6C 06B ( 107) !! NetDll_XnpSaveMachineAccount
+   F 82000770 828AAA5C 06A ( 106) !! NetDll_XnpLoadMachineAccount
+   F 82000774 828AAA4C 069 ( 105) !! NetDll_XnpGetConfigStatus
+   F 82000778 828AAA3C 068 ( 104) !! NetDll_XnpConfig
+   F 8200077C 828AAA2C 067 ( 103) !! NetDll_XnpConfigUPnP
+   F 82000780 828AAA1C 066 ( 102) !! NetDll_XnpSaveConfigParams
+   F 82000784 828AAA0C 065 ( 101) !! NetDll_XnpLoadConfigParams
+   F 82000788 828AA9FC 022 (  34)    NetDll___WSAFDIsSet
+   F 8200078C 828AA9EC 021 (  33)    NetDll_WSAWaitForMultipleEvents
+   F 82000790 828AA9DC 020 (  32)    NetDll_WSAResetEvent
+   F 82000794 828AA9CC 01F (  31)    NetDll_WSASetEvent
+   F 82000798 828AA9BC 01E (  30)    NetDll_WSACloseEvent
+   F 8200079C 828AA9AC 01D (  29)    NetDll_WSACreateEvent
+   F 820007A0 828AA99C 01C (  28)    NetDll_WSASetLastError
+   F 820007A4 828AA98C 01B (  27)    NetDll_WSAGetLastError
+   F 820007A8 828AA97C 01A (  26)    NetDll_inet_addr
+   F 820007AC 828AA96C 023 (  35) !! NetDll_WSAEventSelect
+   F 820007B0 828AA95C 019 (  25)    NetDll_WSASendTo
+   F 820007B4 828AA94C 018 (  24)    NetDll_sendto
+   F 820007B8 828AA93C 017 (  23) !! NetDll_WSASend
+   F 820007BC 828AA92C 016 (  22)    NetDll_send
+   F 820007C0 828AA91C 015 (  21)    NetDll_WSARecvFrom
+   F 820007C4 828AA90C 014 (  20)    NetDll_recvfrom
+   F 820007C8 828AA8FC 013 (  19) !! NetDll_WSARecv
+   F 820007CC 828AA8EC 012 (  18)    NetDll_recv
+   F 820007D0 828AA8DC 011 (  17) !! NetDll_WSACancelOverlappedIO
+   F 820007D4 828AA8CC 010 (  16) !! NetDll_WSAGetOverlappedResult
+   F 820007D8 828AA8BC 00F (  15)    NetDll_select
+   F 820007DC 828AA8AC 00E (  14)    NetDll_accept
+   F 820007E0 828AA89C 00D (  13)    NetDll_listen
+   F 820007E4 828AA88C 00C (  12)    NetDll_connect
+   F 820007E8 828AA87C 00B (  11)    NetDll_bind
+   F 820007EC 828AA86C 00A (  10) !! NetDll_getpeername
+   F 820007F0 828AA85C 009 (   9)    NetDll_getsockname
+   F 820007F4 828AA84C 008 (   8)    NetDll_getsockopt
+   F 820007F8 828AA83C 007 (   7)    NetDll_setsockopt
+   F 820007FC 828AA82C 006 (   6)    NetDll_ioctlsocket
+   F 82000800 828AA81C 005 (   5)    NetDll_shutdown
+   F 82000804 828AA80C 004 (   4)    NetDll_closesocket
+   F 82000808 828AA7FC 003 (   3)    NetDll_socket
+   F 8200080C 828AA7EC 002 (   2)    NetDll_WSACleanup
+   F 82000810 828AA7DC 001 (   1)    NetDll_WSAStartup
+   F 82000814 828AA7CC 21A ( 538)    XamUserWriteProfileSettings
+   F 82000818 828AA7BC 219 ( 537)    XamUserReadProfileSettings
+   F 8200081C 828AA7AC 136 ( 310) !! XNetLogonGetTitleID
+   F 82000820 828AA79C 1EA ( 490)    XamAlloc
+   F 82000824 828AA78C 1EC ( 492)    XamFree
+   F 82000828 828AA77C 04F (  79) !! NetDll_XNetSetOpt
+   F 8200082C 828AA76C 04E (  78)    NetDll_XNetGetOpt
+   F 82000830 828AA75C 04D (  77) !! NetDll_XNetQosGetListenStats
+   F 82000834 828AA74C 04C (  76) !! NetDll_XNetGetBroadcastVersionStatus
+   F 82000838 828AA73C 04B (  75)    NetDll_XNetGetEthernetLinkStatus
+   F 8200083C 828AA72C 04A (  74)    NetDll_XNetGetDebugXnAddr
+   F 82000840 828AA71C 049 (  73)    NetDll_XNetGetTitleXnAddr
+   F 82000844 828AA70C 048 (  72)    NetDll_XNetQosRelease
+   F 82000848 828AA6FC 047 (  71)    NetDll_XNetQosServiceLookup
+   F 8200084C 828AA6EC 046 (  70) !! NetDll_XNetQosLookup
+   F 82000850 828AA6DC 045 (  69)    NetDll_XNetQosListen
+   F 82000854 828AA6CC 044 (  68)    NetDll_XNetDnsRelease
+   F 82000858 828AA6BC 043 (  67)    NetDll_XNetDnsLookup
+   F 8200085C 828AA6AC 042 (  66) !! NetDll_XNetGetConnectStatus
+   F 82000860 828AA69C 041 (  65) !! NetDll_XNetConnect
+   F 82000864 828AA68C 040 (  64)    NetDll_XNetXnAddrToMachineId
+   F 82000868 828AA67C 03F (  63) !! NetDll_XNetUnregisterInAddr
+   F 8200086C 828AA66C 03E (  62)    NetDll_XNetInAddrToString
+   F 82000870 828AA55C 24E ( 590)    XamCreateEnumeratorHandle
+   F 82000874 828AA56C 1FC ( 508)    XMsgStartIORequestEx
+   F 82000878 828AA57C 282 ( 642)    XamGetSystemVersion
+   F 8200087C 828AA58C 1F6 ( 502)    XMsgSystemProcessCall
+   F 82000880 828AA59C 1F4 ( 500)    XMsgInProcessCall
+   F 82000884 828AA5AC 24F ( 591)    XamGetPrivateEnumStructureFromHandle
+   F 82000888 828AA5BC 033 (  51)    NetDll_XNetStartup
+   F 8200088C 828AA5CC 034 (  52)    NetDll_XNetCleanup
+   F 82000890 828AA5DC 035 (  53)    NetDll_XNetRandom
+   F 82000894 828AA5EC 036 (  54)    NetDll_XNetCreateKey
+   F 82000898 828AA5FC 037 (  55)    NetDll_XNetRegisterKey
+   F 8200089C 828AA60C 038 (  56)    NetDll_XNetUnregisterKey
+   F 820008A0 828AA61C 039 (  57)    NetDll_XNetXnAddrToInAddr
+   F 820008A4 828AA62C 03A (  58) !! NetDll_XNetServerToInAddr
+   F 820008A8 828AA63C 03B (  59) !! NetDll_XNetTsAddrToInAddr
+   F 820008AC 828AA64C 03C (  60)    NetDll_XNetInAddrToXnAddr
+   F 820008B0 828AA65C 03D (  61) !! NetDll_XNetInAddrToServer
+
+ xboxkrnl - 193 imports
+   Version: 0.0.2135.32
+   Min Version: 0.0.1861.32
+
+         Total:  193
+         Known:  100% (193 known, 0 unknown)
+   Implemented:   93% (181 implemented, 12 unimplemented)
+
+   F 820008B8 828AA54C 05D (  93)    KeEnableFpuExceptions
+   F 820008BC 828AA53C 154 ( 340)    KeTlsGetValue
+   F 820008C0 828AA52C 155 ( 341)    KeTlsSetValue
+   F 820008C4 828AA51C 153 ( 339)    KeTlsFree
+   F 820008C8 828AA50C 152 ( 338)    KeTlsAlloc
+   F 820008CC 828AA4FC 052 (  82)    KeBugCheck
+   F 820008D0 828AA4EC 147 ( 327) !! RtlUnwind
+   F 820008D4 828AA4DC 0FD ( 253)    NtWaitForSingleObjectEx
+   F 820008D8 828AA4CC 136 ( 310)    RtlRaiseException
+   F 820008DC 828AA4BC 11A ( 282)    RtlCompareMemory
+   F 820008E0 828AA4AC 11B ( 283)    RtlCompareMemoryUlong
+   F 820008E4 828AA49C 053 (  83)    KeBugCheckEx
+   F 820008E8 828AA48C 028 (  40)    HalReturnToFirmware
+   V 820008EC          193 ( 403)    XexExecutableModuleHandle
+   F 820008F0 828AA47C 12B ( 299)    RtlImageXexHeaderField
+   F 820008F4 828AA46C 0EF ( 239)    NtQueryVolumeInformationFile
+   V 820008F8          1AE ( 430)    ExLoadedCommandLine
+   F 820008FC 828AA45C 097 ( 151)    KeSetAffinityThread
+   F 82000900 828AA44C 0E3 ( 227)    NtQueueApcThread
+   F 82000904 828AA43C 0FC ( 252)    NtSuspendThread
+   F 82000908 828AA42C 09C ( 156)    KeSetDisableBoostThread
+   F 8200090C 828AA41C 081 ( 129)    KeQueryBasePriorityThread
+   V 82000910          01B (  27)    ExThreadObjectType
+   F 82000914 828AA40C 110 ( 272)    ObReferenceObjectByHandle
+   F 82000918 828AA3FC 10B ( 267)    ObLookupThreadByThreadId
+   F 8200091C 828AA3EC 10E ( 270)    ObOpenObjectByPointer
+   F 82000920 828AA3DC 105 ( 261)    ObDereferenceObject
+   F 82000924 828AA3CC 05A (  90)    KeDelayExecutionThread
+   F 82000928 828AA3BC 143 ( 323)    RtlUnicodeToMultiByteN
+   F 8200092C 828AA3AC 0DF ( 223)    NtOpenFile
+   F 82000930 828AA39C 0E4 ( 228)    NtQueryDirectoryFile
+   F 82000934 828AA38C 135 ( 309)    RtlNtStatusToDosError
+   F 82000938 828AA37C 0DC ( 220)    NtFreeVirtualMemory
+   F 8200093C 828AA36C 0CC ( 204)    NtAllocateVirtualMemory
+   F 82000940 828AA35C 0F4 ( 244)    NtRemoveIoCompletion
+   F 82000944 828AA34C 0F8 ( 248)    NtSetIoCompletion
+   F 82000948 828AA33C 0D3 ( 211)    NtCreateIoCompletion
+   F 8200094C 828AA32C 0F7 ( 247)    NtSetInformationFile
+   F 82000950 828AA31C 1A5 ( 421) !! __C_specific_handler
+   F 82000954 828AA30C 194 ( 404)    XexCheckExecutablePrivilege
+   F 82000958 828AA2FC 0D1 ( 209)    NtCreateEvent
+   V 8200095C          0AD ( 173)    KeTimeStampBundle
+   F 82000960 828AA2EC 0CF ( 207)    NtClose
+   F 82000964 828AA2DC 001 (   1)    DbgBreakPoint
+   F 82000968 828AA2CC 083 ( 131)    KeQueryPerformanceFrequency
+   F 8200096C 828AA2BC 0C7 ( 199)    MmSetAddressProtect
+   F 82000970 828AA2AC 0C5 ( 197)    MmQueryAllocationSize
+   F 82000974 828AA29C 0BA ( 186)    MmAllocatePhysicalMemoryEx
+   F 82000978 828AA28C 12C ( 300)    RtlInitAnsiString
+   F 8200097C 828AA27C 0E7 ( 231)    NtQueryFullAttributesFile
+   F 82000980 828AA26C 0C6 ( 198)    MmQueryStatistics
+   F 82000984 828AA25C 0EE ( 238)    NtQueryVirtualMemory
+   F 82000988 828AA24C 0E1 ( 225)    NtProtectVirtualMemory
+   F 8200098C 828AA23C 0B0 ( 176)    KeWaitForSingleObject
+   F 82000990 828AA22C 06C ( 108)    KeUnlockL2
+   F 82000994 828AA21C 06B ( 107)    KeLockL2
+   F 82000998 828AA20C 099 ( 153)    KeSetBasePriorityThread
+   F 8200099C 828AA1FC 00D (  13)    ExCreateThread
+   F 820009A0 828AA1EC 09D ( 157)    KeSetEvent
+   F 820009A4 828AA1DC 08F ( 143)    KeResetEvent
+   V 820009A8          1C1 ( 449)    VdHSIOCalibrationLock
+   F 820009AC 828AA1CC 26A ( 618)    VdRetrainEDRAMWorker
+   F 820009B0 828AA1BC 269 ( 617)    VdRetrainEDRAM
+   F 820009B4 828AA1AC 05F (  95)    KeEnterCriticalRegion
+   F 820009B8 828AA19C 07D ( 125)    KeLeaveCriticalRegion
+   F 820009BC 828AA18C 1DC ( 476)    VdShutdownEngines
+   F 820009C0 828AA17C 1C6 ( 454)    VdIsHSIOTrainingSucceeded
+   F 820009C4 828AA16C 010 (  16)    ExGetXConfigSetting
+   F 820009C8 828AA15C 1C2 ( 450)    VdInitializeEngines
+   F 820009CC 828AA14C 1D5 ( 469)    VdSetGraphicsInterruptCallback
+   F 820009D0 828AA13C 1BA ( 442)    VdGetCurrentDisplayInformation
+   F 820009D4 828AA12C 268 ( 616) !! VdInitializeEDRAM
+   F 820009D8 828AA11C 1D3 ( 467)    VdSetDisplayMode
+   F 820009DC 828AA10C 1B1 ( 433)    VdCallGraphicsNotificationRoutines
+   F 820009E0 828AA0FC 126 ( 294)    RtlFillMemoryUlong
+   V 820009E4          1C0 ( 448)    VdGpuClockInMHz
+   F 820009E8 828AA0EC 1C9 ( 457)    VdQueryVideoFlags
+   F 820009EC 828AA0DC 1C5 ( 453)    VdInitializeScalerCommandBuffer
+   F 820009F0 828AA0CC 1CA ( 458)    VdQueryVideoMode
+   F 820009F4 828AA0BC 003 (   3)    DbgPrint
+   F 820009F8 828AA0AC 14D ( 333)    _vsnprintf
+   V 820009FC          059 (  89)    KeDebugMonitorData
+   F 82000A00 828AA09C 13B ( 315)    sprintf
+   F 82000A04 828AA08C 1B9 ( 441)    VdGetCurrentDisplayGamma
+   F 82000A08 828AA07C 12E ( 302)    RtlInitializeCriticalSection
+   F 82000A0C 828AA06C 130 ( 304)    RtlLeaveCriticalSection
+   V 82000A10          266 ( 614)    KeCertMonitorData
+   F 82000A14 828AA05C 125 ( 293)    RtlEnterCriticalSection
+   F 82000A18 828AA04C 1BD ( 445)    VdGetSystemCommandBuffer
+   F 82000A1C 828AA03C 25B ( 603)    VdSwap
+   F 82000A20 828AA02C 1C7 ( 455)    VdPersistDisplay
+   F 82000A24 828AA01C 0BD ( 189)    MmFreePhysicalMemory
+   F 82000A28 828AA00C 04D (  77)    KeAcquireSpinLockAtRaisedIrql
+   F 82000A2C 828A9FFC 1C3 ( 451)    VdInitializeRingBuffer
+   F 82000A30 828A9FEC 1B6 ( 438)    VdEnableRingBufferRPtrWriteBack
+   F 82000A34 828A9FDC 089 ( 137)    KeReleaseSpinLockFromRaisedIrql
+   F 82000A38 828A9FCC 0BE ( 190)    MmGetPhysicalAddress
+   F 82000A3C 828A9FBC 1D8 ( 472) !! VdSetSystemCommandBuffer
+   F 82000A40 828A9FAC 1DF ( 479)    KiApcNormalRoutineNop
+   F 82000A44 828A9F9C 1C8 ( 456) !! VdQuerySystemCommandBuffer
+   F 82000A48 828A9F8C 0B4 ( 180)    KfReleaseSpinLock
+   F 82000A4C 828A9F7C 1D9 ( 473)    VdSetSystemCommandBufferGpuIdentifierAddress
+   F 82000A50 828A9F6C 0B1 ( 177)    KfAcquireSpinLock
+   F 82000A54 828A9F5C 0C4 ( 196)    MmQueryAddressProtect
+   F 82000A58 828AACFC 141 ( 321)    RtlTryEnterCriticalSection
+   F 82000A5C 828AAD0C 244 ( 580) !! XeKeysGetKey
+   F 82000A60 828AAD1C 241 ( 577) !! XeKeysGetKeyProperties
+   F 82000A64 828AAD2C 159 ( 345)    XeCryptAesKey
+   F 82000A68 828AAD3C 15A ( 346)    XeCryptAesEcb
+   F 82000A6C 828AAD4C 248 ( 584) !! XeKeysQwNeRsaPrvCrypt
+   F 82000A70 828AAD5C 170 ( 368)    XeCryptBnQw_SwapDwQwLeBe
+   F 82000A74 828AAD6C 14E ( 334)    vsprintf
+   F 82000A78 828AAD7C 18A ( 394)    XeCryptRandom
+   F 82000A7C 828AAD8C 191 ( 401)    XeCryptShaFinal
+   F 82000A80 828AAD9C 190 ( 400)    XeCryptShaUpdate
+   F 82000A84 828AADAC 18F ( 399)    XeCryptShaInit
+   F 82000A88 828AADBC 16D ( 365)    XeCryptBnQwNeRsaPubCrypt
+   F 82000A8C 828AADCC 16C ( 364) !! XeCryptBnQwNeRsaPrvCrypt
+   F 82000A90 828AADDC 16B ( 363) !! XeCryptBnQwNeRsaKeyGen
+   F 82000A94 828AADEC 18B ( 395)    XeCryptRc4Key
+   F 82000A98 828AADFC 18C ( 396)    XeCryptRc4Ecb
+   F 82000A9C 828AAE0C 229 ( 553)    XMAGetOutputBufferWriteOffset
+   F 82000AA0 828AAE1C 233 ( 563)    XMASetInputBuffer1
+   F 82000AA4 828AAE2C 22A ( 554)    XMASetOutputBufferReadOffset
+   F 82000AA8 828AAE3C 225 ( 549)    XMAInitializeContext
+   F 82000AAC 828AAE4C 232 ( 562)    XMASetInputBuffer0
+   F 82000AB0 828AAE5C 228 ( 552)    XMADisableContext
+   F 82000AB4 828AAE6C 227 ( 551)    XMAEnableContext
+   F 82000AB8 828AAE7C 226 ( 550)    XMAReleaseContext
+   F 82000ABC 828AAE8C 22D ( 557)    XMAIsOutputBufferValid
+   F 82000AC0 828AAE9C 22E ( 558)    XMASetInputBuffer0Valid
+   F 82000AC4 828AAEAC 22B ( 555)    XMAGetOutputBufferReadOffset
+   F 82000AC8 828AAEBC 231 ( 561)    XMAIsInputBuffer1Valid
+   F 82000ACC 828AAECC 224 ( 548)    XMACreateContext
+   F 82000AD0 828AAEDC 22C ( 556)    XMASetOutputBufferValid
+   F 82000AD4 828AAEEC 22F ( 559)    XMAIsInputBuffer0Valid
+   F 82000AD8 828AAEFC 230 ( 560)    XMASetInputBuffer1Valid
+   F 82000ADC 828AAF0C 12D ( 301)    RtlInitUnicodeString
+   F 82000AE0 828AAF1C 0FF ( 255)    NtWriteFile
+   F 82000AE4 828AAF2C 0D2 ( 210)    NtCreateFile
+   F 82000AE8 828AAF3C 0F0 ( 240)    NtReadFile
+   F 82000AEC 828AAF4C 140 ( 320)    RtlTimeToTimeFields
+   F 82000AF0 828AAF5C 084 ( 132)    KeQuerySystemTime
+   F 82000AF4 828AAF6C 133 ( 307)    RtlMultiByteToUnicodeN
+   F 82000AF8 828AAF7C 019 (  25)    ExTerminateThread
+   F 82000AFC 828AAF8C 0F5 ( 245)    NtResumeThread
+   F 82000B00 828AAF9C 0E8 ( 232)    NtQueryInformationFile
+   F 82000B04 828AAFAC 0DB ( 219)    NtFlushBuffersFile
+   F 82000B08 828AAFBC 0CE ( 206)    NtClearEvent
+   F 82000B0C 828AAFCC 0FA ( 250)    NtSetTimerEx
+   F 82000B10 828AAFDC 0D7 ( 215)    NtCreateTimer
+   F 82000B14 828AAFEC 0F6 ( 246)    NtSetEvent
+   F 82000B18 828AAFFC 0D4 ( 212)    NtCreateMutant
+   F 82000B1C 828AB00C 0F2 ( 242)    NtReleaseMutant
+   F 82000B20 828AB01C 0DA ( 218)    NtDuplicateObject
+   F 82000B24 828AB02C 101 ( 257)    NtYieldExecution
+   F 82000B28 828AB03C 021 (  33)    FscSetCacheElementCount
+   F 82000B2C 828AB04C 020 (  32)    FscGetCacheElementCount
+   F 82000B30 828AB05C 13F ( 319)    RtlTimeFieldsToTime
+   F 82000B34 828AB06C 00F (  15)    ExFreePool
+   F 82000B38 828AB07C 009 (   9)    ExAllocatePool
+   F 82000B3C 828AB08C 119 ( 281) !! RtlCaptureContext
+   F 82000B40 828A9F4C 066 ( 102)    KeGetCurrentProcessType
+   V 82000B44          1BF ( 447)    VdGlobalXamDevice
+   V 82000B48          1BE ( 446)    VdGlobalDevice
+   F 82000B4C 828A9F3C 1BC ( 444)    VdGetGraphicsAsicID
+   F 82000B50 828A9F2C 1B4 ( 436)    VdEnableDisableClockGating
+   F 82000B54 828AB0EC 1FD ( 509) !! XAudioQueryDriverPerformance
+   F 82000B58 828AB0FC 085 ( 133)    KeRaiseIrqlToDpcLevel
+   F 82000B5C 828AB10C 0B3 ( 179)    KfLowerIrql
+   F 82000B60 828AB11C 0AE ( 174)    KeTryToAcquireSpinLockAtRaisedIrql
+   F 82000B64 828AB12C 07F ( 127)    KePulseEvent
+   F 82000B68 828AB13C 0AF ( 175)    KeWaitForMultipleObjects
+   F 82000B6C 828AB14C 1F8 ( 504)    XAudioGetVoiceCategoryVolume
+   F 82000B70 828AB15C 1F7 ( 503)    XAudioGetVoiceCategoryVolumeChangeMask
+   F 82000B74 828AB16C 00A (  10)    ExAllocatePoolWithTag
+   F 82000B78 828AB17C 0B9 ( 185)    MmAllocatePhysicalMemory
+   F 82000B7C 828AB18C 1F3 ( 499)    XAudioRegisterRenderDriverClient
+   F 82000B80 828AB19C 1F4 ( 500)    XAudioUnregisterRenderDriverClient
+   F 82000B84 828AB1AC 1F5 ( 501)    XAudioSubmitRenderDriverFrame
+   F 82000B88 828AB1BC 237 ( 567)    XMASetInputBufferReadOffset
+   F 82000B8C 828AB1CC 235 ( 565)    XMABlockWhileInUse
+   F 82000B90 828AB1DC 236 ( 566)    XMASetLoopData
+   F 82000B94 828AB1EC 0CD ( 205)    NtCancelTimer
+   F 82000B98 828AB1FC 10D ( 269)    ObOpenObjectByName
+   V 82000B9C          00E (  14)    ExEventObjectType
+   F 82000BA0 828AB20C 0E2 ( 226)    NtPulseEvent
+   F 82000BA4 828AB21C 0D5 ( 213)    NtCreateSemaphore
+   V 82000BA8          017 (  23)    ExSemaphoreObjectType
+   F 82000BAC 828AB22C 0F3 ( 243)    NtReleaseSemaphore
+   F 82000BB0 828AB23C 0FB ( 251)    NtSignalAndWaitForSingleObjectEx
+   F 82000BB4 828AB24C 0FE ( 254)    NtWaitForMultipleObjectsEx
+   V 82000BB8          01C (  28)    ExTimerObjectType

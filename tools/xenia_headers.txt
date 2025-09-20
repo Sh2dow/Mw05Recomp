@@ -1,0 +1,259 @@
+i> 000059A8 Module \Device\Harddisk0\Partition1\default.xex:
+Module Hash: 406DA35685AD7559
+    Module Flags: 00000001
+Security Header:
+     Image Flags: 00000008
+    Load Address: 82000000
+      Image Size: 00CD0000
+    Export Table: 00000000
+Optional Header Count: 15
+  XEX_HEADER_RESOURCE_INFO:
+    454107D9 82C90000-82CC9E44, 237124b
+  XEX_HEADER_FILE_FORMAT_INFO (TODO):
+  XEX_HEADER_ORIGINAL_BASE_ADDRESS: 00400000
+  XEX_HEADER_ENTRY_POINT: 8262E9A8
+  XEX_HEADER_IMAGE_BASE_ADDRESS: 82000000
+  XEX_HEADER_IMPORT_LIBRARIES:
+    xam.xex - 346 imports
+      Version: 2.0.2135.0
+      Min Version: 2.0.1861.0
+    xboxkrnl.exe - 373 imports
+      Version: 2.0.2135.0
+      Min Version: 2.0.1861.0
+  XEX_HEADER_CHECKSUM_TIMESTAMP:
+    Checksum : 00000000
+    Time Stamp: 4369B7D3 - Thu Nov  3 09:10:11 2005
+  XEX_HEADER_STATIC_LIBRARIES:
+    XAPILIB  : 2.0.2135.1
+    D3DX9    : 2.0.2135.0
+    XGRAPHC  : 2.0.2135.0
+    LIBCMT   : 2.0.2135.0
+    XBOXKRNL : 2.0.2135.0
+    XMP      : 2.0.2135.0
+    XMEDIA   : 2.0.2135.2
+    XONLINE  : 2.0.2135.1
+    XAUD     : 2.0.2135.1
+    XHV      : 2.0.2135.0
+    D3D9LTCG : 2.0.2135.0
+  XEX_HEADER_TLS_INFO:
+          Slot Count: 64
+    Raw Data Address: 82C8D000
+           Data Size: 8
+       Raw Data Size: 8
+  XEX_HEADER_DEFAULT_STACK_SIZE: 262144
+  XEX_HEADER_SYSTEM_FLAGS: 00000200
+    XEX_SYSTEM_USES_GAME_VOICE_CHANNEL
+  XEX_HEADER_EXECUTION_INFO:
+       Media ID: 36775B18
+       Title ID: 454107D9
+    Savegame ID: 454107D9
+    Disc Number / Total: 0 / 0
+  XEX_HEADER_GAME_RATINGS (TODO):
+  XEX_HEADER_LAN_KEY: 66 77 81 F4 D2 AF C5 84 8A 65 AC BF 9D F3 92 CA
+  XEX_HEADER_XBOX360_LOGO (TODO):
+Sections:
+    0 RODATA    1 pages    82000000 - 82010000 (65536 bytes)
+    1 RODATA    1 pages    82010000 - 82020000 (65536 bytes)
+    2 RODATA    1 pages    82020000 - 82030000 (65536 bytes)
+    3 RODATA    1 pages    82030000 - 82040000 (65536 bytes)
+    4 RODATA    1 pages    82040000 - 82050000 (65536 bytes)
+    5 RODATA    1 pages    82050000 - 82060000 (65536 bytes)
+    6 RODATA    1 pages    82060000 - 82070000 (65536 bytes)
+    7 RODATA    1 pages    82070000 - 82080000 (65536 bytes)
+    8 RODATA    1 pages    82080000 - 82090000 (65536 bytes)
+    9 RODATA    1 pages    82090000 - 820A0000 (65536 bytes)
+   10 RODATA    1 pages    820A0000 - 820B0000 (65536 bytes)
+   11 RODATA    1 pages    820B0000 - 820C0000 (65536 bytes)
+   12 RODATA    1 pages    820C0000 - 820D0000 (65536 bytes)
+   13 RODATA    1 pages    820D0000 - 820E0000 (65536 bytes)
+   14 CODE      1 pages    820E0000 - 820F0000 (65536 bytes)
+   15 CODE      1 pages    820F0000 - 82100000 (65536 bytes)
+   16 CODE      1 pages    82100000 - 82110000 (65536 bytes)
+   17 CODE      1 pages    82110000 - 82120000 (65536 bytes)
+   18 CODE      1 pages    82120000 - 82130000 (65536 bytes)
+   19 CODE      1 pages    82130000 - 82140000 (65536 bytes)
+   20 CODE      1 pages    82140000 - 82150000 (65536 bytes)
+   21 CODE      1 pages    82150000 - 82160000 (65536 bytes)
+   22 CODE      1 pages    82160000 - 82170000 (65536 bytes)
+   23 CODE      1 pages    82170000 - 82180000 (65536 bytes)
+   24 CODE      1 pages    82180000 - 82190000 (65536 bytes)
+   25 CODE      1 pages    82190000 - 821A0000 (65536 bytes)
+   26 CODE      1 pages    821A0000 - 821B0000 (65536 bytes)
+   27 CODE      1 pages    821B0000 - 821C0000 (65536 bytes)
+   28 CODE      1 pages    821C0000 - 821D0000 (65536 bytes)
+   29 CODE      1 pages    821D0000 - 821E0000 (65536 bytes)
+   30 CODE      1 pages    821E0000 - 821F0000 (65536 bytes)
+   31 CODE      1 pages    821F0000 - 82200000 (65536 bytes)
+   32 CODE      1 pages    82200000 - 82210000 (65536 bytes)
+   33 CODE      1 pages    82210000 - 82220000 (65536 bytes)
+   34 CODE      1 pages    82220000 - 82230000 (65536 bytes)
+   35 CODE      1 pages    82230000 - 82240000 (65536 bytes)
+   36 CODE      1 pages    82240000 - 82250000 (65536 bytes)
+   37 CODE      1 pages    82250000 - 82260000 (65536 bytes)
+   38 CODE      1 pages    82260000 - 82270000 (65536 bytes)
+   39 CODE      1 pages    82270000 - 82280000 (65536 bytes)
+   40 CODE      1 pages    82280000 - 82290000 (65536 bytes)
+   41 CODE      1 pages    82290000 - 822A0000 (65536 bytes)
+   42 CODE      1 pages    822A0000 - 822B0000 (65536 bytes)
+   43 CODE      1 pages    822B0000 - 822C0000 (65536 bytes)
+   44 CODE      1 pages    822C0000 - 822D0000 (65536 bytes)
+   45 CODE      1 pages    822D0000 - 822E0000 (65536 bytes)
+   46 CODE      1 pages    822E0000 - 822F0000 (65536 bytes)
+   47 CODE      1 pages    822F0000 - 82300000 (65536 bytes)
+   48 CODE      1 pages    82300000 - 82310000 (65536 bytes)
+   49 CODE      1 pages    82310000 - 82320000 (65536 bytes)
+   50 CODE      1 pages    82320000 - 82330000 (65536 bytes)
+   51 CODE      1 pages    82330000 - 82340000 (65536 bytes)
+   52 CODE      1 pages    82340000 - 82350000 (65536 bytes)
+   53 CODE      1 pages    82350000 - 82360000 (65536 bytes)
+   54 CODE      1 pages    82360000 - 82370000 (65536 bytes)
+   55 CODE      1 pages    82370000 - 82380000 (65536 bytes)
+   56 CODE      1 pages    82380000 - 82390000 (65536 bytes)
+   57 CODE      1 pages    82390000 - 823A0000 (65536 bytes)
+   58 CODE      1 pages    823A0000 - 823B0000 (65536 bytes)
+   59 CODE      1 pages    823B0000 - 823C0000 (65536 bytes)
+   60 CODE      1 pages    823C0000 - 823D0000 (65536 bytes)
+   61 CODE      1 pages    823D0000 - 823E0000 (65536 bytes)
+   62 CODE      1 pages    823E0000 - 823F0000 (65536 bytes)
+   63 CODE      1 pages    823F0000 - 82400000 (65536 bytes)
+   64 CODE      1 pages    82400000 - 82410000 (65536 bytes)
+   65 CODE      1 pages    82410000 - 82420000 (65536 bytes)
+   66 CODE      1 pages    82420000 - 82430000 (65536 bytes)
+   67 CODE      1 pages    82430000 - 82440000 (65536 bytes)
+   68 CODE      1 pages    82440000 - 82450000 (65536 bytes)
+   69 CODE      1 pages    82450000 - 82460000 (65536 bytes)
+   70 CODE      1 pages    82460000 - 82470000 (65536 bytes)
+   71 CODE      1 pages    82470000 - 82480000 (65536 bytes)
+   72 CODE      1 pages    82480000 - 82490000 (65536 bytes)
+   73 CODE      1 pages    82490000 - 824A0000 (65536 bytes)
+   74 CODE      1 pages    824A0000 - 824B0000 (65536 bytes)
+   75 CODE      1 pages    824B0000 - 824C0000 (65536 bytes)
+   76 CODE      1 pages    824C0000 - 824D0000 (65536 bytes)
+   77 CODE      1 pages    824D0000 - 824E0000 (65536 bytes)
+   78 CODE      1 pages    824E0000 - 824F0000 (65536 bytes)
+   79 CODE      1 pages    824F0000 - 82500000 (65536 bytes)
+   80 CODE      1 pages    82500000 - 82510000 (65536 bytes)
+   81 CODE      1 pages    82510000 - 82520000 (65536 bytes)
+   82 CODE      1 pages    82520000 - 82530000 (65536 bytes)
+   83 CODE      1 pages    82530000 - 82540000 (65536 bytes)
+   84 CODE      1 pages    82540000 - 82550000 (65536 bytes)
+   85 CODE      1 pages    82550000 - 82560000 (65536 bytes)
+   86 CODE      1 pages    82560000 - 82570000 (65536 bytes)
+   87 CODE      1 pages    82570000 - 82580000 (65536 bytes)
+   88 CODE      1 pages    82580000 - 82590000 (65536 bytes)
+   89 CODE      1 pages    82590000 - 825A0000 (65536 bytes)
+   90 CODE      1 pages    825A0000 - 825B0000 (65536 bytes)
+   91 CODE      1 pages    825B0000 - 825C0000 (65536 bytes)
+   92 CODE      1 pages    825C0000 - 825D0000 (65536 bytes)
+   93 CODE      1 pages    825D0000 - 825E0000 (65536 bytes)
+   94 CODE      1 pages    825E0000 - 825F0000 (65536 bytes)
+   95 CODE      1 pages    825F0000 - 82600000 (65536 bytes)
+   96 CODE      1 pages    82600000 - 82610000 (65536 bytes)
+   97 CODE      1 pages    82610000 - 82620000 (65536 bytes)
+   98 CODE      1 pages    82620000 - 82630000 (65536 bytes)
+   99 CODE      1 pages    82630000 - 82640000 (65536 bytes)
+  100 CODE      1 pages    82640000 - 82650000 (65536 bytes)
+  101 CODE      1 pages    82650000 - 82660000 (65536 bytes)
+  102 CODE      1 pages    82660000 - 82670000 (65536 bytes)
+  103 CODE      1 pages    82670000 - 82680000 (65536 bytes)
+  104 CODE      1 pages    82680000 - 82690000 (65536 bytes)
+  105 CODE      1 pages    82690000 - 826A0000 (65536 bytes)
+  106 CODE      1 pages    826A0000 - 826B0000 (65536 bytes)
+  107 CODE      1 pages    826B0000 - 826C0000 (65536 bytes)
+  108 CODE      1 pages    826C0000 - 826D0000 (65536 bytes)
+  109 CODE      1 pages    826D0000 - 826E0000 (65536 bytes)
+  110 CODE      1 pages    826E0000 - 826F0000 (65536 bytes)
+  111 CODE      1 pages    826F0000 - 82700000 (65536 bytes)
+  112 CODE      1 pages    82700000 - 82710000 (65536 bytes)
+  113 CODE      1 pages    82710000 - 82720000 (65536 bytes)
+  114 CODE      1 pages    82720000 - 82730000 (65536 bytes)
+  115 CODE      1 pages    82730000 - 82740000 (65536 bytes)
+  116 CODE      1 pages    82740000 - 82750000 (65536 bytes)
+  117 CODE      1 pages    82750000 - 82760000 (65536 bytes)
+  118 CODE      1 pages    82760000 - 82770000 (65536 bytes)
+  119 CODE      1 pages    82770000 - 82780000 (65536 bytes)
+  120 CODE      1 pages    82780000 - 82790000 (65536 bytes)
+  121 CODE      1 pages    82790000 - 827A0000 (65536 bytes)
+  122 CODE      1 pages    827A0000 - 827B0000 (65536 bytes)
+  123 CODE      1 pages    827B0000 - 827C0000 (65536 bytes)
+  124 CODE      1 pages    827C0000 - 827D0000 (65536 bytes)
+  125 CODE      1 pages    827D0000 - 827E0000 (65536 bytes)
+  126 CODE      1 pages    827E0000 - 827F0000 (65536 bytes)
+  127 CODE      1 pages    827F0000 - 82800000 (65536 bytes)
+  128 CODE      1 pages    82800000 - 82810000 (65536 bytes)
+  129 CODE      1 pages    82810000 - 82820000 (65536 bytes)
+  130 CODE      1 pages    82820000 - 82830000 (65536 bytes)
+  131 CODE      1 pages    82830000 - 82840000 (65536 bytes)
+  132 CODE      1 pages    82840000 - 82850000 (65536 bytes)
+  133 CODE      1 pages    82850000 - 82860000 (65536 bytes)
+  134 CODE      1 pages    82860000 - 82870000 (65536 bytes)
+  135 CODE      1 pages    82870000 - 82880000 (65536 bytes)
+  136 CODE      1 pages    82880000 - 82890000 (65536 bytes)
+  137 CODE      1 pages    82890000 - 828A0000 (65536 bytes)
+  138 CODE      1 pages    828A0000 - 828B0000 (65536 bytes)
+  139 CODE      1 pages    828B0000 - 828C0000 (65536 bytes)
+  140 CODE      1 pages    828C0000 - 828D0000 (65536 bytes)
+  141 RWDATA    1 pages    828D0000 - 828E0000 (65536 bytes)
+  142 RWDATA    1 pages    828E0000 - 828F0000 (65536 bytes)
+  143 RWDATA    1 pages    828F0000 - 82900000 (65536 bytes)
+  144 RWDATA    1 pages    82900000 - 82910000 (65536 bytes)
+  145 RWDATA    1 pages    82910000 - 82920000 (65536 bytes)
+  146 RWDATA    1 pages    82920000 - 82930000 (65536 bytes)
+  147 RWDATA    1 pages    82930000 - 82940000 (65536 bytes)
+  148 RWDATA    1 pages    82940000 - 82950000 (65536 bytes)
+  149 RWDATA    1 pages    82950000 - 82960000 (65536 bytes)
+  150 RWDATA    1 pages    82960000 - 82970000 (65536 bytes)
+  151 RWDATA    1 pages    82970000 - 82980000 (65536 bytes)
+  152 RWDATA    1 pages    82980000 - 82990000 (65536 bytes)
+  153 RWDATA    1 pages    82990000 - 829A0000 (65536 bytes)
+  154 RWDATA    1 pages    829A0000 - 829B0000 (65536 bytes)
+  155 RWDATA    1 pages    829B0000 - 829C0000 (65536 bytes)
+  156 RWDATA    1 pages    829C0000 - 829D0000 (65536 bytes)
+  157 RWDATA    1 pages    829D0000 - 829E0000 (65536 bytes)
+  158 RWDATA    1 pages    829E0000 - 829F0000 (65536 bytes)
+  159 RWDATA    1 pages    829F0000 - 82A00000 (65536 bytes)
+  160 RWDATA    1 pages    82A00000 - 82A10000 (65536 bytes)
+  161 RWDATA    1 pages    82A10000 - 82A20000 (65536 bytes)
+  162 RWDATA    1 pages    82A20000 - 82A30000 (65536 bytes)
+  163 RWDATA    1 pages    82A30000 - 82A40000 (65536 bytes)
+  164 RWDATA    1 pages    82A40000 - 82A50000 (65536 bytes)
+  165 RWDATA    1 pages    82A50000 - 82A60000 (65536 bytes)
+  166 RWDATA    1 pages    82A60000 - 82A70000 (65536 bytes)
+  167 RWDATA    1 pages    82A70000 - 82A80000 (65536 bytes)
+  168 RWDATA    1 pages    82A80000 - 82A90000 (65536 bytes)
+  169 RWDATA    1 pages    82A90000 - 82AA0000 (65536 bytes)
+  170 RWDATA    1 pages    82AA0000 - 82AB0000 (65536 bytes)
+  171 RWDATA    1 pages    82AB0000 - 82AC0000 (65536 bytes)
+  172 RWDATA    1 pages    82AC0000 - 82AD0000 (65536 bytes)
+  173 RWDATA    1 pages    82AD0000 - 82AE0000 (65536 bytes)
+  174 RWDATA    1 pages    82AE0000 - 82AF0000 (65536 bytes)
+  175 RWDATA    1 pages    82AF0000 - 82B00000 (65536 bytes)
+  176 RWDATA    1 pages    82B00000 - 82B10000 (65536 bytes)
+  177 RWDATA    1 pages    82B10000 - 82B20000 (65536 bytes)
+  178 RWDATA    1 pages    82B20000 - 82B30000 (65536 bytes)
+  179 RWDATA    1 pages    82B30000 - 82B40000 (65536 bytes)
+  180 RWDATA    1 pages    82B40000 - 82B50000 (65536 bytes)
+  181 RWDATA    1 pages    82B50000 - 82B60000 (65536 bytes)
+  182 RWDATA    1 pages    82B60000 - 82B70000 (65536 bytes)
+  183 RWDATA    1 pages    82B70000 - 82B80000 (65536 bytes)
+  184 RWDATA    1 pages    82B80000 - 82B90000 (65536 bytes)
+  185 RWDATA    1 pages    82B90000 - 82BA0000 (65536 bytes)
+  186 RWDATA    1 pages    82BA0000 - 82BB0000 (65536 bytes)
+  187 RWDATA    1 pages    82BB0000 - 82BC0000 (65536 bytes)
+  188 RWDATA    1 pages    82BC0000 - 82BD0000 (65536 bytes)
+  189 RWDATA    1 pages    82BD0000 - 82BE0000 (65536 bytes)
+  190 RWDATA    1 pages    82BE0000 - 82BF0000 (65536 bytes)
+  191 RWDATA    1 pages    82BF0000 - 82C00000 (65536 bytes)
+  192 RWDATA    1 pages    82C00000 - 82C10000 (65536 bytes)
+  193 RWDATA    1 pages    82C10000 - 82C20000 (65536 bytes)
+  194 RWDATA    1 pages    82C20000 - 82C30000 (65536 bytes)
+  195 RWDATA    1 pages    82C30000 - 82C40000 (65536 bytes)
+  196 RWDATA    1 pages    82C40000 - 82C50000 (65536 bytes)
+  197 RWDATA    1 pages    82C50000 - 82C60000 (65536 bytes)
+  198 RWDATA    1 pages    82C60000 - 82C70000 (65536 bytes)
+  199 RWDATA    1 pages    82C70000 - 82C80000 (65536 bytes)
+  200 RWDATA    1 pages    82C80000 - 82C90000 (65536 bytes)
+  201 RODATA    1 pages    82C90000 - 82CA0000 (65536 bytes)
+  202 RODATA    1 pages    82CA0000 - 82CB0000 (65536 bytes)
+  203 RODATA    1 pages    82CB0000 - 82CC0000 (65536 bytes)
+  204 RODATA    1 pages    82CC0000 - 82CD0000 (65536 bytes)

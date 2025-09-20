@@ -10,78 +10,93 @@
 #include <kernel/memory.h>
 #include <ppc/ppc_config.h>
 
-extern "C" {
-    void __imp__sub_8262F330(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
-}
-
 constexpr uint64_t kPpcMemLimit = static_cast<uint64_t>(PPC_MEMORY_SIZE);
 constexpr uint64_t kPpcImageBase = static_cast<uint64_t>(PPC_IMAGE_BASE);
 constexpr uint64_t kPpcImageLimit = static_cast<uint64_t>(PPC_IMAGE_BASE) + static_cast<uint64_t>(PPC_IMAGE_SIZE);
+
+static std::atomic<uint32_t> g_lastSchedulerBlockEA{0};
+static std::atomic<uint32_t> g_lastSchedulerHandleEA{0};
+static std::atomic<uint32_t> g_lastSchedulerTimeoutEA{0};
+extern std::atomic<uint32_t> g_watchEA;
+
+static inline void ResetSchedulerTracking() {
+    g_lastSchedulerBlockEA.store(0, std::memory_order_release);
+    g_lastSchedulerHandleEA.store(0, std::memory_order_release);
+    g_lastSchedulerTimeoutEA.store(0, std::memory_order_release);
+}
+
+extern "C"
+{
+    void __imp__sub_8262F330(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
+
+    uint32_t Mw05ConsumeSchedulerBlockEA() {
+        return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
+    }
+
+    uint32_t Mw05PeekSchedulerBlockEA() {
+        return g_lastSchedulerBlockEA.load(std::memory_order_acquire);
+    }
+
+    uint32_t Mw05GetSchedulerHandleEA() {
+        return g_lastSchedulerHandleEA.load(std::memory_order_acquire);
+    }
+
+    uint32_t Mw05GetSchedulerTimeoutEA() {
+        return g_lastSchedulerTimeoutEA.load(std::memory_order_acquire);
+    }
+
+    void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/) {
+        ctx.r3.u64 = 0;
+        KernelTraceHostOp("HOST.HostSchedulerWake");
+    }
+}
+
 
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
-namespace
-{
-    inline uint32_t LoadGuestU32(uint8_t* base, uint32_t ea)
-    {
-        uint32_t value = 0;
-        std::memcpy(&value, base + ea, sizeof(value));
+namespace {
+inline bool GuestRangeValid(uint32_t ea, size_t bytes = 4) {
+    if(!ea) {
+        return false;
+    }
+    const uint64_t end = static_cast<uint64_t>(ea) + static_cast<uint64_t>(bytes);
+    return end <= PPC_MEMORY_SIZE;
+}
+
+inline uint32_t LoadGuestU32(uint8_t* base, uint32_t ea) {
+    uint32_t value = 0;
+    std::memcpy(&value, base + ea, sizeof(value));
 #if defined(_MSC_VER)
-        value = _byteswap_ulong(value);
+    value = _byteswap_ulong(value);
 #else
-        value = __builtin_bswap32(value);
+    value = __builtin_bswap32(value);
 #endif
-        return value;
-    }
-
-    inline bool GuestCodeRangeContains(uint32_t ea)
-    {
-        const uint64_t codeBegin = static_cast<uint64_t>(PPC_CODE_BASE);
-        const uint64_t codeEnd = codeBegin + static_cast<uint64_t>(PPC_CODE_SIZE);
-        const uint64_t value = static_cast<uint64_t>(ea);
-        return value >= codeBegin && value < codeEnd;
-    }
-
-    inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA)
-    {
-        PPC_STORE_U32(blockEA + 0, 0);
-        PPC_STORE_U32(blockEA + 4, 0);
-        PPC_STORE_U32(blockEA + 8, 0);
-        PPC_STORE_U32(blockEA + 12, 0);
-        PPC_STORE_U32(blockEA + 16, 0);
-    }
+    return value;
 }
 
-static std::atomic<uint32_t> g_lastSchedulerBlockEA{0};
-static std::atomic<uint32_t> g_lastSchedulerHandleEA{0};
-static std::atomic<uint32_t> g_lastSchedulerTimeoutEA{0};
-
-extern "C" uint32_t Mw05ConsumeSchedulerBlockEA()
-{
-    return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
+inline bool GuestCodeRangeContains(uint32_t ea) {
+    const uint64_t codeBegin = static_cast<uint64_t>(PPC_CODE_BASE);
+    const uint64_t codeEnd = codeBegin + static_cast<uint64_t>(PPC_CODE_SIZE);
+    const uint64_t value = static_cast<uint64_t>(ea);
+    return value >= codeBegin && value < codeEnd;
 }
 
-extern "C" uint32_t Mw05PeekSchedulerBlockEA()
-{
-    return g_lastSchedulerBlockEA.load(std::memory_order_acquire);
+inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA) {
+    PPC_STORE_U32(blockEA + 0, 0);
+    PPC_STORE_U32(blockEA + 4, 0);
+    PPC_STORE_U32(blockEA + 8, 0);
+    PPC_STORE_U32(blockEA + 12, 0);
+    PPC_STORE_U32(blockEA + 16, 0);
 }
-
-extern "C" uint32_t Mw05GetSchedulerHandleEA()
-{
-    return g_lastSchedulerHandleEA.load(std::memory_order_acquire);
-}
-
-extern "C" uint32_t Mw05GetSchedulerTimeoutEA()
-{
-    return g_lastSchedulerTimeoutEA.load(std::memory_order_acquire);
 }
 
 static inline bool FastBootEnabled() {
-    if (const char* v = std::getenv("MW05_FAST_BOOT")) {
+    if(const char* v = std::getenv("MW05_FAST_BOOT")) {
         // Enable unless explicitly "0"
         return !(v[0] == '0' && v[1] == '\0');
     }
@@ -89,14 +104,14 @@ static inline bool FastBootEnabled() {
 }
 
 static inline bool BreakLoop82813514Enabled() {
-    if (const char* v = std::getenv("MW05_BREAK_82813514")) {
+    if(const char* v = std::getenv("MW05_BREAK_82813514")) {
         return !(v[0] == '0' && v[1] == '\0');
     }
     return false;
 }
 
 static inline uint64_t FastBootReturnValue() {
-    if (const char* v = std::getenv("MW05_FAST_RET")) {
+    if(const char* v = std::getenv("MW05_FAST_RET")) {
         // Accept decimal (0/192) or hex (0xC0)
         char* end = nullptr;
         unsigned long val = std::strtoul(v, &end, 0);
@@ -105,11 +120,20 @@ static inline uint64_t FastBootReturnValue() {
     return 0u;
 }
 
+static inline void DumpGuestStackWindow(uint8_t* base, uint32_t spEA, int count = 8) {
+    if(!spEA) return;
+    for(int i = 0; i < count; ++i) {
+        const uint32_t ea = spEA + static_cast<uint32_t>(i * 4);
+        uint32_t word = LoadGuestU32(base, ea);
+        KernelTraceHostOpF("HOST.sub_826346A8.stack[%d] ea=%08X val=%08X", i, ea, word);
+    }
+}
+
 // sub_8262F330: tight delay/yield helper used during early init
-void sub_8262F330(PPCContext& ctx, uint8_t* base)
-{
+void sub_8262F330(PPCContext& ctx, uint8_t* base) {
+    SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_8262F330");
-    if (FastBootEnabled()) {
+    if(FastBootEnabled()) {
         // Skip internal KeDelayExecutionThread loops during fast boot. Return a configured value (default 0).
         ctx.r3.u64 = FastBootReturnValue();
         return;
@@ -118,10 +142,10 @@ void sub_8262F330(PPCContext& ctx, uint8_t* base)
 }
 
 // sub_8262F3F0: sibling helper of the same pattern
-void sub_8262F3F0(PPCContext& ctx, uint8_t* base)
-{
+void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
+    SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_8262F3F0");
-    if (FastBootEnabled()) {
+    if(FastBootEnabled()) {
         ctx.r3.u64 = FastBootReturnValue();
         return;
     }
@@ -129,8 +153,8 @@ void sub_8262F3F0(PPCContext& ctx, uint8_t* base)
 }
 
 // sub_826346A8: wrapper around a NtWaitForSingleObjectEx loop
-void sub_826346A8(PPCContext& ctx, uint8_t* base)
-{
+void sub_826346A8(PPCContext& ctx, uint8_t* base) {
+    SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_826346A8");
 
     const uint32_t handleEA = ctx.r3.u32;
@@ -143,34 +167,95 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base)
     KernelTraceHostOpF("HOST.sub_826346A8.wait handle=%08X block=%08X timeout=%08X",
                        handleEA, blockEA, timeoutEA);
 
-    if (!blockEA) {
+    if(!blockEA) {
         KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X (null)", blockEA);
     } else {
         const uint64_t blockEnd = static_cast<uint64_t>(blockEA) + 20ull;
-        if (blockEnd > kPpcMemLimit) {
+        if(blockEnd > kPpcMemLimit) {
             KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X (out_of_range)", blockEA);
-        } else if (g_memory.Translate(blockEA)) {
+        } else if(g_memory.Translate(blockEA)) {
+            // arm the writer watch for [blockEA + 16] every iteration
+            const uint32_t watch = blockEA + 16;
+            if(g_watchEA.load(std::memory_order_relaxed) != watch) {
+                g_watchEA.store(watch, std::memory_order_relaxed);
+                KernelTraceHostOpF("HOST.sub_826346A8.watch arm=%08X", watch);
+            }
+
             const uint32_t w0 = LoadGuestU32(base, blockEA);
             const uint32_t w1 = LoadGuestU32(base, blockEA + 4);
             const uint32_t w2 = LoadGuestU32(base, blockEA + 8);
             const uint32_t w3 = LoadGuestU32(base, blockEA + 12);
-            const uint32_t w4 = LoadGuestU32(base, blockEA + 16);
+            uint32_t w4 = LoadGuestU32(base, blockEA + 16);
             KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
                                blockEA, w0, w1, w2, w3, w4);
-            if (w4 && !GuestCodeRangeContains(w4)) {
-                KernelTraceHostOpF("HOST.sub_826346A8.invalid_target block=%08X target=%08X", blockEA, w4);
+            // Out-of-image target handling
+            if(w4 && !GuestCodeRangeContains(w4)) {
+
+                // Treat 0x0A000000 (heap base) as a known “wake” sentinel.
+                // Consume the entry and return success without calling into guest code.
+                if (w4 == 0x0A000000u) {
+                    const uint32_t watch = blockEA + 16;
+                    // Arm (idempotent) so any follow-up stores hit your hooks
+                    if (g_watchEA.load(std::memory_order_relaxed) != watch) {
+                        g_watchEA.store(watch, std::memory_order_relaxed);
+                        KernelTraceHostOpF("HOST.sub_826346A8.watch arm=%08X", watch);
+                    }
+                    // Synthetic 'any' at the true point of observation
+                    KernelTraceHostOpF("HOST.watch.any(read) val=0A000000 ea=%08X lr=%08llX",
+                                       watch, (unsigned long long)ctx.lr);
+
+                    // (optional) dump the sentinel target area (as you already do elsewhere)
+                    if (g_memory.Translate(w4)) {
+                        const uint32_t d0 = LoadGuestU32(base, w4 + 0);
+                        const uint32_t d1 = LoadGuestU32(base, w4 + 4);
+                        const uint32_t d2 = LoadGuestU32(base, w4 + 8);
+                        const uint32_t d3 = LoadGuestU32(base, w4 + 12);
+                        KernelTraceHostOpF("HOST.sub_826346A8.target.dump ea=%08X d0=%08X d1=%08X d2=%08X d3=%08X",
+                                           w4, d0, d1, d2, d3);
+                    } else {
+                        KernelTraceHostOpF("HOST.sub_826346A8.target.unmapped ea=%08X", w4);
+                    }
+
+                    // Existing synth wake + clear
+                    KernelTraceHostOpF("HOST.sub_826346A8.synth_wake block=%08X target=%08X", blockEA, w4);
+                    ClearSchedulerBlock(base, blockEA);
+                    ctx.r3.u64 = 0;
+                    return;
+                }
+
+
+                // Your existing diagnostics for genuine bad targets
+                KernelTraceHostOpF("HOST.sub_826346A8.bad_target lr=%08llX block=%08X target=%08X",
+                                   (unsigned long long)ctx.lr, blockEA, w4);
+                DumpGuestStackWindow(base, ctx.r1.u32, 8);
+
+                if(uint8_t* dump = (uint8_t*)g_memory.Translate(w4)) {
+                    const uint32_t d0 = LoadGuestU32(base, w4 + 0);
+                    const uint32_t d1 = LoadGuestU32(base, w4 + 4);
+                    const uint32_t d2 = LoadGuestU32(base, w4 + 8);
+                    const uint32_t d3 = LoadGuestU32(base, w4 + 12);
+                    KernelTraceHostOpF("HOST.sub_826346A8.invalid_target.dump ea=%08X d0=%08X d1=%08X d2=%08X d3=%08X",
+                                       w4, d0, d1, d2, d3);
+                } else {
+                    KernelTraceHostOpF("HOST.sub_826346A8.invalid_target.unmapped ea=%08X", w4);
+                }
+
+                // (optional) your frame-walk stays if you still want it…
+
+                // Unknown out-of-image target => clear and return success
                 ClearSchedulerBlock(base, blockEA);
                 ctx.r3.u64 = 0;
                 return;
             }
-            if (w4) {
+
+            if(w4) {
                 const uint64_t target64 = static_cast<uint64_t>(w4);
                 const bool inImage = target64 >= kPpcImageBase && target64 < kPpcImageLimit;
                 const bool hasStub = g_memory.FindFunction(w4) != nullptr;
                 KernelTraceHostOpF("HOST.sub_826346A8.target ea=%08X in_image=%u has_stub=%u",
                                    w4, inImage ? 1u : 0u, hasStub ? 1u : 0u);
-                if (target64 + 16ull <= kPpcMemLimit) {
-                    if (g_memory.Translate(w4)) {
+                if(target64 + 16ull <= kPpcMemLimit) {
+                    if(g_memory.Translate(w4)) {
                         const uint32_t vptrEA = LoadGuestU32(base, w4 + 0);
                         const uint32_t targetW1 = LoadGuestU32(base, w4 + 4);
                         const uint32_t targetW2 = LoadGuestU32(base, w4 + 8);
@@ -179,8 +264,8 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base)
                                            w4, vptrEA, targetW1, targetW2, targetW3);
                         const uint32_t vtableEA = vptrEA;
                         const uint64_t vtable64 = static_cast<uint64_t>(vtableEA);
-                        if (vtableEA && vtable64 + 20ull <= kPpcMemLimit) {
-                            if (g_memory.Translate(vtableEA)) {
+                        if(vtableEA && vtable64 + 20ull <= kPpcMemLimit) {
+                            if(g_memory.Translate(vtableEA)) {
                                 const uint32_t slot0 = LoadGuestU32(base, vtableEA + 0);
                                 const uint32_t slot1 = LoadGuestU32(base, vtableEA + 4);
                                 const uint32_t slot2 = LoadGuestU32(base, vtableEA + 8);
@@ -202,27 +287,32 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base)
         }
     }
 
-    if (FastBootEnabled() || BreakLoop82813514Enabled()) {
+    if(FastBootEnabled() || BreakLoop82813514Enabled()) {
         // Targeted break for the tight loop at lr=0x82813514
         // Caller is sub_828134E0 pump; it loops until [r29+8] becomes 0.
         // We proactively zero that field to let it exit early during fast boot.
-        if (ctx.lr == 0x82813514ull) {
+        if(ctx.lr == 0x82813514ull) {
             // Use the live r29 value rather than a compiled-in constant; MW05 variants differ.
             const uint32_t r29  = ctx.r29.u32;
             const uint64_t addr64 = static_cast<uint64_t>(r29) + 8ull;
-            if (addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
+            if(addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
                 const uint32_t addr = static_cast<uint32_t>(addr64); // for logging / pointer math
                 KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 addr=%08X", addr);
                 *reinterpret_cast<uint64_t*>(base + addr) = 0ull;
             }
         }
-        if (FastBootEnabled()) {
+        if(FastBootEnabled()) {
             // Mark the dispatcher header as signaled if r3 is a guest pointer
             const uint32_t handle = ctx.r3.u32;
-            if (handle != 0) {
-                struct XDISPATCHER_HEADER { int8_t Type; int8_t Absolute; int16_t Size; int32_t SignalState; };
+            if(handle != 0) {
+                struct XDISPATCHER_HEADER {
+                    int8_t Type;
+                    int8_t Absolute;
+                    int16_t Size;
+                    int32_t SignalState;
+                };
                 const uint64_t h64 = static_cast<uint64_t>(handle);
-                if (h64 + sizeof(XDISPATCHER_HEADER) <= kPpcMemLimit) {
+                if(h64 + sizeof(XDISPATCHER_HEADER) <= kPpcMemLimit) {
                     auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(base + handle);
                     hdr->SignalState = 1;
                 }
@@ -233,4 +323,29 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base)
         }
     }
     __imp__sub_826346A8(ctx, base);
+}
+
+PPC_FUNC(sub_828134E0)
+{
+    // Make ctx visible to the watched-store hook (so it can log lr)
+    SetPPCContext(ctx);
+
+    // Arm the watch **before** the loop/producer touches the block
+    KernelTraceHostOp("HOST.sub_828134E0.enter");
+
+    // Prefer the block recorded by sub_826346A8; r29 may not be set yet at entry
+    uint32_t block = Mw05PeekSchedulerBlockEA();
+    if (!block) block = ctx.r29.u32;   // fallback once the loop is live
+
+    if (block) {
+        const uint32_t watch = block + 16;
+        if (g_watchEA.load(std::memory_order_relaxed) != watch) {
+            g_watchEA.store(watch, std::memory_order_relaxed);
+            KernelTraceHostOpF("HOST.sub_828134E0.watch arm=%08X", watch);
+        }
+    } else {
+        KernelTraceHostOp("HOST.sub_828134E0.watch deferred (block==0)");
+    }
+
+    __imp__sub_828134E0(ctx, base);
 }

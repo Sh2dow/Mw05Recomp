@@ -4,6 +4,10 @@
 #include "function.h"
 #include <os/logger.h>
 
+constexpr uint32_t kStatusSuccess = 0;
+constexpr uint32_t kStatusInvalidParameter = 0xC000000D;
+constexpr uint32_t kStatusNoMemory = 0xC0000017;
+
 constexpr size_t RESERVED_BEGIN = 0x7FEA0000;
 constexpr size_t RESERVED_END = 0xA0000000;
 
@@ -315,12 +319,17 @@ uint32_t XAllocMem(uint32_t size, uint32_t flags)
         g_userHeap.AllocPhysical(size, (1ull << ((flags >> 24) & 0xF))) :
         g_userHeap.Alloc(size);
 
+    if (!ptr) {
+        LOGF_ERROR("[heap] XAllocMem failed size={} flags={:08X}", size, flags);
+        return 0;
+    }
+
     if ((flags & 0x40000000) != 0)
         memset(ptr, 0, size);
 
-    assert(ptr);
     return g_memory.MapVirtual(ptr);
 }
+
 
 void XFreeMem(uint32_t baseAddress, uint32_t flags)
 {
@@ -328,9 +337,58 @@ void XFreeMem(uint32_t baseAddress, uint32_t flags)
         g_userHeap.Free(g_memory.Translate(baseAddress));
 }
 
+uint32_t ExAllocatePool(uint32_t poolType, uint32_t numberOfBytes)
+{
+    (void)poolType;
+    void* ptr = g_userHeap.Alloc(numberOfBytes);
+    if (!ptr) {
+        LOGF_ERROR("[heap] ExAllocatePool failed size={} type={}", numberOfBytes, poolType);
+        return 0;
+    }
+    return g_memory.MapVirtual(ptr);
+}
+
+uint32_t ExAllocatePoolWithTag(uint32_t poolType, uint32_t numberOfBytes, uint32_t tag)
+{
+    (void)tag;
+    return ExAllocatePool(poolType, numberOfBytes);
+}
+
+void ExFreePool(uint32_t baseAddress)
+{
+    if (baseAddress != 0) {
+        g_userHeap.Free(g_memory.Translate(baseAddress));
+    }
+}
+
+uint32_t XamAlloc(uint32_t flags, uint32_t size, be<uint32_t>* outAddress)
+{
+    if (!outAddress) {
+        return kStatusInvalidParameter;
+    }
+
+    const uint32_t guestPtr = XAllocMem(size, flags);
+    if (!guestPtr) {
+        return kStatusNoMemory;
+    }
+
+    *outAddress = guestPtr;
+    return kStatusSuccess;
+}
+
+uint32_t XamFree(uint32_t flags, uint32_t baseAddress)
+{
+    (void)flags;
+    if (baseAddress != 0) {
+        g_userHeap.Free(g_memory.Translate(baseAddress));
+    }
+    return kStatusSuccess;
+}
+
 GUEST_FUNCTION_STUB(sub_82BD7788); // HeapCreate
 GUEST_FUNCTION_STUB(sub_82BD9250); // HeapDestroy
 
+#if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_HOOK(sub_82BD7D30, RtlAllocateHeap);
 GUEST_FUNCTION_HOOK(sub_82BD8600, RtlFreeHeap);
 GUEST_FUNCTION_HOOK(sub_82BD88F0, RtlReAllocateHeap);
@@ -338,3 +396,10 @@ GUEST_FUNCTION_HOOK(sub_82BD6FD0, RtlSizeHeap);
 
 GUEST_FUNCTION_HOOK(sub_831CC9C8, XAllocMem);
 GUEST_FUNCTION_HOOK(sub_831CCA60, XFreeMem);
+#else
+GUEST_FUNCTION_HOOK(__imp__ExAllocatePool, ExAllocatePool);
+GUEST_FUNCTION_HOOK(__imp__ExAllocatePoolWithTag, ExAllocatePoolWithTag);
+GUEST_FUNCTION_HOOK(__imp__ExFreePool, ExFreePool);
+GUEST_FUNCTION_HOOK(__imp__XamAlloc, XamAlloc);
+GUEST_FUNCTION_HOOK(__imp__XamFree, XamFree);
+#endif

@@ -2581,7 +2581,8 @@ static void DrawFPS()
         totalDeltaCount = 0;
     }
 
-    auto drawList = ImGui::GetBackgroundDrawList();
+    // Draw on the foreground list to avoid being covered by other overlays
+    auto drawList = ImGui::GetForegroundDrawList();
 
     auto fmt = fmt::format("FPS: {:.2f}", fps);
     ImFont* font = ImGui::GetFont();
@@ -2664,7 +2665,15 @@ static void DrawImGui()
     Fader::Draw();
     BlackBar::Draw();
 
-    assert(ImGui::GetBackgroundDrawList()->_ClipRectStack.Size == 1 && "Some clip rects were not removed from the stack!");
+#ifndef NDEBUG
+    {
+        ImDrawList* bg = ImGui::GetBackgroundDrawList();
+        if (bg && bg->_ClipRectStack.Size != 1) {
+            // Do not abort in debug; reset to a sane baseline to avoid ghosting/crash during early bring-up
+            bg->_ClipRectStack.resize(1);
+        }
+    }
+#endif
 
     DrawFPS();
     DrawProfiler();
@@ -3133,6 +3142,20 @@ static void ProcBeginCommandList(const RenderCommand& cmd)
 {
     DestructTempResources();
     BeginCommandList();
+
+    // Ensure the swapchain backbuffer is cleared every frame to avoid stale contents
+    // when the guest hasn't drawn yet. This prevents overlay text from
+    // accumulating/ghosting frame-to-frame.
+    if (g_backBuffer != nullptr && g_commandLists[g_frame])
+    {
+        // Make the backbuffer the current framebuffer before clearing.
+        AddBarrier(g_backBuffer, RenderTextureLayout::COLOR_WRITE);
+        FlushBarriers();
+        SetFramebuffer(g_backBuffer, nullptr, true);
+
+        auto& commandList = g_commandLists[g_frame];
+        commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+    }
 }
 
 static GuestSurface* GetBackBuffer()

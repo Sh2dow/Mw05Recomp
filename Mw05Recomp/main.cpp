@@ -42,6 +42,8 @@ PPC_EXTERN_FUNC(sub_82812ED0);
 PPC_EXTERN_FUNC(sub_828134E0);
 
 extern "C" void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/); // declaration with exact signature
+extern "C" bool Mw05HasGuestSwapped();
+
 
 #ifdef _WIN32
 #include <timeapi.h>
@@ -559,9 +561,13 @@ int main(int argc, char *argv[])
     GuestThread::Start({ entry, 0, 0 }, nullptr);
 
     // Optional continuous present (safe, main-thread only)
-    const bool force_present_main = []{
+    // Also present while MW05_KICK_VIDEO is set and the guest hasn't called VdSwap yet.
+    const bool present_main = []{
         if (const char* v = std::getenv("MW05_FORCE_PRESENT"))
-            return !(v[0]=='0' && v[1]=='\0');
+            if (!(v[0]=='0' && v[1]=='\0')) return true;
+        const char* kv = std::getenv("MW05_KICK_VIDEO");
+        const bool kick = kv && !(kv[0]=='0' && kv[1]=='\0');
+        if (kick && !Mw05HasGuestSwapped()) return true;
         return false;
     }();
 
@@ -583,7 +589,7 @@ int main(int argc, char *argv[])
             Video::Present();
         }
 
-        if (force_present_main) {
+        if (present_main) {
             auto now = steady_clock::now();
             if (now >= next_present) {
                 // Safe main-thread present cadence

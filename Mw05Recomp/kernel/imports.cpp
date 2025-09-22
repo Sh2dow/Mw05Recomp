@@ -554,6 +554,9 @@ static std::atomic<uint32_t> g_vdInterruptEventEA{0};
 static std::atomic<bool> g_vdInterruptPending{false};
 static std::atomic<bool> g_vblankPumpRun{false};
 
+static std::atomic<bool> g_guestHasSwapped{false};
+extern "C" bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
+
 static inline void NudgeEventWaiters() {
     g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
     g_keSetEventGeneration.notify_all();
@@ -574,6 +577,8 @@ static inline bool Mw05VblankPumpEnabled() {
 void VdSwap()
 {
     KernelTraceHostOp("HOST.VdSwap");
+    // Mark that the guest performed a swap at least once
+    g_guestHasSwapped.store(true, std::memory_order_release);
     // Present the current backbuffer and advance frame state
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] VdSwap()\n"); fflush(stdout);
@@ -1229,7 +1234,7 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             } else if (listShims) {
                 tag = "HOST.MW05_LIST_SHIMS.NtWaitForSingleObjectEx";
             }
-            
+
             KernelTraceHostOp(fastBoot
                 ? "HOST.FastWait.NtWaitForSingleObjectEx"
                 : listShims
@@ -1249,7 +1254,7 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
         HostSleepTiny();
         return STATUS_SUCCESS;
     }
-    
+
     // --- LIST_SHIMS: optional heuristic, but non-blocking and guarded ---
     if (listShims && (std::chrono::steady_clock::now() - t0) < std::chrono::seconds(30)) {
         // If it's not a known dispatcher EA, but looks like one, try a 0ms poll.
@@ -1628,6 +1633,10 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
                                 PLARGE_INTEGER IntervalGuest)
 {
     const bool fastBoot  = Mw05FastBootEnabled();
+    // Ensure early video bring-up keeps the UI responsive during waits/delays
+    Mw05AutoVideoInitIfNeeded();
+    Mw05StartVblankPumpOnce();
+
     const bool listShims = Mw05ListShimsEnabled();
 
     static const auto t0 = std::chrono::steady_clock::now();
@@ -2023,6 +2032,15 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
 {
     if (!Object) return STATUS_INVALID_PARAMETER;
 
+    // Heuristic: register display interrupt event on first wait to ensure vblank pump can signal it.
+    if (g_vdInterruptEventEA.load(std::memory_order_acquire) == 0) {
+        if (auto ea = g_memory.MapVirtual(Object)) {
+            if (GuestOffsetInRange(ea, sizeof(XDISPATCHER_HEADER))) {
+                Mw05RegisterVdInterruptEvent(ea, Object->Type == 0);
+            }
+        }
+    }
+
     uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
 
     const bool fastBoot  = Mw05FastBootEnabled();
@@ -2395,6 +2413,8 @@ void VdEnableRingBufferRPtrWriteBack(uint32_t base)
     if (p) *p = 0;
     g_vdInterruptPending.store(true, std::memory_order_release);
     Mw05DispatchVdInterruptIfPending();
+    // Ensure vblank pump is running so display waiters can progress.
+    Mw05StartVblankPumpOnce();
 }
 
 void VdInitializeRingBuffer(uint32_t base, uint32_t len)
@@ -2518,10 +2538,12 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
     g_VdGraphicsCallback = callback;
     g_VdGraphicsCallbackCtx = context;
     LOGFN("[vd] SetGraphicsInterruptCallback cb=0x{:08X} ctx=0x{:08X}", callback, context);
+    KernelTraceHostOpF("HOST.VdSetGraphicsInterruptCallback cb=%08X ctx=%08X", callback, context);
 }
 
 void VdInitializeEngines()
 {
+    KernelTraceHostOp("HOST.VdInitializeEngines");
     // Consider engines initialized; also start the vblank pump to ensure
     // display-related waiters can make progress during bring-up.
     Mw05AutoVideoInitIfNeeded();
@@ -3430,7 +3452,7 @@ void XMACreateContext()
 // uint32_t XAudioRegisterRenderDriverClient(be<uint32_t>* callback, be<uint32_t>* driver)
 // {
 //     //printf("XAudioRegisterRenderDriverClient(): %x %x\n");
-// 
+//
 //     *driver = apu::RegisterClient(callback[0], callback[1]);
 //     return 0;
 // }
@@ -3444,7 +3466,7 @@ void XMACreateContext()
 // {
 //     // printf("!!! STUB !!! XAudioSubmitRenderDriverFrame\n");
 //     apu::SubmitFrames(samples);
-// 
+//
 //     return 0;
 // }
 

@@ -616,7 +616,9 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
     return std::u8string_view((const char8_t*)builtPath.c_str());
 }
 
-#if MW05_ENABLE_UNLEASHED
+#if 1
+// Hook direct recompiled X* file APIs as well, regardless of Unleashed mode.
+// Many titles call these directly rather than going through Nt* imports.
 GUEST_FUNCTION_HOOK(sub_82BD4668, XCreateFileA);
 GUEST_FUNCTION_HOOK(sub_82BD4600, XGetFileSizeA);
 GUEST_FUNCTION_HOOK(sub_82BD5608, XGetFileSizeExA);
@@ -629,10 +631,12 @@ GUEST_FUNCTION_HOOK(sub_831CDF40, XReadFileEx);
 GUEST_FUNCTION_HOOK(sub_831CD6E8, XGetFileAttributesA);
 GUEST_FUNCTION_HOOK(sub_831CE3F8, XCreateFileA);
 GUEST_FUNCTION_HOOK(sub_82BD4860, XWriteFile);
-#else
+#endif
+
+#if 1
 GUEST_FUNCTION_HOOK(__imp__NtCreateFile, NtCreateFile);
 GUEST_FUNCTION_HOOK(__imp__NtOpenFile, NtOpenFile);
 GUEST_FUNCTION_HOOK(__imp__NtClose, NtClose);
 GUEST_FUNCTION_HOOK(__imp__NtReadFile, NtReadFile);
 GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
-#endif // MW05_ENABLE_UNLEASHED
+#endif

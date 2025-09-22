@@ -24,6 +24,11 @@ struct Video
     static void StartPipelinePrecompilation();
     static void WaitForGPU();
     static void ComputeViewportDimensions();
+
+    // Safe cross-thread present request: background threads set a request flag,
+    // the main thread polls and performs Present().
+    static void RequestPresentFromBackground();
+    static bool ConsumePresentRequest();
 };
 
 struct GuestSamplerState

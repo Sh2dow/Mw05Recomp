@@ -609,8 +609,14 @@ static void Mw05StartVblankPumpOnce() {
         using namespace std::chrono;
         const auto period = milliseconds(16);
         // Env toggles (latched once)
+        // Only force presents from the vblank pump when explicitly requested.
+        // Using MW05_FORCE_PRESENT here caused crashes because Video::Present()
+        // manipulates ImGui/SDL state and must run on the main thread. The main
+        // thread already presents when MW05_FORCE_PRESENT=1 (see main.cpp). To
+        // avoid double-present and cross-thread UI calls, the background pump
+        // now listens to MW05_FORCE_PRESENT_BG instead.
         static const bool s_force_present = [](){
-            if (const char* v = std::getenv("MW05_FORCE_PRESENT"))
+            if (const char* v = std::getenv("MW05_FORCE_PRESENT_BG"))
                 return !(v[0]=='0' && v[1]=='\0');
             return false;
         }();
@@ -642,8 +648,14 @@ static void Mw05StartVblankPumpOnce() {
             // Optionally invoke the guest graphics interrupt callback at vblank.
             // Many titles rely on this ISR to drive internal state machines.
             static const bool cb_on = [](){
+                // Honor explicit override first
                 if (const char* v = std::getenv("MW05_VBLANK_CB"))
                     return !(v[0]=='0' && v[1]=='\0');
+                // When forcing presents or kicking video early, avoid calling guest ISR
+                // to prevent crashes from partially initialized guest state.
+                if (std::getenv("MW05_FORCE_PRESENT") || std::getenv("MW05_FORCE_PRESENT_BG") || std::getenv("MW05_KICK_VIDEO"))
+                    return false;
+                // Default: enabled only when not in forced-present bring-up paths
                 return true;
             }();
             if (cb_on) {
@@ -655,9 +667,10 @@ static void Mw05StartVblankPumpOnce() {
                 }
             }
 
-            // Optional: force a present each vblank to keep swapchain moving
+            // Optional: request a present each vblank to keep swapchain moving.
+            // Do not call Present() from the background thread; signal the main thread instead.
             if (s_force_present) {
-                VdSwap();
+                Video::RequestPresentFromBackground();
             }
 
             // Keep the SDL window responsive even if the guest is idle.
@@ -732,10 +745,20 @@ static bool Mw05SignalVdInterruptEvent()
                 }
             }
         }
-        if (const uint32_t cb = VdGetGraphicsInterruptCallback()) {
-            const uint32_t ctx = VdGetGraphicsInterruptContext();
-            KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
-            GuestToHostFunction<void>(cb, ctx);
+        {
+            bool cb_enabled = true;
+            if (const char* v = std::getenv("MW05_VBLANK_CB"))
+                cb_enabled = !(v[0]=='0' && v[1]=='\0');
+            else if (std::getenv("MW05_FORCE_PRESENT") || std::getenv("MW05_FORCE_PRESENT_BG") || std::getenv("MW05_KICK_VIDEO"))
+                cb_enabled = false;
+
+            if (cb_enabled) {
+                if (const uint32_t cb = VdGetGraphicsInterruptCallback()) {
+                    const uint32_t ctx = VdGetGraphicsInterruptContext();
+                    KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
+                    GuestToHostFunction<void>(cb, ctx);
+                }
+            }
         }
     }
 
@@ -1566,6 +1589,20 @@ void XexGetModuleSection()
 
 uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiByteString, be<uint32_t>* BytesInMultiByteString, const be<uint16_t>* UnicodeString, uint32_t BytesInUnicodeString)
 {
+    // Trace a preview of the Unicode string to help discover path construction
+    if (KernelTraceEnabled() && UnicodeString && BytesInUnicodeString) {
+        const uint32_t chars = BytesInUnicodeString / 2u;
+        char preview[96]{}; unsigned i=0;
+        for (; i < (sizeof(preview)-1) && i < chars; ++i) {
+            const uint16_t w = UnicodeString[i].get();
+            if (w == 0) break;
+            if (w < 0x20 || w > 0x7E) { preview[i] = '?'; continue; }
+            preview[i] = char(w);
+        }
+        preview[i] = 0;
+        KernelTraceHostOpF("HOST.RtlUnicodeToMB src='%s' bytes=%u", preview, BytesInUnicodeString);
+    }
+
     const auto reqSize = BytesInUnicodeString / sizeof(uint16_t);
 
     if (BytesInMultiByteString)
@@ -2091,23 +2128,43 @@ uint32_t KeSetAffinityThread(uint32_t Thread, uint32_t Affinity, be<uint32_t>* l
 
 void RtlLeaveCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    // Be tolerant of null/invalid pointers during early boot paths to avoid AVs.
     if (!cs)
-        return; // Be tolerant of null pointers during early boot paths
+        return;
+    auto* p = reinterpret_cast<uint8_t*>(cs);
+    if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
+        return;
+
+    // If recursion was never established, do not underflow; leave as-is.
+    if (cs->RecursionCount <= 0)
+    {
+        cs->RecursionCount = 0;
+        return;
+    }
 
     cs->RecursionCount--;
-
+    cs->LockCount--;
     if (cs->RecursionCount != 0)
         return;
 
-    std::atomic_ref owningThread(cs->OwningThread);
-    owningThread.store(0);
-    owningThread.notify_one();
+    // Release ownership only if currently owned.
+    if (cs->OwningThread != 0)
+    {
+        cs->OwningThread = 0;
+        cs->LockCount = -1;
+        // Use a light yield instead of atomic notify to avoid alignment/atomic issues
+        std::this_thread::yield();
+    }
 }
 
 void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    // Tolerate null/invalid critical sections during early boot
     if (!cs)
-        return; // Tolerate null critical sections
+        return;
+    auto* p = reinterpret_cast<uint8_t*>(cs);
+    if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
+        return;
 
     uint32_t thisThread = 0;
     if (auto* ctx = GetPPCContext())
@@ -2115,20 +2172,31 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     if (thisThread == 0)
         thisThread = 1; // Fallback owner id if TLS not yet established
 
-    std::atomic_ref owningThread(cs->OwningThread);
+    // Under forced-present bring-up (FG or BG) or when kicking video early,
+    // avoid indefinite blocking on potentially uninitialized CS objects.
+    // Perform a bounded spin and give up so early boot can limp forward.
+    const bool non_blocking = (std::getenv("MW05_FORCE_PRESENT") != nullptr) ||
+                              (std::getenv("MW05_FORCE_PRESENT_BG") != nullptr) ||
+                              (std::getenv("MW05_KICK_VIDEO") != nullptr);
+    int spins = non_blocking ? 1024 : INT_MAX;
 
-    while (true)
+    while (spins-- > 0)
     {
-        uint32_t previousOwner = 0;
-
-        if (owningThread.compare_exchange_weak(previousOwner, thisThread) || previousOwner == thisThread)
+        uint32_t owner = cs->OwningThread;
+        if (owner == 0 || owner == thisThread)
         {
+            if (owner == 0)
+                cs->OwningThread = thisThread;
             cs->RecursionCount++;
+            cs->LockCount = (cs->LockCount < -1) ? -1 : cs->LockCount; // clamp
+            cs->LockCount++;
             return;
         }
 
-        owningThread.wait(previousOwner);
+        // Light yield to avoid tight spinning; avoid atomic wait on possibly unaligned memory
+        std::this_thread::yield();
     }
+    // Give up acquiring in non-blocking mode; caller will likely retry later.
 }
 
 void RtlImageXexHeaderField()
@@ -2746,22 +2814,27 @@ void XexGetModuleHandle()
 
 bool RtlTryEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    // Tolerate null/invalid critical sections during early boot
     if (!cs)
-        return true; // Nothing to lock
+        return true; // nothing to lock
+    auto* p = reinterpret_cast<uint8_t*>(cs);
+    if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
+        return true; // ignore invalid guest pointers
 
     uint32_t thisThread = 0;
     if (auto* ctx = GetPPCContext())
         thisThread = ctx->r13.u32;
     if (thisThread == 0)
-        thisThread = 1;
+        thisThread = 1; // fallback owner id if TLS not yet established
 
-    std::atomic_ref owningThread(cs->OwningThread);
-
-    uint32_t previousOwner = 0;
-
-    if (owningThread.compare_exchange_weak(previousOwner, thisThread) || previousOwner == thisThread)
+    uint32_t owner = cs->OwningThread;
+    if (owner == 0 || owner == thisThread)
     {
+        if (owner == 0)
+            cs->OwningThread = thisThread;
         cs->RecursionCount++;
+        cs->LockCount = (cs->LockCount < -1) ? -1 : cs->LockCount; // clamp
+        cs->LockCount++;
         return true;
     }
 

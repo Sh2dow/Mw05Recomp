@@ -4,6 +4,7 @@
 #include <kernel/heap.h>
 #include <kernel/function.h>
 #include "ppc_context.h"
+#include <kernel/trace.h>
 #include <unordered_map>
 
 constexpr size_t PCR_SIZE = 0xAB0;
@@ -159,7 +160,9 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
     ctx.ppcContext.r3.u64 = params.value;
     if (auto entryFunc = g_memory.FindFunction(params.function))
     {
+        KernelTraceHostOpF("HOST.TitleEntry.enter entry=%08X", params.function);
         entryFunc(ctx.ppcContext, g_memory.base);
+        KernelTraceHostOpF("HOST.TitleEntry.exit entry=%08X", params.function);
     }
     else
     {

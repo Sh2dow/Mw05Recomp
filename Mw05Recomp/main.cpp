@@ -271,6 +271,21 @@ int main(int argc, char *argv[])
         const void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
         LOGFN_ERROR("[crash] unhandled exception code=0x{:08X} addr={} tid={:08X}", (unsigned)code, addr, GetCurrentThreadId());
         KernelTraceDumpRecent(32);
+        void* frames[16] = {};
+        USHORT n = RtlCaptureStackBackTrace(0, 16, frames, nullptr);
+        for (USHORT i = 0; i < n; ++i) {
+            HMODULE mod = nullptr;
+            char mod_path[MAX_PATH] = {};
+            DWORD got = 0;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(frames[i]), &mod)) {
+                got = GetModuleFileNameA(mod, mod_path, MAX_PATH);
+                uintptr_t off = (uintptr_t)frames[i] - (uintptr_t)mod;
+                LOGFN_ERROR("[crash]   frame[{}] = {} module={} base={} +0x{:X}", (int)i, frames[i], (got ? mod_path : "?"), (const void*)mod, (size_t)off);
+            } else {
+                LOGFN_ERROR("[crash]   frame[{}] = {}", (int)i, frames[i]);
+            }
+        }
         return EXCEPTION_EXECUTE_HANDLER;
     };
     SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep)->LONG { return MwUnhandledException(ep); });
@@ -503,13 +518,13 @@ int main(int argc, char *argv[])
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
-    KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p", 
-        reinterpret_cast<const void*>(sub_8243B618), 
+    KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_8243B618),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x8243B618)));
 
     g_memory.InsertFunction(0x82621640, sub_82621640);
-    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p", 
-        reinterpret_cast<const void*>(sub_82621640), 
+    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p",
+        reinterpret_cast<const void*>(sub_82621640),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
 
     g_memory.InsertFunction(0x8284E658, sub_8284E658);
@@ -520,15 +535,15 @@ int main(int argc, char *argv[])
     // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
     extern uint32_t KeTlsAlloc();
     g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
-    KernelTraceHostOpF("HOST.KeTlsAlloc.install host=%p entry=%p", 
-        reinterpret_cast<const void*>(KeTlsAlloc), 
+    KernelTraceHostOpF("HOST.KeTlsAlloc.install host=%p entry=%p",
+        reinterpret_cast<const void*>(KeTlsAlloc),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x826BE2A8)));
 
     g_memory.InsertFunction(0x826346A8, sub_826346A8);
     KernelTraceHostOpF("HOST.sub_826346A8.install host=%p entry=%p",
         reinterpret_cast<const void*>(sub_826346A8),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
-    
+
     g_memory.InsertFunction(0x82812ED0, sub_82812ED0);
     KernelTraceHostOpF("HOST.sub_82812ED0.install host=%p entry=%p",
         reinterpret_cast<const void*>(sub_82812ED0),
@@ -563,6 +578,10 @@ int main(int argc, char *argv[])
         while (SDL_PollEvent(&ev)) { /* no-op; watchers handle */ }
         // Allow window bookkeeping (size/position/title) to update
         GameWindow::Update();
+        // Handle cross-thread present requests posted by the vblank pump
+        if (Video::ConsumePresentRequest()) {
+            Video::Present();
+        }
 
         if (force_present_main) {
             auto now = steady_clock::now();
@@ -626,7 +645,7 @@ static uint32_t swprintfImpl(wchar_t* dst, size_t count, const wchar_t* fmt, ...
 //         ctx.r3.u64 = 0;
 //     }
 // }
-// 
+//
 // PPC_FUNC(__imp___snprintf) {
 //     KernelTraceImport("__imp___snprintf", ctx);
 //     // r3 = char* dst, r4 = size_t size, r5 = const char* fmt
@@ -642,7 +661,7 @@ static uint32_t swprintfImpl(wchar_t* dst, size_t count, const wchar_t* fmt, ...
 //         ctx.r3.u64 = 0;
 //     }
 // }
-// 
+//
 // PPC_FUNC(__imp___snwprintf) {
 //     KernelTraceImport("__imp___snwprintf", ctx);
 //     // r3 = wchar_t* dst, r4 = size_t size, r5 = const wchar_t* fmt
@@ -670,7 +689,7 @@ static uint32_t swprintfImpl(wchar_t* dst, size_t count, const wchar_t* fmt, ...
 //     dst[n] = L'\0';
 //     ctx.r3.u64 = static_cast<uint64_t>(n); // count written
 // }
-// 
+//
 // // __imp___vscwprintf(fmt, va) -> length only
 // PPC_FUNC(__imp___vscwprintf) {
 //     KernelTraceImport("__imp___vscwprintf", ctx);
@@ -680,7 +699,7 @@ static uint32_t swprintfImpl(wchar_t* dst, size_t count, const wchar_t* fmt, ...
 //     while (fmt[n] && n < (1<<20)) { ++n; }
 //     ctx.r3.u64 = static_cast<uint64_t>(n);   // “would write” count (no NUL)
 // }
-// 
+//
 // // __imp__swprintf(dst, fmt, ...)
 // PPC_FUNC(__imp__swprintf) {
 //     KernelTraceImport("__imp__swprintf", ctx);

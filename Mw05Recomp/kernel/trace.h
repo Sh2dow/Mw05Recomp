@@ -25,6 +25,9 @@ void KernelTraceHostOpF(const char* fmt, ...);
 
 extern std::atomic<uint32_t> g_watchEA;
 
+// Loader/streaming sentinel bridge (implemented in cpu/mw05_streaming_bridge.cpp)
+extern "C" bool Mw05HandleSchedulerSentinel(uint8_t* base, uint32_t slotEA, uint64_t lr);
+
 // Optional: watched EA→EA memcpy wrapper (used only if your code does memcpy base+dstEA <- base+srcEA)
 inline void* Memcpy_Watched_GG(uint8_t* base, uint32_t dstEA, uint32_t srcEA, size_t len) {
     const uint32_t watch = g_watchEA.load(std::memory_order_relaxed);
@@ -76,69 +79,87 @@ static inline void BE_Store32(uint8_t* p, uint32_t v) {
     p[0] = uint8_t(v >> 24); p[1] = uint8_t(v >> 16); p[2] = uint8_t(v >> 8); p[3] = uint8_t(v);
 }
 
-inline void StoreBE32_Watched(uint8_t* /*base*/, uint32_t ea, uint32_t v_be) {
+inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     static bool banner = (KernelTraceHostOp("HOST.watch.store override ACTIVE"), true);
     (void)banner;
 
-    // 1) Specific slot watch you already have:
     const uint32_t watch = g_watchEA.load(std::memory_order_relaxed);
     if (watch && ea == watch) {
         if (auto* c = GetPPCContext())
-            KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=%08llX", ea, v_be,
+            KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=%08llX", ea, v,
                                (unsigned long long)c->lr);
         else
-            KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v_be);
+            KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v);
     }
 
-    // 2) NEW: value-triggered watch — catches the producer no matter where/when
-    if (v_be == 0x0A000000u || v_be == 0x0000000Au) {
-
-        if (auto* c = GetPPCContext())
-            KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=%08llX",
-                               ea, (unsigned long long)c->lr);
-        else
+    if (v == 0x0A000000u || v == 0x0000000Au) {
+        if (auto* c = GetPPCContext()) {
+            const unsigned long long lr = (unsigned long long)c->lr;
+            KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=%08llX", ea, lr);
+            if (Mw05HandleSchedulerSentinel(base, ea, lr)) {
+                return;
+            }
+        } else {
             KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=0", ea);
+            if (Mw05HandleSchedulerSentinel(base, ea, 0)) {
+                return;
+            }
+        }
     }
 
-    // Raw BE store
     if (auto* p = (uint8_t*)g_memory.Translate(ea)) {
-        p[0] = uint8_t(v_be >> 24);
-        p[1] = uint8_t(v_be >> 16);
-        p[2] = uint8_t(v_be >>  8);
-        p[3] = uint8_t(v_be >>  0);
+        p[0] = uint8_t(v >> 24);
+        p[1] = uint8_t(v >> 16);
+        p[2] = uint8_t(v >>  8);
+        p[3] = uint8_t(v >>  0);
     }
 }
 
 // 64-bit big-endian watched store
-inline void StoreBE64_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t v64)
+inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
 {
-    // One-time banner (helps confirm this override is linked/used)
     static bool banner64 = (KernelTraceHostOp("HOST.watch.store64 override ACTIVE"), true);
     (void)banner64;
 
-    // Common context / LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
 
-    // Always log the raw call (parity with 32-bit path)
     KernelTraceHostOpF("HOST.Store64BE_W.called ea=%08X val=%016llX", ea, v64);
 
-    // 1) Hit if this 8-byte write overlaps the watched 32-bit slot
     if (uint32_t watch = g_watchEA.load(std::memory_order_relaxed)) {
-        if (Overlaps(ea, 8, watch)) { // uses the existing helper
+        if (Overlaps(ea, 8, watch)) {
             KernelTraceHostOpF("HOST.watch.hit64 ea=%08X val=%016llX lr=%08llX", ea, v64, lr);
         }
     }
 
-    // 2) Value-triggered watch: if either 32-bit half equals the sentinel
-    // We don't assume what the caller passed (host-endian ambiguities), so accept both encodings.
+    bool handled = false;
+    auto try_handle = [&](uint32_t slotEA) {
+        // When forcing presentation for bring-up, avoid touching the loader/streaming
+        // bridge to minimize interference with early guest init. This can be
+        // re-enabled explicitly via MW05_STREAM_BRIDGE and MW05_VBLANK_CB once stable.
+        const char* fp = std::getenv("MW05_FORCE_PRESENT");
+        if (fp && !(fp[0]=='0' && fp[1]=='\0')) {
+            return; // skip sentinel handling under MW05_FORCE_PRESENT
+        }
+        if (!handled && Mw05HandleSchedulerSentinel(base, slotEA, lr)) {
+            handled = true;
+        }
+    };
+
     const uint32_t hi = (uint32_t)(v64 >> 32);
     const uint32_t lo = (uint32_t)(v64 & 0xFFFFFFFFu);
-    if (hi == 0x0A000000u || hi == 0x0000000Au || lo == 0x0A000000u || lo == 0x0000000Au) {
+    if (hi == 0x0A000000u || hi == 0x0000000Au) {
         KernelTraceHostOpF("HOST.watch.any64 ea=%08X val=%016llX lr=%08llX", ea, v64, lr);
+        try_handle(ea);
+    }
+    if (!handled && (lo == 0x0A000000u || lo == 0x0000000Au)) {
+        KernelTraceHostOpF("HOST.watch.any64 ea=%08X val=%016llX lr=%08llX", ea, v64, lr);
+        try_handle(ea + 4);
+    }
+    if (handled) {
+        return;
     }
 
-    // Perform the actual big-endian 64-bit store
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         p[0] = uint8_t(v64 >> 56);
         p[1] = uint8_t(v64 >> 48);
@@ -151,7 +172,7 @@ inline void StoreBE64_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t v64)
     }
 }
 
-inline void StoreBE128_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t hi, uint64_t lo)
+inline void StoreBE128_Watched(uint8_t* base, uint32_t ea, uint64_t hi, uint64_t lo)
 {
     static bool banner128 = (KernelTraceHostOp("HOST.watch.store128 override ACTIVE"), true);
     (void)banner128;
@@ -167,7 +188,6 @@ inline void StoreBE128_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t hi, uint
         }
     }
 
-    // Value-trigger: look for 0A 00 00 00 anywhere in the 16 bytes (big-endian scan)
     uint8_t be[16] = {
         uint8_t(hi >> 56), uint8_t(hi >> 48), uint8_t(hi >> 40), uint8_t(hi >> 32),
         uint8_t(hi >> 24), uint8_t(hi >> 16), uint8_t(hi >>  8), uint8_t(hi >>  0),
@@ -177,6 +197,9 @@ inline void StoreBE128_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t hi, uint
     for (int i = 0; i <= 12; ++i) {
         if (be[i+0]==0x0A && be[i+1]==0x00 && be[i+2]==0x00 && be[i+3]==0x00) {
             KernelTraceHostOpF("HOST.watch.any128 ea=%08X off=%d lr=%08llX", ea, i, lr);
+            if (Mw05HandleSchedulerSentinel(base, ea + static_cast<uint32_t>(i), lr)) {
+                return;
+            }
             break;
         }
     }
@@ -186,7 +209,7 @@ inline void StoreBE128_Watched(uint8_t* /*base*/, uint32_t ea, uint64_t hi, uint
     }
 }
 
-inline void StoreBE128_Watched_P(uint8_t* /*base*/, uint32_t ea, const void* src16)
+inline void StoreBE128_Watched_P(uint8_t* base, uint32_t ea, const void* src16)
 {
     static bool banner128p = (KernelTraceHostOp("HOST.watch.store128(ptr) override ACTIVE"), true);
     (void)banner128p;
@@ -203,15 +226,16 @@ inline void StoreBE128_Watched_P(uint8_t* /*base*/, uint32_t ea, const void* src
         }
     }
 
-    // Look for 0A 00 00 00 anywhere in the source payload (treat as BE sequence match)
     for (int i = 0; i <= 12; ++i) {
         if (s[i+0]==0x0A && s[i+1]==0x00 && s[i+2]==0x00 && s[i+3]==0x00) {
             KernelTraceHostOpF("HOST.watch.any128 ea=%08X off=%d lr=%08llX", ea, i, lr);
+            if (Mw05HandleSchedulerSentinel(base, ea + static_cast<uint32_t>(i), lr)) {
+                return;
+            }
             break;
         }
     }
 
-    // Store to guest as-is if your source is already in BE; otherwise byte-swap here.
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         for (int i = 0; i < 16; ++i) p[i] = s[i];
     }

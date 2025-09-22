@@ -131,6 +131,7 @@ add_library(Mw05RecompLib
 add_dependencies(Mw05RecompLib PPCCodegen)
 
 target_include_directories(Mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(Mw05RecompLib PRIVATE "${CMAKE_SOURCE_DIR}/Mw05Recomp")
 target_include_directories(Mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
 target_compile_definitions(Mw05RecompLib PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")

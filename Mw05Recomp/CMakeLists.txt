@@ -119,6 +119,8 @@ set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/mw05_trace_threads.cpp"
     "cpu/ppc_list_shims.cpp"
     "cpu/mw05_scheduler_shims.cpp"
+    "cpu/mw05_loader_shims.cpp"
+    "cpu/mw05_streaming_bridge.cpp"
 )
 
 set(MW05_RECOMP_GPU_CXX_SOURCES
@@ -246,7 +248,7 @@ set(MW05_RECOMP_CXX_SOURCES
     "stdafx.cpp"
     "version.cpp"
     "ppc_indirect_hardfix.cpp"
-    
+
     ${MW05_RECOMP_KERNEL_CXX_SOURCES}
     ${MW05_RECOMP_LOCALE_CXX_SOURCES}
     ${MW05_RECOMP_OS_CXX_SOURCES}
@@ -505,7 +507,7 @@ target_compile_definitions(Mw05Recomp PRIVATE
     MW05_ENABLE_IMPLOT=$<BOOL:${MW05_ENABLE_IMPLOT}>)
 
 if (MW05_RECOMP_FLATPAK)
-    target_compile_definitions(Mw05Recomp PRIVATE 
+    target_compile_definitions(Mw05Recomp PRIVATE
         "MW05_RECOMP_FLATPAK"
         "GAME_INSTALL_DIRECTORY=\"/var/data\""
     )
@@ -545,6 +547,9 @@ if (WIN32)
         windowsapp
     )
 endif()
+    # Generate a .map file for quick address-to-symbol lookup during crash triage
+    target_link_options(Mw05Recomp PRIVATE "/MAP")
+
 
 target_link_libraries(Mw05Recomp PRIVATE
     fmt::fmt

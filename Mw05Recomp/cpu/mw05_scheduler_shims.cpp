@@ -20,10 +20,13 @@ extern "C"
     uint32_t Mw05GetSchedulerTimeoutEA();
     void __imp__sub_82621640(PPCContext &ctx, uint8_t *base);
     void __imp__sub_8284E658(PPCContext &ctx, uint8_t *base);
+    void HostSchedulerWake(PPCContext &ctx, uint8_t *base);
 }
 
 namespace
 {
+    constexpr uint32_t kSchedulerSentinelTarget = 0x0A000000u;
+
     inline bool GuestRangeValid(uint32_t ea, size_t bytes = 4)
     {
         if (!ea)
@@ -227,6 +230,20 @@ PPC_FUNC(sub_82621640)
             KernelTraceHostOpF("HOST.sub_82621640.bad_target_load block=%08X", blockEA);
             skipCallback = true;
             skipReason = "target_load";
+        }
+        else if (targetEA == kSchedulerSentinelTarget)
+        {
+            KernelTraceHostOpF("HOST.sub_82621640.sentinel block=%08X target=%08X", blockEA, targetEA);
+            TraceSchedulerProducerSnapshot("sentinel", blockEA, flagsEA, targetEA, 0, 0);
+            ClearSchedulerBlock(base, blockEA);
+            HostSchedulerWake(ctx, base);
+            const uint32_t watch = blockEA + 16;
+            if (g_watchEA.load(std::memory_order_relaxed) != watch) {
+                g_watchEA.store(watch, std::memory_order_relaxed);
+                KernelTraceHostOpF("HOST.sub_82621640.watch arm=%08X", watch);
+            }
+            KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=%08llX", watch, (unsigned long long)ctx.lr);
+            return;
         }
         else if (!GuestRangeValid(targetEA, 4))
         {

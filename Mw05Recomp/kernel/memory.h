@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 
 #ifndef _WIN32
 #define MEM_COMMIT  0x00001000  

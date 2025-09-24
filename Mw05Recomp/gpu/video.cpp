@@ -40,6 +40,8 @@
 #include <magic_enum/magic_enum.hpp>
 #endif
 
+#include <cstdlib> // getenv for MW05_* env toggles
+
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
 
@@ -295,6 +297,10 @@ static Profiler g_presentWaitProfiler;
 static Profiler g_swapChainAcquireProfiler;
 
 static bool g_profilerVisible;
+
+static bool g_bootOverlayEnabled = false;
+extern "C" bool Mw05HasGuestSwapped();
+
 static bool g_profilerWasToggled;
 
 #ifdef MW05_RECOMP_D3D12
@@ -2102,6 +2108,14 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     g_enhancedMotionBlurShader->shader = CREATE_SHADER(enhanced_motion_blur_ps);
 
     CreateImGuiBackend();
+    // Enable boot overlay banner if requested via env (no profiler/show-fps changes)
+    if (const char* v = std::getenv("MW05_BOOT_OVERLAY")) {
+        if (!(v[0]=='0' && v[1]=='\0')) {
+            g_bootOverlayEnabled = true;
+            KernelTraceHostOp("HOST.VideoBootOverlay.enabled");
+        }
+    }
+
 
     auto gammaCorrectionShader = CREATE_SHADER(gamma_correction_ps);
 
@@ -2569,7 +2583,8 @@ static void DrawProfiler()
 
 static void DrawFPS()
 {
-    if (!Config::ShowFPS)
+    const bool showBootBanner = (!Mw05HasGuestSwapped());
+    if (!Config::ShowFPS || !showBootBanner)
         return;
 
     double time = ImGui::GetTime();
@@ -2581,31 +2596,117 @@ static void DrawFPS()
     totalDeltaTime += g_presentProfiler.value.load();
     totalDeltaCount++;
 
-    if (time - updateTime >= 1.0f)
+    if (time - updateTime >= 1.0)
     {
-        fps = 1000.0 / std::max(totalDeltaTime / double(totalDeltaCount), 1.0);
+        const double avgMs = std::max(totalDeltaTime / double(totalDeltaCount), 0.001);
+        fps = 1000.0 / avgMs;
         updateTime = time;
         totalDeltaTime = 0.0;
         totalDeltaCount = 0;
     }
 
-    // Draw on the foreground list to avoid being covered by other overlays
-    auto drawList = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // Ensure overlay is never clipped by a stale clip-rect
+    if (dl) dl->PushClipRectFullScreen();
 
-    auto fmt = fmt::format("FPS: {:.2f}", fps);
     ImFont* font = ImGui::GetFont();
-    auto fontSize = Scale(10);
-    ImVec2 textSize{0,0};
-    if (font)
-        textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, fmt.c_str());
+    const float fontSize = Scale(10);
 
-    ImVec2 min = { Scale(40), Scale(30) };
-    ImVec2 max = { min.x + std::max(Scale(75), textSize.x + Scale(10)), min.y + Scale(15) };
-    ImVec2 textPos = { min.x + Scale(2), CENTRE_TEXT_VERT(min, max, textSize) + Scale(0.2f) };
+    // ---- Compute sizes shared by both blocks up-front ----
+    const ImVec2 origin = { Scale(40), Scale(30) };
+    const float padX = Scale(6);
+    const float padY = Scale(3);
+    const float spacingY = Scale(2);
+    const float minBoxH = Scale(15);
 
-    drawList->AddRectFilled(min, max, IM_COL32(0, 0, 0, 200));
-    if (font)
-        drawList->AddText(font, fontSize, textPos, IM_COL32_WHITE, fmt.c_str());
+    // FPS string
+    char fpsBuf[64];
+    snprintf(fpsBuf, sizeof(fpsBuf), "FPS: %.2f", fps);
+
+    ImVec2 fpsTextSize = {0,0};
+    if (font) fpsTextSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0, fpsBuf);
+
+    const float fpsW = std::max(Scale(75.0f), fpsTextSize.x + padX * 2.0f);
+    const ImVec2 fpsMin = origin;
+    const float boxH = std::max(minBoxH, fpsTextSize.y + padY * 2.0f);
+    const ImVec2 fpsMax = { origin.x + fpsW, origin.y + boxH };
+    const ImVec2 fpsTextPos = { fpsMin.x + padX, fpsMin.y + (boxH - fpsTextSize.y) * 0.5f };
+
+    // Fallback if Scale() produced degenerate sizes
+    ImVec2 drawFpsMin = fpsMin;
+    ImVec2 drawFpsMax = fpsMax;
+    ImVec2 drawFpsTextPos = fpsTextPos;
+    float  drawPadX = padX;
+    float  drawPadY = padY;
+    float  drawSpacingY = spacingY;
+    float  drawBoxH = boxH;
+    float  drawFontSize = fontSize;
+    float  drawFpsW = fpsW;
+    if (drawFpsMax.x <= drawFpsMin.x || drawFpsMax.y <= drawFpsMin.y) {
+        drawFontSize  = 10.0f;
+        drawPadX      = 6.0f;
+        drawPadY      = 3.0f;
+        drawSpacingY  = 2.0f;
+        ImVec2 origin2 = { 40.0f, 30.0f };
+        drawFpsW      = std::max(75.0f, fpsTextSize.x + drawPadX * 2.0f);
+        drawBoxH      = std::max(15.0f, fpsTextSize.y + drawPadY * 2.0f);
+        drawFpsMin    = origin2;
+        drawFpsMax    = { origin2.x + drawFpsW, origin2.y + drawBoxH };
+        drawFpsTextPos= { drawFpsMin.x + drawPadX, drawFpsMin.y + (drawBoxH - fpsTextSize.y) * 0.5f };
+    }
+
+    // --- Scale up font and padding ---
+    float sizeScale = 1.5f; // tweak to taste
+
+    drawFontSize *= sizeScale;
+    drawPadX     *= sizeScale;
+    drawPadY     *= sizeScale;
+    drawSpacingY *= sizeScale;
+    drawBoxH     *= sizeScale;
+    drawFpsW     *= sizeScale;
+
+    // Recompute FPS text size with new font size
+    ImVec2 fpsTextSize2 = {0,0};
+    if (font) fpsTextSize2 = font->CalcTextSizeA(drawFontSize, FLT_MAX, 0, fpsBuf);
+
+    drawFpsW   = std::max(drawFpsW, std::ceil(fpsTextSize2.x + drawPadX * 2.0f) + 1.0f);
+    drawBoxH   = std::max(drawBoxH, std::ceil(fpsTextSize2.y + drawPadY * 2.0f) + 1.0f);
+    drawFpsMax = { drawFpsMin.x + drawFpsW, drawFpsMin.y + drawBoxH };
+    drawFpsTextPos = { drawFpsMin.x + drawPadX, drawFpsMin.y + (drawBoxH - fpsTextSize2.y) * 0.5f };
+
+    // ---- Banner UNDER FPS ----
+    if (showBootBanner)
+    {
+        static const char* banner = "Load awaiting VdSwap";
+        ImVec2 bannerTextSize = {0,0};
+        if (font) bannerTextSize = font->CalcTextSizeA(drawFontSize, FLT_MAX, 0, banner);
+
+        const float bannerH = std::max(drawBoxH, std::ceil(bannerTextSize.y + drawPadY * 2.0f) + 1.0f);
+        const float bannerW = std::max(drawFpsW, std::ceil(bannerTextSize.x + drawPadX * 2.0f) + 1.0f);
+
+        const ImVec2 bMin = { drawFpsMin.x, drawFpsMax.y + drawSpacingY };
+        const ImVec2 bMax = { bMin.x + bannerW, bMin.y + bannerH };
+        const ImVec2 bTextPos = { bMin.x + drawPadX, bMin.y + (bannerH - bannerTextSize.y) * 0.5f };
+
+        dl->AddRectFilled(bMin, bMax, IM_COL32(255, 210, 0, 255));
+        if (font) dl->AddText(font, drawFontSize, bTextPos, IM_COL32(0, 0, 0, 255), banner);
+
+        KernelTraceHostOpF("HOST.VideoBootOverlay.banner rect=(%.1f,%.1f)-(%.1f,%.1f) disp=(%.0f,%.0f)",
+                           bMin.x, bMin.y, bMax.x, bMax.y,
+                           ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+    }
+
+    // ---- FPS box (draw AFTER banner so it’s always visible) ----
+    if (Config::ShowFPS) {
+        dl->AddRectFilled(drawFpsMin, drawFpsMax, IM_COL32(0, 0, 0, 200));
+        // dl->AddRect(drawFpsMin, drawFpsMax, IM_COL32(255, 255, 255, 255));
+
+        if (font)
+            dl->AddText(font, drawFontSize, drawFpsTextPos, IM_COL32(255, 255, 255, 255), fpsBuf);
+    }
+
+    if (dl) dl->PopClipRect();
+
 }
 
 static void DrawImGui()
@@ -2670,6 +2771,7 @@ static void DrawImGui()
 #endif
     MessageWindow::Draw();
     ButtonGuide::Draw();
+
     Fader::Draw();
     BlackBar::Draw();
 
@@ -2685,9 +2787,19 @@ static void DrawImGui()
 
     DrawFPS();
     DrawProfiler();
+
     ImGui::Render();
 
     auto drawData = ImGui::GetDrawData();
+
+    // Defensive: ensure foreground draw list has a sane clip rect to avoid accidental
+    // scissoring that could hide overlay text (observed during early bring-up)
+    if (ImDrawList* fg = ImGui::GetForegroundDrawList()) {
+        if (fg->_ClipRectStack.Size != 1) {
+            fg->_ClipRectStack.resize(1);
+        }
+    }
+
     if (drawData->CmdListsCount != 0)
     {
         RenderCommand cmd;
@@ -2895,7 +3007,7 @@ void Video::Present()
         static bool s_loggedSkip = false;
         if (!s_loggedSkip)
         {
-            KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, g_device.get(), g_queue.get());
+            KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, (void*)g_device.get(), (void*)g_queue.get());
             s_loggedSkip = true;
         }
         return;

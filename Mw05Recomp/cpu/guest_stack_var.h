@@ -3,6 +3,28 @@
 #include "ppc_context.h"
 #include <kernel/memory.h>
 
+#include <cstdlib>           // for std::getenv
+#include <kernel/trace.h>    // for KernelTraceHostOpF
+
+inline bool IsTraceLoaderArgsEnabled()
+{
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char* env = std::getenv("MW05_TRACE_LOADER_ARGS");
+        enabled = (env && *env) ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
+inline void TraceGuestArgs(const char* tag, uint32_t r3, uint32_t r4,
+                           uint32_t r5, uint32_t r6)
+{
+    if (IsTraceLoaderArgsEnabled()) {
+        KernelTraceHostOpF("%s r3=%08X r4=%08X r5=%08X r6=%08X",
+                           tag, r3, r4, r5, r6);
+    }
+}
+
 // DO NOT use this type as anything other than a local variable.
 // This includes returning. It'll cause memory to leak in the guest stack!
 

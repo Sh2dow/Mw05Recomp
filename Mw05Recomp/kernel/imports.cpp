@@ -150,6 +150,20 @@ extern "C"
   }
 #endif
 
+// helpers
+inline void HostSleepTiny() {
+      // use whichever you prefer in your project
+      host_sleep(0);
+      // or: std::this_thread::yield();
+  }
+
+// helper (place near the top of the file with other helpers)
+inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
+      if (off == 0) return false;
+      if (off < 4096) return false; // guard page
+      return (size_t)off + bytes <= PPC_MEMORY_SIZE;
+  }
+
 // Forward declaration for early calls in this file
 uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, uint32_t WaitMode, bool Alertable, be<int64_t>* Timeout);
 
@@ -158,6 +172,86 @@ static std::atomic<uint32_t> g_RbBase{0}, g_RbLen{0};
 
 #ifndef FILE_SUPERSEDED
 #define FILE_SUPERSEDED        0
+// ---- Force-ack helpers for waits (opt-in via MW05_FORCE_ACK_WAIT) ----
+static inline bool Mw05ForceAckWaitEnabled() {
+    if (const char* v = std::getenv("MW05_FORCE_ACK_WAIT"))
+        return !(v[0]=='0' && v[1]=='\0');
+    return false;
+}
+
+static void Mw05ForceAckFromEventEA(uint32_t eventEA) {
+    if (!eventEA || !GuestOffsetInRange(eventEA, sizeof(XDISPATCHER_HEADER))) return;
+    if (!Mw05ForceAckWaitEnabled()) return;
+
+    KernelTraceHostOpF("HOST.Wait.force_ack.begin ea=%08X", eventEA);
+
+    uint32_t cleared_blockEA = 0;
+    if (uint32_t blockEA = Mw05ConsumeSchedulerBlockEA()) {
+        if (GuestOffsetInRange(blockEA + 8, sizeof(uint64_t))) {
+            if (auto* block = reinterpret_cast<uint32_t*>(g_memory.Translate(blockEA))) {
+                auto* fence64 = reinterpret_cast<uint64_t*>(block + 2);
+                uint64_t before = fence64 ? *fence64 : 0;
+                if (fence64) *fence64 = 0;
+                KernelTraceHostOpF("HOST.Wait.force_ack.block ea=%08X before=%016llX",
+                                   blockEA, static_cast<unsigned long long>(before));
+                cleared_blockEA = blockEA;
+            } else {
+                KernelTraceHostOpF("HOST.Wait.force_ack.block ea=%08X (unmapped)", blockEA);
+            }
+        }
+    }
+
+    if (!cleared_blockEA) {
+        const int32_t kProbeOffsets[] = { -8, -16, -24, -32 };
+        for (int32_t off : kProbeOffsets) {
+            const uint32_t probeEA = eventEA + off;
+            if (!GuestOffsetInRange(probeEA, sizeof(uint64_t))) continue;
+            const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(probeEA));
+            if (!p) continue;
+            uint64_t be_ptr64 = *reinterpret_cast<const uint64_t*>(p);
+            #if defined(_MSC_VER)
+            be_ptr64 = _byteswap_uint64(be_ptr64);
+            #else
+            be_ptr64 = __builtin_bswap64(be_ptr64);
+            #endif
+            const uint32_t blkEA = static_cast<uint32_t>(be_ptr64);
+            if (!blkEA || !GuestOffsetInRange(blkEA + 8, sizeof(uint64_t))) continue;
+            if (auto* blk = reinterpret_cast<uint32_t*>(g_memory.Translate(blkEA))) {
+                auto* fence64 = reinterpret_cast<uint64_t*>(blk + 2);
+                uint64_t before = fence64 ? *fence64 : 0;
+                if (fence64) *fence64 = 0;
+                KernelTraceHostOpF("HOST.Wait.force_ack.fallback block=%08X before=%016llX (off=%d)",
+                                   blkEA, static_cast<unsigned long long>(before), (int)off);
+                cleared_blockEA = blkEA;
+                break;
+            }
+        }
+    }
+
+    if (cleared_blockEA) {
+        if (const char* z = std::getenv("MW05_ZERO_EVENT_PTR_AFTER_ACK")) {
+            if (!(z[0]=='0' && z[1]=='\0')) {
+                if (GuestOffsetInRange(eventEA - 8, sizeof(uint64_t))) {
+                    if (auto* p2 = static_cast<uint8_t*>(g_memory.Translate(eventEA - 8))) {
+                        *reinterpret_cast<uint64_t*>(p2) = 0ull;
+                        KernelTraceHostOpF("HOST.Wait.force_ack.ptr.zero ea=%08X", eventEA - 8);
+                    }
+                }
+            }
+        }
+        if (const char* zs = std::getenv("MW05_ZERO_EVENT_STATUS_AFTER_ACK")) {
+            if (!(zs[0]=='0' && zs[1]=='\0')) {
+                if (GuestOffsetInRange(eventEA, sizeof(uint64_t))) {
+                    if (auto* ps = static_cast<uint8_t*>(g_memory.Translate(eventEA))) {
+                        *reinterpret_cast<uint64_t*>(ps) = 0ull;
+                        KernelTraceHostOpF("HOST.Wait.force_ack.status.zero ea=%08X", eventEA);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #endif
 #ifndef FILE_OPENED
 #define FILE_OPENED            1
@@ -407,20 +501,6 @@ void RestoreFileOffset(FileHandle* file, const LARGE_INTEGER& originalPos, bool 
 
 } // namespace
 
-// helpers
-inline void HostSleepTiny() {
-    // use whichever you prefer in your project
-    host_sleep(0);
-    // or: std::this_thread::yield();
-}
-
-// helper (place near the top of the file with other helpers)
-inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
-    if (off == 0) return false;
-    if (off < 4096) return false; // guard page
-    return (size_t)off + bytes <= PPC_MEMORY_SIZE;
-}
-
 // Optional: allow forcing the VD interrupt event EA via environment for bring-up
 static std::atomic<bool> g_forceVdEventChecked{false};
 static void Mw05MaybeForceRegisterVdEventFromEnv() {
@@ -605,9 +685,11 @@ static inline bool Mw05VblankPumpEnabled() {
     return on;
 }
 
-void VdSwap()
+void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 {
     KernelTraceHostOp("HOST.VdSwap");
+    // Terse arg trace to correlate with vdswap.txt disassembly
+    KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X", pWriteCur, pParams, pRingBase);
     // Mark that the guest performed a swap at least once
     g_guestHasSwapped.store(true, std::memory_order_release);
     // Present the current backbuffer and advance frame state
@@ -653,6 +735,11 @@ static void Mw05StartVblankPumpOnce() {
         // now listens to MW05_FORCE_PRESENT_BG instead.
         static const bool s_force_present = [](){
             if (const char* v = std::getenv("MW05_FORCE_PRESENT_BG"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
+        static const bool s_boot_overlay = [](){
+            if (const char* v = std::getenv("MW05_BOOT_OVERLAY"))
                 return !(v[0]=='0' && v[1]=='\0');
             return false;
         }();
@@ -708,7 +795,7 @@ static void Mw05StartVblankPumpOnce() {
 
             // Optional: request a present each vblank to keep swapchain moving.
             // Do not call Present() from the background thread; signal the main thread instead.
-            if (s_force_present) {
+            if (s_force_present || (s_boot_overlay && !g_guestHasSwapped.load(std::memory_order_acquire))) {
                 Video::RequestPresentFromBackground();
             }
 
@@ -731,6 +818,7 @@ void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset)
     if (valid) {
         const uint32_t prev = g_vdInterruptEventEA.load(std::memory_order_acquire);
         if (prev == eventEA) {
+
             if (auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(eventEA))) {
                 hdr->SignalState = be<int32_t>(1);
             }
@@ -825,6 +913,7 @@ static bool Mw05SignalVdInterruptEvent()
                     if (!blkEA || !GuestOffsetInRange(blkEA + 8, sizeof(uint64_t))) continue;
                     if (auto* blk = reinterpret_cast<uint32_t*>(g_memory.Translate(blkEA))) {
                         auto* fence64 = reinterpret_cast<uint64_t*>(blk + 2);
+
                         if (const char* dump = std::getenv("MW05_DUMP_SCHED_BLOCK")) {
                             if (!(dump[0]=='0' && dump[1]=='\0')) {
                                 uint32_t w0 = blk[0], w1 = blk[1], w2 = blk[2], w3 = blk[3], w4 = blk[4];
@@ -1456,6 +1545,10 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                        Handle, T, Abs, Sz, Ins, Sig);
 
         {
+            // Optional: force-ack the scheduler/event fence prior to blocking
+            if (Mw05ForceAckWaitEnabled()) {
+                Mw05ForceAckFromEventEA(Handle);
+            }
             const uint32_t rc = KeWaitForSingleObject(hdr, /*WaitReason*/0, WaitMode, Alertable != 0, Timeout);
             // Treat the registered Vd interrupt event as pulse-like to avoid
             // a tight re-wait loop on manual-reset events that remain signaled.
@@ -1791,6 +1884,12 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
     // One-time forced VD event registration if requested via env
     Mw05MaybeForceRegisterVdEventFromEnv();
 
+    // Opportunistic nudge: if FORCE_ACK_WAIT is on, ack the registered VD event even if title is sleeping
+    if (Mw05ForceAckWaitEnabled()) {
+        const uint32_t reg_ea = g_vdInterruptEventEA.load(std::memory_order_acquire);
+        if (reg_ea) Mw05ForceAckFromEventEA(reg_ea);
+    }
+
     const bool listShims = Mw05ListShimsEnabled();
 
     static const auto t0 = std::chrono::steady_clock::now();
@@ -2065,7 +2164,7 @@ uint32_t NtFreeVirtualMemory(
     {
         const char* t1 = std::getenv("MW05_TRACE_NTFREE");
         const char* t2 = std::getenv("MW05_TRACE_MEM");
-        const bool on = (t1 && !(t1[0]=='0' && t1[1]==' ')) || (t2 && !(t2[0]=='0' && t2[1]==' '));
+        const bool on = (t1 && !(t1[0]=='0' && t1[1]=='\0')) || (t2 && !(t2[0]=='0' && t2[1]=='\0'));
         if (on)
         {
             LOGFN("[ntfree] base=0x{:08X} matched_reservation={}", base, freed ? "yes" : "no");
@@ -2194,6 +2293,13 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
             }
         }
     }
+    // Optional: force-ack the scheduler/event fence to break re-arm stalls
+    if (Mw05ForceAckWaitEnabled()) {
+        if (uint32_t ea = g_memory.MapVirtual(Object)) {
+            Mw05ForceAckFromEventEA(ea);
+        }
+    }
+
 
     uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
 
@@ -2386,7 +2492,7 @@ void HalReturnToFirmware()
         reason = ctx->r3.u32;
 
     const char* allow = std::getenv("MW05_ALLOW_FIRMWARE_RETURN");
-    const bool honor = (allow && allow[0] && !(allow[0]=='0' && allow[1]==' '));
+    const bool honor = (allow && allow[0] && !(allow[0]=='0' && allow[1]=='\0'));
 
     if (honor)
     {
@@ -2424,7 +2530,7 @@ uint32_t KeGetCurrentProcessType()
 void KeBugCheck()
 {
     const char* honor = std::getenv("MW05_ALLOW_BUGCHECK");
-    if (honor && honor[0] && !(honor[0]=='0' && honor[1]==' '))
+    if (honor && honor[0] && !(honor[0]=='0' && honor[1]=='\0'))
     {
         KernelTraceDumpRecent(16);
 #ifdef _WIN32
@@ -3266,6 +3372,17 @@ static uint32_t KeWaitForMultipleObjects_Impl(
         EarlyBootGate("MW05_LIST_SHIMS",  "HOST.MW05_LIST_SHIMS.KeWaitForMultipleObjects", g_waits_t0)) {
         // Pretend вЂњwait anyвЂќ hit index 0; вЂњwait allвЂќ -> success
         return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
+    }
+
+    // Optional: force-ack any event objects before blocking to break stalls
+    if (Mw05ForceAckWaitEnabled()) {
+        for (uint32_t i = 0; i < Count; ++i) {
+            if (Objects[i]) {
+                if (uint32_t ea = g_memory.MapVirtual(Objects[i].get())) {
+                    Mw05ForceAckFromEventEA(ea);
+                }
+            }
+        }
     }
 
     const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);

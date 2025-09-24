@@ -11,6 +11,19 @@
 #include <cctype>
 #include <cstring>
 
+#include <cpu/guest_stack_var.h> // TraceGuestArgs lives here (gated)
+
+#define TRACE_LOADER_ARGS(TAG, CTX) \
+    do { if (IsTraceLoaderArgsEnabled()) \
+        TraceGuestArgs((TAG), (CTX).r3.u32, (CTX).r4.u32, (CTX).r5.u32, (CTX).r6.u32); } while (0)
+
+#define TRACE_LOADER_VERBOSE(CTX) \
+    do { if (!IsTraceLoaderArgsEnabled()) { \
+        KernelTraceHostOpF("HOST.Loader.args r3=%08X r4=%08X r5=%08X r6=%08X", \
+                           (CTX).r3.u32, (CTX).r4.u32, (CTX).r5.u32, (CTX).r6.u32); \
+        /* keep DumpWordWindow / ProbeForPath / DeepProbeObjectPaths here if you want */ \
+    }} while (0)
+
 extern "C" {
     void __imp__sub_8215BDD8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_8215C080(PPCContext& ctx, uint8_t* base);
@@ -149,18 +162,15 @@ namespace {
 }
 
 #define LOADER_SHIM(NAME) \
-void NAME(PPCContext& ctx, uint8_t* base) { \
+  void NAME(PPCContext& ctx, uint8_t* base) { \
     SetPPCContext(ctx); \
     KernelTraceHostOp("HOST.Loader." #NAME ".enter"); \
-    KernelTraceHostOpF("HOST.Loader." #NAME ".r r3=%08X r4=%08X r5=%08X r6=%08X", \
-                       ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32); \
-    if (ctx.r3.u32) { DumpWordWindow("HOST.Loader.r3.win", ctx.r3.u32, 8); ProbeForPath("r3", ctx.r3.u32); DeepProbeObjectPaths("r3", ctx.r3.u32); } \
-    if (ctx.r4.u32) { DumpWordWindow("HOST.Loader.r4.win", ctx.r4.u32, 8); ProbeForPath("r4", ctx.r4.u32); DeepProbeObjectPaths("r4", ctx.r4.u32); } \
-    if (ctx.r5.u32) { DumpWordWindow("HOST.Loader.r5.win", ctx.r5.u32, 8); ProbeForPath("r5", ctx.r5.u32); DeepProbeObjectPaths("r5", ctx.r5.u32); } \
-    if (ctx.r6.u32) { DumpWordWindow("HOST.Loader.r6.win", ctx.r6.u32, 8); ProbeForPath("r6", ctx.r6.u32); DeepProbeObjectPaths("r6", ctx.r6.u32); } \
+    TRACE_LOADER_ARGS("ldr." #NAME ".pre", ctx); \
+    TRACE_LOADER_VERBOSE(ctx); \
     __imp__##NAME(ctx, base); \
+    TRACE_LOADER_ARGS("ldr." #NAME ".post", ctx); \
     KernelTraceHostOp("HOST.Loader." #NAME ".exit"); \
-}
+  }
 
 LOADER_SHIM(sub_8215BDD8)
 LOADER_SHIM(sub_8215C080)

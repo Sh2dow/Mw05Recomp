@@ -1703,6 +1703,10 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
     GameWindow::Init(sdlVideoDriver);
 
+    // Host trace: window created/initialized
+    KernelTraceHostOp("HOST.GameWindow.init");
+
+
 #ifdef MW05_RECOMP_D3D12
     g_vulkan = DetectWine() || Config::GraphicsAPI == EGraphicsAPI::Vulkan;
 #endif
@@ -1816,6 +1820,10 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 
                 // Mark renderer ready and log adapter + API
                 g_rendererReady = true;
+
+                // Host trace: renderer/device ready
+                KernelTraceHostOpF("HOST.VideoDevice.ready vulkan=%u", g_vulkan ? 1u : 0u);
+
                 if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
                 {
 #ifdef SDL_VULKAN_ENABLED
@@ -2883,7 +2891,15 @@ void Video::Present()
     KernelTraceHostOp("HOST.VideoPresent.enter");
     // Avoid any work until renderer is initialized
     if (!g_rendererReady || !g_device || !g_queue)
+    {
+        static bool s_loggedSkip = false;
+        if (!s_loggedSkip)
+        {
+            KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, g_device.get(), g_queue.get());
+            s_loggedSkip = true;
+        }
         return;
+    }
     g_readyForCommands = false;
 
     RenderCommand cmd;
@@ -2913,6 +2929,9 @@ void Video::Present()
             printf("[boot] Video::Present first call\n");
             fflush(stdout);
             s_loggedOnce = true;
+            // Host trace: first successful present reached
+            KernelTraceHostOp("HOST.VideoPresent.first");
+
         }
     }
 
@@ -3143,12 +3162,12 @@ static void ProcBeginCommandList(const RenderCommand& cmd)
     DestructTempResources();
     BeginCommandList();
 
-    // Ensure the swapchain backbuffer is cleared every frame to avoid stale contents
+    // Ensure the swapchain buffer is cleared every frame to avoid stale contents
     // when the guest hasn't drawn yet. This prevents overlay text from
     // accumulating/ghosting frame-to-frame.
     if (g_backBuffer != nullptr && g_commandLists[g_frame])
     {
-        // Make the backbuffer the current framebuffer before clearing.
+        // Make the backbuffer the current framebuffer before clearing to satisfy plume's preconditions.
         AddBarrier(g_backBuffer, RenderTextureLayout::COLOR_WRITE);
         FlushBarriers();
         SetFramebuffer(g_backBuffer, nullptr, true);

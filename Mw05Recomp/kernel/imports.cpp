@@ -38,9 +38,51 @@
 #include <string_view>
 #include <kernel/xdm.h>
 
-extern "C" uint32_t Mw05ConsumeSchedulerBlockEA();
-extern "C" uint32_t Mw05GetSchedulerHandleEA();
-extern "C" uint32_t Mw05GetSchedulerTimeoutEA();
+
+static std::atomic<uint32_t> g_keSetEventGeneration;
+static std::atomic<uint32_t> g_vdInterruptEventEA{0};
+static std::atomic<bool> g_vdInterruptPending{false};
+static std::atomic<bool> g_vblankPumpRun{false};
+static std::atomic<bool> g_guestHasSwapped{false};
+
+extern "C"
+{
+	bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
+
+	uint32_t Mw05ConsumeSchedulerBlockEA();
+	uint32_t Mw05GetSchedulerHandleEA();
+	uint32_t Mw05GetSchedulerTimeoutEA();
+	void Mw05ForceVdInitOnce();
+	void Mw05LogIsrIfRegisteredOnce();
+	void VdInitializeEngines();
+
+    bool Mw05FastBootEnabled() {
+        static const bool enabled = []() -> bool {
+            if (const char* v = std::getenv("MW05_FAST_BOOT"))
+                return !(v[0] == '0' && v[1] == '\0');
+            return false;
+        }();
+        return enabled;
+    }
+
+    bool Mw05ListShimsEnabled() {
+        static const bool enabled = []() -> bool {
+            if (const char* v = std::getenv("MW05_LIST_SHIMS"))
+                return !(v[0] == '0' && v[1] == '\0');
+            return false;
+        }();
+        return enabled;
+    }
+
+    // put this near your other forward declarations, before first use
+    void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
+
+    // fwd-decls for helpers defined later in this file
+    uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
+    void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
+    void VdEnableRingBufferRPtrWriteBack(uint32_t base);
+    void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
+}
 
 #ifdef _WIN32
   #include <windows.h>
@@ -243,7 +285,7 @@ std::string ExtractGuestPath(const XOBJECT_ATTRIBUTES* attributes)
     return path;
 }
 
-    static std::string NormalizeGuestPath(std::string path)
+static std::string NormalizeGuestPath(std::string path)
 {
     if (path.empty()) return path;
 
@@ -365,29 +407,34 @@ void RestoreFileOffset(FileHandle* file, const LARGE_INTEGER& originalPos, bool 
 
 } // namespace
 
-extern "C" bool Mw05FastBootEnabled() {
-    static const bool enabled = []() -> bool {
-        if (const char* v = std::getenv("MW05_FAST_BOOT"))
-            return !(v[0] == '0' && v[1] == '\0');
-        return false;
-    }();
-    return enabled;
-}
-
-extern "C" bool Mw05ListShimsEnabled() {
-    static const bool enabled = []() -> bool {
-        if (const char* v = std::getenv("MW05_LIST_SHIMS"))
-            return !(v[0] == '0' && v[1] == '\0');
-        return false;
-    }();
-    return enabled;
-}
-
 // helpers
 inline void HostSleepTiny() {
     // use whichever you prefer in your project
     host_sleep(0);
     // or: std::this_thread::yield();
+}
+
+// helper (place near the top of the file with other helpers)
+inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
+    if (off == 0) return false;
+    if (off < 4096) return false; // guard page
+    return (size_t)off + bytes <= PPC_MEMORY_SIZE;
+}
+
+// Optional: allow forcing the VD interrupt event EA via environment for bring-up
+static std::atomic<bool> g_forceVdEventChecked{false};
+static void Mw05MaybeForceRegisterVdEventFromEnv() {
+    bool expected = false;
+    if (!g_forceVdEventChecked.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+    const char* v = std::getenv("MW05_FORCE_VD_EVENT_EA");
+    if (!v || !*v) return;
+    // Accept hex with or without 0x prefix
+    uint32_t ea = (uint32_t)strtoul(v, nullptr, 0);
+    if (GuestOffsetInRange(ea, sizeof(XDISPATCHER_HEADER))) {
+        // Assume auto-reset (manualReset=false) for safety; guests typically pulse this.
+        Mw05RegisterVdInterruptEvent(ea, /*manualReset*/false);
+    }
 }
 
 // ---- optional auto video bring-up (small ring + write-back) ----
@@ -399,13 +446,10 @@ static inline bool Mw05AutoVideoEnabled() {
     return true;
 }
 
-// fwd-decls for helpers defined later in this file
-extern uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
-extern void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
-extern void VdEnableRingBufferRPtrWriteBack(uint32_t base);
-extern void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
-
 static void Mw05AutoVideoInitIfNeeded() {
+    // One-time optional forced registration via env var
+    Mw05MaybeForceRegisterVdEventFromEnv();
+
     if (!Mw05AutoVideoEnabled()) return;
     bool expected = false;
     if (!g_autoVideoDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -436,13 +480,6 @@ static void Mw05AutoVideoInitIfNeeded() {
     VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
 }
 
-// helper (place near the top of the file with other helpers)
-inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
-    if (off == 0) return false;
-    if (off < 4096) return false; // guard page
-    return (size_t)off + bytes <= PPC_MEMORY_SIZE;
-}
-
 inline static void DumpRawHeader16(uint32_t ea) {
     if (!GuestOffsetInRange(ea, sizeof(XDISPATCHER_HEADER))) return;
     const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(ea));
@@ -470,8 +507,10 @@ static std::atomic<uint32_t> g_VdSystemCommandBufferGpuIdAddr{0};
 static std::atomic<uint32_t> g_VdGraphicsCallback{0};
 static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
 
-extern "C" uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
-extern "C" uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
+extern "C" {
+	uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
+	uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
+}
 
 struct Event final : KernelObject, HostObject<XKEVENT>
 {
@@ -548,14 +587,6 @@ struct Event final : KernelObject, HostObject<XKEVENT>
         return TRUE;
     }
 };
-
-static std::atomic<uint32_t> g_keSetEventGeneration;
-static std::atomic<uint32_t> g_vdInterruptEventEA{0};
-static std::atomic<bool> g_vdInterruptPending{false};
-static std::atomic<bool> g_vblankPumpRun{false};
-
-static std::atomic<bool> g_guestHasSwapped{false};
-extern "C" bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
 
 static inline void NudgeEventWaiters() {
     g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -653,7 +684,10 @@ static void Mw05StartVblankPumpOnce() {
             // Optionally invoke the guest graphics interrupt callback at vblank.
             // Many titles rely on this ISR to drive internal state machines.
             static const bool cb_on = [](){
-                // Honor explicit override first
+                // Strong override
+                if (const char* f = std::getenv("MW05_VBLANK_CB_FORCE"))
+                    return !(f[0]=='0' && f[1]=='\0');
+                // Honor explicit toggle
                 if (const char* v = std::getenv("MW05_VBLANK_CB"))
                     return !(v[0]=='0' && v[1]=='\0');
                 // When forcing presents or kicking video early, avoid calling guest ISR
@@ -706,6 +740,7 @@ void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset)
     g_vdInterruptEventEA.store(valid ? eventEA : 0u, std::memory_order_release);
     if (valid) {
         KernelTraceHostOpF("HOST.VdInterruptEvent.register ea=%08X manual=%u", eventEA, manualReset ? 1u : 0u);
+		Mw05LogIsrIfRegisteredOnce();
         Mw05DispatchVdInterruptIfPending();
         Mw05AutoVideoInitIfNeeded();
         Mw05StartVblankPumpOnce();
@@ -737,22 +772,130 @@ static bool Mw05SignalVdInterruptEvent()
     }
 
     if (signaled) {
+        uint32_t cleared_blockEA = 0;
         if (uint32_t blockEA = Mw05ConsumeSchedulerBlockEA()) {
             if (GuestOffsetInRange(blockEA + 8, sizeof(uint64_t))) {
                 if (auto* block = reinterpret_cast<uint32_t*>(g_memory.Translate(blockEA))) {
                     auto* fence64 = reinterpret_cast<uint64_t*>(block + 2);
+                    if (const char* dump = std::getenv("MW05_DUMP_SCHED_BLOCK")) {
+                        if (!(dump[0]=='0' && dump[1]=='\0')) {
+                            uint32_t w0 = block[0], w1 = block[1], w2 = block[2], w3 = block[3], w4 = block[4];
+                            KernelTraceHostOpF("HOST.SchedBlock.dump.before ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
+                                               blockEA, w0, w1, w2, w3, w4);
+                        }
+                    }
                     uint64_t before = fence64 ? *fence64 : 0;
                     if (fence64) *fence64 = 0;
                     KernelTraceHostOpF("HOST.VdInterruptEvent.ack block=%08X before=%016llX",
                                        blockEA, static_cast<unsigned long long>(before));
+                    if (const char* dump = std::getenv("MW05_DUMP_SCHED_BLOCK")) {
+                        if (!(dump[0]=='0' && dump[1]=='\0')) {
+                            uint32_t w0 = block[0], w1 = block[1], w2 = block[2], w3 = block[3], w4 = block[4];
+                            KernelTraceHostOpF("HOST.SchedBlock.dump.after  ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
+                                               blockEA, w0, w1, w2, w3, w4);
+                        }
+                    }
+                    cleared_blockEA = blockEA;
                 } else {
                     KernelTraceHostOpF("HOST.VdInterruptEvent.ack block=%08X (unmapped)", blockEA);
+                }
+            }
+        } else if (const char* ackFromEvent = std::getenv("MW05_ACK_FROM_EVENT_FIELD")) {
+            if (!(ackFromEvent[0]=='0' && ackFromEvent[1]=='\0')) {
+                // Fallback heuristic: some schedulers stash a fence-block pointer near
+                // the event header. Probe a few 64-bit BE slots before the header and
+                // try to interpret them as a guest EA to a scheduler block. If found,
+                // zero [block+8] (the 64-bit fence) to acknowledge.
+                const uint32_t eventEA = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                const int32_t kProbeOffsets[] = { -8, -16, -24, -32 };
+                for (int32_t off : kProbeOffsets) {
+                    if (!GuestOffsetInRange(eventEA + off, sizeof(uint64_t))) continue;
+                    const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(eventEA + off));
+                    if (!p) continue;
+                    uint64_t be_ptr64 = *reinterpret_cast<const uint64_t*>(p);
+                    // guest writes are big-endian; convert and truncate to 32-bit EA
+                    #if defined(_MSC_VER)
+                    be_ptr64 = _byteswap_uint64(be_ptr64);
+                    #else
+                    be_ptr64 = __builtin_bswap64(be_ptr64);
+                    #endif
+                    const uint32_t blkEA = static_cast<uint32_t>(be_ptr64);
+                    // Ignore obvious host/kernel pointers (e.g., 0x82xxxxxx) and zero
+                    // candidates; require that [blkEA+8] be within guest memory.
+                    if (!blkEA || !GuestOffsetInRange(blkEA + 8, sizeof(uint64_t))) continue;
+                    if (auto* blk = reinterpret_cast<uint32_t*>(g_memory.Translate(blkEA))) {
+                        auto* fence64 = reinterpret_cast<uint64_t*>(blk + 2);
+                        if (const char* dump = std::getenv("MW05_DUMP_SCHED_BLOCK")) {
+                            if (!(dump[0]=='0' && dump[1]=='\0')) {
+                                uint32_t w0 = blk[0], w1 = blk[1], w2 = blk[2], w3 = blk[3], w4 = blk[4];
+                                KernelTraceHostOpF("HOST.SchedBlock.dump.before ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
+                                                   blkEA, w0, w1, w2, w3, w4);
+                            }
+                        }
+                        uint64_t before = fence64 ? *fence64 : 0;
+                        if (fence64) *fence64 = 0;
+                        KernelTraceHostOpF("HOST.VdInterruptEvent.ack.fallback block=%08X before=%016llX (off=%d)",
+                                           blkEA, static_cast<unsigned long long>(before), (int)off);
+                        if (const char* dump = std::getenv("MW05_DUMP_SCHED_BLOCK")) {
+                            if (!(dump[0]=='0' && dump[1]=='\0')) {
+                                uint32_t w0 = blk[0], w1 = blk[1], w2 = blk[2], w3 = blk[3], w4 = blk[4];
+                                KernelTraceHostOpF("HOST.SchedBlock.dump.after  ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
+                                                   blkEA, w0, w1, w2, w3, w4);
+                            }
+                        }
+                        cleared_blockEA = blkEA;
+                        break;
+                    }
+                }
+            }
+        }
+        // Optional extra nudges when we have a valid block EA that was acked
+        if (cleared_blockEA) {
+            // 1) Optionally clear the pointer slot stored just before the event header.
+            //    Some schedulers treat this as the "consumed" signal.
+            if (const char* z = std::getenv("MW05_ZERO_EVENT_PTR_AFTER_ACK")) {
+                if (!(z[0]=='0' && z[1]=='\0')) {
+                    const uint32_t eventEA = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                    if (GuestOffsetInRange(eventEA - 8, sizeof(uint64_t))) {
+                        if (auto* p2 = static_cast<uint8_t*>(g_memory.Translate(eventEA - 8))) {
+                            *reinterpret_cast<uint64_t*>(p2) = 0ull;
+                            KernelTraceHostOpF("HOST.VdInterruptEvent.ptr.zero ea=%08X", eventEA - 8);
+                        }
+                    }
+                }
+            }
+            // 1b) Optionally clear the event status (at eventEA) after ack.
+            //     Some schedulers expect ISR to zero the status to signal consumption.
+            if (const char* zs = std::getenv("MW05_ZERO_EVENT_STATUS_AFTER_ACK")) {
+                if (!(zs[0]=='0' && zs[1]=='\0')) {
+                    const uint32_t eventEA = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                    if (GuestOffsetInRange(eventEA, sizeof(uint64_t))) {
+                        if (auto* ps = static_cast<uint8_t*>(g_memory.Translate(eventEA))) {
+                            *reinterpret_cast<uint64_t*>(ps) = 0ull;
+                            KernelTraceHostOpF("HOST.VdInterruptEvent.status.zero ea=%08X", eventEA);
+                        }
+                    }
+                }
+            }
+
+            // 2) Optionally clear the whole scheduler block header (first 20 bytes).
+            //    Some title loops expect all words to be zeroed after an ack.
+            if (const char* clr = std::getenv("MW05_CLEAR_SCHED_BLOCK")) {
+                if (!(clr[0]=='0' && clr[1]=='\0')) {
+                    if (GuestOffsetInRange(cleared_blockEA, 20)) {
+                        if (auto* p = static_cast<uint8_t*>(g_memory.Translate(cleared_blockEA))) {
+                            std::memset(p, 0, 20);
+                            KernelTraceHostOpF("HOST.VdInterruptEvent.clear block=%08X size=20", cleared_blockEA);
+                        }
+                    }
                 }
             }
         }
         {
             bool cb_enabled = true;
-            if (const char* v = std::getenv("MW05_VBLANK_CB"))
+            if (const char* f = std::getenv("MW05_VBLANK_CB_FORCE"))
+                cb_enabled = !(f[0]=='0' && f[1]=='\0');
+            else if (const char* v = std::getenv("MW05_VBLANK_CB"))
                 cb_enabled = !(v[0]=='0' && v[1]=='\0');
             else if (std::getenv("MW05_FORCE_PRESENT") || std::getenv("MW05_FORCE_PRESENT_BG") || std::getenv("MW05_KICK_VIDEO"))
                 cb_enabled = false;
@@ -762,6 +905,10 @@ static bool Mw05SignalVdInterruptEvent()
                     const uint32_t ctx = VdGetGraphicsInterruptContext();
                     KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
                     GuestToHostFunction<void>(cb, ctx);
+                } else if (const char* f = std::getenv("MW05_FORCE_VD_ISR")) {
+                    if (!(f[0]=='0' && f[1]=='\0')) {
+                        KernelTraceHostOp("HOST.VdInterruptEvent.dispatch.forced.no_cb");
+                    }
                 }
             }
         }
@@ -1295,6 +1442,9 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
         auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
         if (hdr) {
             Mw05RegisterVdInterruptEvent(Handle, hdr->Type == 0);
+
+	        Mw05ForceVdInitOnce();
+	        Mw05LogIsrIfRegisteredOnce();
         }
         const uint8_t  T   = hdr ? hdr->Type : 0;        // byte 0
         const uint8_t  Abs = hdr ? hdr->Absolute : 0;    // byte 1 (union)
@@ -1633,9 +1783,13 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
                                 PLARGE_INTEGER IntervalGuest)
 {
     const bool fastBoot  = Mw05FastBootEnabled();
+
     // Ensure early video bring-up keeps the UI responsive during waits/delays
+	Mw05ForceVdInitOnce();  // opt-in early engines + ring/wb
     Mw05AutoVideoInitIfNeeded();
     Mw05StartVblankPumpOnce();
+    // One-time forced VD event registration if requested via env
+    Mw05MaybeForceRegisterVdEventFromEnv();
 
     const bool listShims = Mw05ListShimsEnabled();
 
@@ -2337,6 +2491,7 @@ void MmFreePhysicalMemory(uint32_t type, uint32_t guestAddress)
 
 bool VdPersistDisplay(uint32_t /*a1*/, uint32_t* a2)
 {
+    KernelTraceHostOp("HOST.VdPersistDisplay");
     // Unblock callers waiting for persist to complete.
     if (a2) *a2 = 1;
     return true;
@@ -2369,10 +2524,14 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
     if (outCmdBufPtr) *outCmdBufPtr = g_SysCmdBufGuest;
     if (outValue)     *outValue     = 0; // MW05 reads this; 0 is a safe default
     return g_SysCmdBufGuest;
+
+
 }
 
 uint32_t VdQuerySystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
+    KernelTraceHostOp("HOST.VdQuerySystemCommandBuffer");
+
     EnsureSystemCommandBuffer();
     if (outCmdBufPtr) *outCmdBufPtr = g_SysCmdBufGuest;
     if (outValue)     *outValue     = 0;
@@ -2441,6 +2600,53 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
     Mw05DispatchVdInterruptIfPending();
 }
 
+// ---- forced VD bring-up (opt-in via MW05_FORCE_VD_INIT=1) ----
+static inline bool Mw05ForceVdInitEnabled() {
+    if (const char* v = std::getenv("MW05_FORCE_VD_INIT"))
+        return !(v[0]=='0' && v[1]=='\0');
+    return false;
+}
+
+static std::atomic<bool> g_forceVdInitDone{false};
+
+// Log once when the guest registers its graphics interrupt callback (ISR)
+static std::atomic<bool> g_loggedIsr{false};
+void Mw05LogIsrIfRegisteredOnce() {
+    if (g_loggedIsr.load(std::memory_order_acquire)) return;
+    const uint32_t cb  = VdGetGraphicsInterruptCallback();
+    if (!cb) return;
+    const uint32_t ctx = VdGetGraphicsInterruptContext();
+    bool expected = false;
+    if (!g_loggedIsr.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+    KernelTraceHostOpF("HOST.VdISR.registered cb=%08X ctx=%08X", cb, ctx);
+}
+
+// Force ring + writeback + engines, even earlier than the small auto-init.
+void Mw05ForceVdInitOnce() {
+    if (!Mw05ForceVdInitEnabled()) return;
+    bool expected = false;
+    if (!g_forceVdInitDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+
+    KernelTraceHostOp("HOST.ForceVD.init.begin");
+
+    // Reuse your existing small auto-init to ensure ring & write-back exist:
+    Mw05AutoVideoInitIfNeeded();
+
+    // Then bring engines up explicitly.
+    // (All these helpers already exist in this file.)
+    VdInitializeEngines();
+
+    // Make sure the system command buffer is allocated (idempotent).
+    VdGetSystemCommandBuffer(nullptr, nullptr);
+
+    // Start vblank pump to keep things flowing even if the title idles early.
+    Mw05StartVblankPumpOnce();
+
+    KernelTraceHostOp("HOST.ForceVD.init.done");
+}
+
 uint32_t MmGetPhysicalAddress(uint32_t address)
 {
     LOGF_UTILITY("0x{:x}", address);
@@ -2489,10 +2695,14 @@ void VdShutdownEngines()
 {
     LOG_UTILITY("!!! STUB !!!");
     g_vblankPumpRun.store(false, std::memory_order_release);
+
+
 }
 
 void VdQueryVideoMode(XVIDEO_MODE* vm)
 {
+    KernelTraceHostOp("HOST.VdQueryVideoMode");
+
     memset(vm, 0, sizeof(XVIDEO_MODE));
     vm->DisplayWidth = 1280;
     vm->DisplayHeight = 720;
@@ -2503,10 +2713,14 @@ void VdQueryVideoMode(XVIDEO_MODE* vm)
     vm->VideoStandard = 1;
     vm->Unknown4A = 0x4A;
     vm->Unknown01 = 0x01;
+
+
 }
 
 void VdGetCurrentDisplayInformation(void* info)
 {
+    KernelTraceHostOp("HOST.VdGetCurrentDisplayInformation");
+
     // Fill a minimal display info block expected by MW05 callers.
     // Callers pass a stack buffer and read specific offsets:
     //   lhz +0x98 (width), lhz +0x9A (height), lhz +0xA6 (unknown), lbz +0x54 (flags)
@@ -2527,6 +2741,7 @@ void VdGetCurrentDisplayInformation(void* info)
 void VdSetDisplayMode(uint32_t /*mode*/)
 {
     // Accept and ignore; our renderer manages swapchain independently.
+    KernelTraceHostOp("HOST.VdSetDisplayMode");
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[vd] SetDisplayMode()\n");
         fflush(stdout);
@@ -2558,21 +2773,45 @@ uint32_t VdIsHSIOTrainingSucceeded()
 
 void VdGetCurrentDisplayGamma()
 {
+    KernelTraceHostOp("HOST.VdGetCurrentDisplayGamma");
     LOG_UTILITY("!!! STUB !!!");
 }
 
 void VdQueryVideoFlags()
 {
+    KernelTraceHostOp("HOST.VdQueryVideoFlags");
     LOG_UTILITY("!!! STUB !!!");
+}
+
+void VdInitializeEDRAM()
+{
+    KernelTraceHostOp("HOST.VdInitializeEDRAM");
+    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
+        printf("[vd] InitializeEDRAM()\n"); fflush(stdout);
+    }
 }
 
 void VdCallGraphicsNotificationRoutines()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines");
+    const uint32_t cb = VdGetGraphicsInterruptCallback();
+    if (cb) {
+        const uint32_t ctx = VdGetGraphicsInterruptContext();
+        KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X (via VdCallGraphicsNotificationRoutines)", cb, ctx);
+        GuestToHostFunction<void>(cb, ctx);
+    } else {
+        const char* f = std::getenv("MW05_FORCE_VD_ISR");
+        if (f && !(f[0]=='0' && f[1]=='\0')) {
+            KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines.forced.no_cb");
+        } else {
+            KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines.no_cb");
+        }
+    }
 }
 
 void VdInitializeScalerCommandBuffer()
 {
+    KernelTraceHostOp("HOST.VdInitializeScalerCommandBuffer");
     LOG_UTILITY("!!! STUB !!!");
 }
 
@@ -3818,7 +4057,7 @@ GUEST_FUNCTION_STUB(__imp__XamInputGetKeystrokeEx);
 GUEST_FUNCTION_STUB(__imp__VdGetGraphicsAsicID);
 GUEST_FUNCTION_HOOK(__imp__VdQuerySystemCommandBuffer, VdQuerySystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__VdSetSystemCommandBuffer, VdSetSystemCommandBuffer);
-GUEST_FUNCTION_STUB(__imp__VdInitializeEDRAM);
+GUEST_FUNCTION_HOOK(__imp__VdInitializeEDRAM, VdInitializeEDRAM);
 GUEST_FUNCTION_STUB(__imp__MmSetAddressProtect);
 GUEST_FUNCTION_STUB(__imp__NtCreateIoCompletion);
 GUEST_FUNCTION_STUB(__imp__NtSetIoCompletion);

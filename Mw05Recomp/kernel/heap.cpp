@@ -315,16 +315,35 @@ uint32_t RtlSizeHeap(uint32_t heapHandle, uint32_t flags, uint32_t memoryPointer
 
 uint32_t XAllocMem(uint32_t size, uint32_t flags)
 {
-    void* ptr = (flags & 0x80000000) != 0 ?
-        g_userHeap.AllocPhysical(size, (1ull << ((flags >> 24) & 0xF))) :
-        g_userHeap.Alloc(size);
+    // Flags:
+    // - 0x80000000: allocate from physical heap
+    // - 0x40000000: zero memory
+    // - bits 27..24: alignment exponent (1 << n); when n==0 treat as default
+    const bool phys = (flags & 0x80000000u) != 0u;
+    const uint32_t align_nibble = (flags >> 24) & 0xFu;
+    const size_t alignment = (align_nibble == 0) ? 0 : (size_t(1) << align_nibble);
+
+    void* ptr = nullptr;
+    if (phys)
+    {
+        // For physical allocations, when align nibble is 0, use default 4 KiB page alignment.
+        ptr = g_userHeap.AllocPhysical(size, alignment /* 0 => default 0x1000 inside */);
+    }
+    else
+    {
+        // For virtual allocations, honor alignment nibble when specified; otherwise default path.
+        if (alignment != 0)
+            ptr = g_userHeap.Alloc(size, alignment);
+        else
+            ptr = g_userHeap.Alloc(size);
+    }
 
     if (!ptr) {
         LOGF_ERROR("[heap] XAllocMem failed size={} flags={:08X}", size, flags);
         return 0;
     }
 
-    if ((flags & 0x40000000) != 0)
+    if ((flags & 0x40000000u) != 0u)
         memset(ptr, 0, size);
 
     return g_memory.MapVirtual(ptr);

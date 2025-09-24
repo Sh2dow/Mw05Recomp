@@ -1,0 +1,467 @@
+.text:82598A20 sub_82598A20:                           # CODE XREF: sub_82439AF0+10↑p
+.text:82598A20                                         # sub_82458B20+4C↑p ...
+.text:82598A20
+.text:82598A20 .set back_chain, -0x1C0
+.text:82598A20 .set var_16C, -0x16C
+.text:82598A20 .set var_164, -0x164
+.text:82598A20 .set var_160, -0x160
+.text:82598A20 .set var_15C, -0x15C
+.text:82598A20 .set var_158, -0x158
+.text:82598A20 .set var_154, -0x154
+.text:82598A20 .set var_150, -0x150
+.text:82598A20 .set var_14C, -0x14C
+.text:82598A20 .set var_148, -0x148
+.text:82598A20 .set var_138, -0x138
+.text:82598A20 .set var_120, -0x120
+.text:82598A20 .set var_11C, -0x11C
+.text:82598A20 .set var_118, -0x118
+.text:82598A20 .set var_104, -0x104
+.text:82598A20 .set var_100, -0x100
+.text:82598A20 .set var_90, -0x90
+.text:82598A20 .set var_80, -0x80
+.text:82598A20
+.text:82598A20                 mflr      r12
+.text:82598A24                 bl        __savegprlr_24
+.text:82598A28                 stwu      r1, back_chain(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38694, disp=+0xfffffffffffffe40)
+.text:82598A2C                 mr        r31, r3
+.text:82598A30                 mr        r30, r4
+.text:82598A34                 mr        r27, r5
+.text:82598A38                 bl        KeGetCurrentProcessType
+.text:82598A3C                 lwz       r11, 0(r30)
+.text:82598A40                 lis       r10, 8
+.text:82598A44                 addi      r8, r3, -1
+.text:82598A48                 add       r9, r11, r10
+.text:82598A4C                 lwz       r11, 0x3698(r31)
+.text:82598A50                 cmplwi    r11, 0
+.text:82598A54                 stw       r9, 0(r30)    # [queue_head] candidate store -> 0x82A384D4 via r30 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598A58                 cntlzw    r9, r8
+.text:82598A5C                 stw       r30, 0x3698(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A34E3C, disp=+0x3698)
+.text:82598A60                 extrwi    r24, r9, 1,26
+.text:82598A64                 beq       loc_82598A90
+.text:82598A68                 lwz       r9, 0(r11)
+.text:82598A6C                 lwz       r8, 0x289C(r31)
+.text:82598A70                 subf      r10, r10, r9
+.text:82598A74                 clrlwi    r9, r10, 8
+.text:82598A78                 stw       r8, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598A7C                 stw       r10, 0(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598A80                 rlwinm.   r9, r9, 0,24,12
+.text:82598A84                 bne       loc_82598A90
+.text:82598A88                 mr        r3, r11
+.text:82598A8C                 bl        sub_82594CB8
+.text:82598A90
+.text:82598A90 loc_82598A90:                           # CODE XREF: sub_82598A20+44↑j
+.text:82598A90                                         # sub_82598A20+64↑j
+.text:82598A90                 lwz       r10, 0x1C(r30)
+.text:82598A94                 li        r25, 0
+.text:82598A98                 lwz       r7, 0x5038(r31)
+.text:82598A9C                 rlwinm    r9, r10, 2,30,30
+.text:82598AA0                 lwz       r8, 0x35DC(r31)
+.text:82598AA4                 lwz       r10, 0x14(r30)
+.text:82598AA8                 cmpwi     cr6, r7, 0
+.text:82598AAC                 lwz       r11, 0x18(r30)
+.text:82598AB0                 mr        r26, r8
+.text:82598AB4                 clrrwi    r7, r10, 12
+.text:82598AB8                 clrlwi    r10, r10, 26
+.text:82598ABC                 stw       r8, 0x1C0+var_150(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38464, disp=+0x70)
+.text:82598AC0                 clrlwi    r8, r11, 19
+.text:82598AC4                 addi      r9, r9, 1
+.text:82598AC8                 extrwi    r11, r11, 13,6
+.text:82598ACC                 mr        r29, r25
+.text:82598AD0                 stw       r7, 0x1C0+var_160(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38474, disp=+0x60)
+.text:82598AD4                 stw       r10, 0x1C0+var_154(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38468, disp=+0x6c)
+.text:82598AD8                 add       r11, r11, r9
+.text:82598ADC                 add       r10, r8, r9
+.text:82598AE0                 stw       r11, 0x1C0+var_15C(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38470, disp=+0x64)
+.text:82598AE4                 stw       r10, 0x1C0+var_158(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A3846C, disp=+0x68)
+.text:82598AE8                 beq       cr6, loc_82598B54
+.text:82598AEC                 lwz       r10, 0x5030(r31)
+.text:82598AF0                 lwz       r11, 0x5034(r31)
+.text:82598AF4                 subf      r10, r10, r11
+.text:82598AF8                 cmplwi    cr6, r10, 6
+.text:82598AFC                 bge       cr6, loc_82598B54
+.text:82598B00                 clrlwi    r11, r11, 29
+.text:82598B04                 lwz       r10, 0x2890(r31)
+.text:82598B08                 mr        r3, r31
+.text:82598B0C                 addi      r11, r11, 0x10
+.text:82598B10                 slwi      r11, r11, 2
+.text:82598B14                 stwx      r25, r11, r10
+.text:82598B18                 lwz       r11, 0x5034(r31)
+.text:82598B1C                 lwz       r10, 0x2890(r31)
+.text:82598B20                 addi      r11, r11, 1
+.text:82598B24                 clrlwi    r11, r11, 29
+.text:82598B28                 addi      r11, r11, 0x10
+.text:82598B2C                 slwi      r11, r11, 2
+.text:82598B30                 stwx      r25, r11, r10
+.text:82598B34                 lwz       r11, 0x5034(r31)
+.text:82598B38                 lwz       r10, 0x2890(r31)
+.text:82598B3C                 clrlwi    r11, r11, 29
+.text:82598B40                 addi      r11, r11, 0x10
+.text:82598B44                 slwi      r11, r11, 2
+.text:82598B48                 add       r4, r11, r10
+.text:82598B4C                 bl        sub_825A54F0
+.text:82598B50                 li        r29, 1
+.text:82598B54
+.text:82598B54 loc_82598B54:                           # CODE XREF: sub_82598A20+C8↑j
+.text:82598B54                                         # sub_82598A20+DC↑j
+.text:82598B54                 addi      r4, r1, 0x1C0+var_14C
+.text:82598B58                 addi      r3, r1, 0x1C0+var_120
+.text:82598B5C                 bl        VdGetSystemCommandBuffer
+.text:82598B60                 li        r4, 0x40 # '@'
+.text:82598B64                 mr        r3, r31
+.text:82598B68                 bl        sub_82595FC8
+.text:82598B6C                 addi      r11, r1, 0x1C0+var_15C
+.text:82598B70                 addi      r5, r1, 0x1C0+var_158
+.text:82598B74                 lwz       r7, 0x1C0+var_14C(r1)
+.text:82598B78                 mr        r28, r3
+.text:82598B7C                 addi      r10, r1, 0x1C0+var_150
+.text:82598B80                 addi      r9, r1, 0x1C0+var_154
+.text:82598B84                 stw       r11, 0x1C0+var_164(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38478, disp=+0x5c)
+.text:82598B88                 addi      r8, r1, 0x1C0+var_160
+.text:82598B8C                 lwz       r11, 0x2890(r31)
+.text:82598B90                 addi      r6, r1, 0x1C0+var_120
+.text:82598B94                 stw       r5, 0x1C0+var_16C(r1) # [queue_head] candidate store -> 0x82A384D4 via r1 (implied_base=0x82A38480, disp=+0x54)
+.text:82598B98                 addi      r4, r30, 0x10
+.text:82598B9C                 addi      r3, r28, 4
+.text:82598BA0                 addi      r5, r11, 8
+.text:82598BA4                 bl        VdSwap
+.text:82598BA8                 lwz       r10, 0x1C0+var_11C(r1)
+.text:82598BAC                 addi      r11, r28, 0x100
+.text:82598BB0                 cmpwi     cr6, r29, 0
+.text:82598BB4                 stw       r10, 0x5058(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A3347C, disp=+0x5058)
+.text:82598BB8                 stw       r11, 0(r31)   # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598BBC                 beq       cr6, loc_82598BF0
+.text:82598BC0                 lwz       r11, 0x5034(r31)
+.text:82598BC4                 mr        r3, r31
+.text:82598BC8                 lwz       r10, 0x2890(r31)
+.text:82598BCC                 addi      r11, r11, 1
+.text:82598BD0                 clrlwi    r11, r11, 29
+.text:82598BD4                 addi      r11, r11, 0x10
+.text:82598BD8                 slwi      r11, r11, 2
+.text:82598BDC                 add       r4, r11, r10
+.text:82598BE0                 bl        sub_825A54F0
+.text:82598BE4                 lwz       r11, 0x5034(r31)
+.text:82598BE8                 addi      r11, r11, 2
+.text:82598BEC                 stw       r11, 0x5034(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A334A0, disp=+0x5034)
+.text:82598BF0
+.text:82598BF0 loc_82598BF0:                           # CODE XREF: sub_82598A20+19C↑j
+.text:82598BF0                 lbz       r11, 0x28C1(r31)
+.text:82598BF4                 mr        r29, r25
+.text:82598BF8                 mr        r30, r25
+.text:82598BFC                 rlwinm.   r11, r11, 0,26,26
+.text:82598C00                 beq       loc_82598C14
+.text:82598C04                 mr        r5, r24
+.text:82598C08                 addi      r4, r31, 0x3598
+.text:82598C0C                 mr        r3, r31
+.text:82598C10                 bl        sub_825A84B8
+.text:82598C14
+.text:82598C14 loc_82598C14:                           # CODE XREF: sub_82598A20+1E0↑j
+.text:82598C14                 cmplwi    cr6, r27, 0
+.text:82598C18                 beq       cr6, loc_82598C90
+.text:82598C1C                 addi      r9, r31, 0x35F8
+.text:82598C20                 mr        r11, r27
+.text:82598C24                 mr        r10, r9
+.text:82598C28                 addi      r8, r11, 0x1C
+.text:82598C2C
+.text:82598C2C loc_82598C2C:                           # CODE XREF: sub_82598A20+228↓j
+.text:82598C2C                 lbz       r7, 0(r11)
+.text:82598C30                 lbz       r6, 0(r10)
+.text:82598C34                 subf.     r7, r6, r7
+.text:82598C38                 bne       loc_82598C4C
+.text:82598C3C                 addi      r11, r11, 1
+.text:82598C40                 addi      r10, r10, 1
+.text:82598C44                 cmpw      cr6, r11, r8
+.text:82598C48                 bne       cr6, loc_82598C2C
+.text:82598C4C
+.text:82598C4C loc_82598C4C:                           # CODE XREF: sub_82598A20+218↑j
+.text:82598C4C                 cmpwi     r7, 0
+.text:82598C50                 beq       loc_82598C90
+.text:82598C54                 mr        r10, r9
+.text:82598C58                 mr        r11, r27
+.text:82598C5C                 li        r9, 7
+.text:82598C60                 mtctr     r9
+.text:82598C64
+.text:82598C64 loc_82598C64:                           # CODE XREF: sub_82598A20+254↓j
+.text:82598C64                 lwz       r9, 0(r11)
+.text:82598C68                 addi      r11, r11, 4
+.text:82598C6C                 stw       r9, 0(r10)    # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598C70                 addi      r10, r10, 4
+.text:82598C74                 bdnz      loc_82598C64
+.text:82598C78                 addi      r5, r1, 0x1C0+var_80
+.text:82598C7C                 mr        r4, r27
+.text:82598C80                 mr        r3, r31
+.text:82598C84                 bl        sub_825A7DE8
+.text:82598C88                 addi      r4, r1, 0x1C0+var_80
+.text:82598C8C                 bl        sub_825A7F10
+.text:82598C90
+.text:82598C90 loc_82598C90:                           # CODE XREF: sub_82598A20+1F8↑j
+.text:82598C90                                         # sub_82598A20+230↑j
+.text:82598C90                 lwz       r11, 0x1C0+var_118(r1)
+.text:82598C94                 cmplwi    cr6, r11, 0
+.text:82598C98                 beq       cr6, loc_82598D94
+.text:82598C9C                 lwz       r11, 0x1C0+var_150(r1)
+.text:82598CA0                 cmplw     cr6, r11, r26
+.text:82598CA4                 bne       cr6, loc_82598D94
+.text:82598CA8                 lwz       r11, 0x1C0+var_104(r1)
+.text:82598CAC                 cmplwi    cr6, r11, 0
+.text:82598CB0                 beq       cr6, loc_82598D38
+.text:82598CB4                 addi      r9, r31, 0x3614
+.text:82598CB8                 addi      r11, r1, 0x1C0+var_100
+.text:82598CBC                 mr        r10, r9
+.text:82598CC0                 addi      r8, r11, 0x38 # '8'
+.text:82598CC4
+.text:82598CC4 loc_82598CC4:                           # CODE XREF: sub_82598A20+2C0↓j
+.text:82598CC4                 lbz       r7, 0(r11)
+.text:82598CC8                 lbz       r6, 0(r10)
+.text:82598CCC                 subf.     r7, r6, r7
+.text:82598CD0                 bne       loc_82598CE4
+.text:82598CD4                 addi      r11, r11, 1
+.text:82598CD8                 addi      r10, r10, 1
+.text:82598CDC                 cmpw      cr6, r11, r8
+.text:82598CE0                 bne       cr6, loc_82598CC4
+.text:82598CE4
+.text:82598CE4 loc_82598CE4:                           # CODE XREF: sub_82598A20+2B0↑j
+.text:82598CE4                 cmpwi     r7, 0
+.text:82598CE8                 beq       loc_82598D38
+.text:82598CEC                 mr        r10, r9
+.text:82598CF0                 addi      r11, r1, 0x1C0+var_100
+.text:82598CF4                 li        r9, 0xE
+.text:82598CF8                 mtctr     r9
+.text:82598CFC
+.text:82598CFC loc_82598CFC:                           # CODE XREF: sub_82598A20+2EC↓j
+.text:82598CFC                 lwz       r9, 0(r11)
+.text:82598D00                 addi      r11, r11, 4
+.text:82598D04                 stw       r9, 0(r10)    # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598D08                 addi      r10, r10, 4
+.text:82598D0C                 bdnz      loc_82598CFC
+.text:82598D10                 addi      r6, r1, 0x1C0+var_100
+.text:82598D14                 lwz       r5, 0x1C0+var_15C(r1)
+.text:82598D18                 mr        r3, r31
+.text:82598D1C                 lwz       r4, 0x1C0+var_158(r1)
+.text:82598D20                 li        r29, 1
+.text:82598D24                 bl        sub_825A7B78
+.text:82598D28                 lbz       r11, 0x28C2(r31)
+.text:82598D2C                 ori       r11, r11, 0x40 # '@'
+.text:82598D30                 stb       r11, 0x28C2(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C12, disp=+0x28c2)
+.text:82598D34                 b         loc_82598D54
+.text:82598D38 # ---------------------------------------------------------------------------
+.text:82598D38
+.text:82598D38 loc_82598D38:                           # CODE XREF: sub_82598A20+290↑j
+.text:82598D38                                         # sub_82598A20+2C8↑j
+.text:82598D38                 lbz       r11, 0x28C2(r31)
+.text:82598D3C                 rlwinm.   r11, r11, 0,25,25
+.text:82598D40                 beq       loc_82598D54
+.text:82598D44                 lwz       r11, 0x1C0+var_90(r1)
+.text:82598D48                 cmplwi    cr6, r11, 0
+.text:82598D4C                 bne       cr6, loc_82598D54
+.text:82598D50                 li        r30, 1
+.text:82598D54
+.text:82598D54 loc_82598D54:                           # CODE XREF: sub_82598A20+314↑j
+.text:82598D54                                         # sub_82598A20+320↑j ...
+.text:82598D54                 lwz       r11, 0x1C0+var_154(r1)
+.text:82598D58                 lis       r4, 0x2828
+.text:82598D5C                 ori       r4, r4, 0x106 # 0x28280106
+.text:82598D60                 cmplwi    cr6, r11, 7
+.text:82598D64                 bne       cr6, loc_82598D70
+.text:82598D68                 lis       r4, 0x2828
+.text:82598D6C                 ori       r4, r4, 0x136 # 0x28280136
+.text:82598D70
+.text:82598D70 loc_82598D70:                           # CODE XREF: sub_82598A20+344↑j
+.text:82598D70                 lbz       r11, 0x28C2(r31)
+.text:82598D74                 clrlwi.   r11, r11, 31
+.text:82598D78                 bne       loc_82598D88
+.text:82598D7C                 li        r5, 0
+.text:82598D80                 mr        r3, r31
+.text:82598D84                 bl        sub_825986F8
+.text:82598D88
+.text:82598D88 loc_82598D88:                           # CODE XREF: sub_82598A20+358↑j
+.text:82598D88                 lbz       r11, 0x28C2(r31)
+.text:82598D8C                 ori       r11, r11, 1
+.text:82598D90                 b         loc_82598DE4  # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C12, disp=+0x28c2)
+.text:82598D94 # ---------------------------------------------------------------------------
+.text:82598D94
+.text:82598D94 loc_82598D94:                           # CODE XREF: sub_82598A20+278↑j
+.text:82598D94                                         # sub_82598A20+284↑j
+.text:82598D94                 lbz       r11, 0x28C2(r31)
+.text:82598D98                 rlwinm.   r11, r11, 0,25,25
+.text:82598D9C                 beq       loc_82598DC0
+.text:82598DA0                 li        r30, 1
+.text:82598DA4                 addi      r10, r31, 0x3614
+.text:82598DA8                 mr        r9, r25
+.text:82598DAC                 li        r11, 0xE
+.text:82598DB0                 mtctr     r11
+.text:82598DB4
+.text:82598DB4 loc_82598DB4:                           # CODE XREF: sub_82598A20+39C↓j
+.text:82598DB4                 stw       r9, 0(r10)    # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598DB8                 addi      r10, r10, 4
+.text:82598DBC                 bdnz      loc_82598DB4  # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598DC0
+.text:82598DC0 loc_82598DC0:                           # CODE XREF: sub_82598A20+37C↑j
+.text:82598DC0                 lbz       r11, 0x28C2(r31)
+.text:82598DC4                 clrlwi.   r11, r11, 31
+.text:82598DC8                 beq       loc_82598DDC
+.text:82598DCC                 addi      r5, r31, 0x36EC
+.text:82598DD0                 lwz       r4, 0x35D8(r31)
+.text:82598DD4                 mr        r3, r31
+.text:82598DD8                 bl        sub_825986F8
+.text:82598DDC
+.text:82598DDC loc_82598DDC:                           # CODE XREF: sub_82598A20+3A8↑j
+.text:82598DDC                 lbz       r11, 0x28C2(r31)
+.text:82598DE0                 clrrwi    r11, r11, 1
+.text:82598DE4
+.text:82598DE4 loc_82598DE4:                           # CODE XREF: sub_82598A20+370↑j
+.text:82598DE4                 stb       r11, 0x28C2(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C12, disp=+0x28c2)
+.text:82598DE8                 cmpwi     cr6, r30, 0
+.text:82598DEC                 beq       cr6, loc_82598E14
+.text:82598DF0                 clrlwi    r11, r11, 24
+.text:82598DF4                 lwz       r5, 0x1C0+var_15C(r1)
+.text:82598DF8                 addi      r6, r31, 0x364C
+.text:82598DFC                 lwz       r4, 0x1C0+var_158(r1)
+.text:82598E00                 mr        r3, r31
+.text:82598E04                 li        r29, 1
+.text:82598E08                 andi.     r11, r11, 0xBF
+.text:82598E0C                 stb       r11, 0x28C2(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C12, disp=+0x28c2)
+.text:82598E10                 bl        sub_825A7B78
+.text:82598E14
+.text:82598E14 loc_82598E14:                           # CODE XREF: sub_82598A20+3CC↑j
+.text:82598E14                 lwz       r11, 0x4FE4(r31)
+.text:82598E18                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E1C                 cmplw     cr6, r11, r10
+.text:82598E20                 beq       cr6, loc_82598E9C
+.text:82598E24                 lwz       r11, 0(r31)
+.text:82598E28                 lwz       r10, 8(r31)
+.text:82598E2C                 cmplw     cr6, r11, r10
+.text:82598E30                 ble       cr6, loc_82598E40
+.text:82598E34                 mr        r3, r31
+.text:82598E38                 bl        sub_825972B0
+.text:82598E3C                 mr        r11, r3
+.text:82598E40
+.text:82598E40 loc_82598E40:                           # CODE XREF: sub_82598A20+410↑j
+.text:82598E40                 li        r10, 0x1844
+.text:82598E44                 stwu      r10, 4(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598E48                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E4C                 srwi      r8, r10, 20
+.text:82598E50                 clrlwi    r9, r10, 3
+.text:82598E54                 addi      r10, r8, 0x200
+.text:82598E58                 rlwinm    r10, r10, 0,19,19
+.text:82598E5C                 add       r10, r10, r9
+.text:82598E60                 stwu      r10, 4(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598E64                 lbz       r9, 0x28C1(r31)
+.text:82598E68                 lwz       r10, 0x1C0+var_160(r1)
+.text:82598E6C                 stw       r11, 0(r31)   # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598E70                 stw       r10, 0x4FE4(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A334F0, disp=+0x4fe4)
+.text:82598E74                 rlwinm.   r9, r9, 0,29,29
+.text:82598E78                 beq       loc_82598E9C
+.text:82598E7C                 srwi      r11, r10, 20
+.text:82598E80                 clrlwi    r10, r10, 3
+.text:82598E84                 addi      r11, r11, 0x200
+.text:82598E88                 lis       r9, 0x7FC8
+.text:82598E8C                 rlwinm    r11, r11, 0,19,19
+.text:82598E90                 add       r11, r11, r10
+.text:82598E94                 stw       r11, 0x6110(r9) # [queue_head] candidate store -> 0x82A384D4 via r9 (implied_base=0x82A323C4, disp=+0x6110)
+.text:82598E98                 eieio
+.text:82598E9C
+.text:82598E9C loc_82598E9C:                           # CODE XREF: sub_82598A20+400↑j
+.text:82598E9C                                         # sub_82598A20+458↑j
+.text:82598E9C                 cmpwi     cr6, r29, 0
+.text:82598EA0                 beq       cr6, loc_82598F18
+.text:82598EA4                 lwz       r11, 0(r31)
+.text:82598EA8                 lwz       r10, 8(r31)
+.text:82598EAC                 cmplw     cr6, r11, r10
+.text:82598EB0                 ble       cr6, loc_82598EC0
+.text:82598EB4                 mr        r3, r31
+.text:82598EB8                 bl        sub_825972B0
+.text:82598EBC                 mr        r11, r3
+.text:82598EC0
+.text:82598EC0 loc_82598EC0:                           # CODE XREF: sub_82598A20+490↑j
+.text:82598EC0                 li        r10, 0x1838
+.text:82598EC4                 mr        r9, r25
+.text:82598EC8                 lis       r8, -0x3FFC
+.text:82598ECC                 li        r7, 3
+.text:82598ED0                 ori       r8, r8, 0x3C00 # 0xC0043C00
+.text:82598ED4                 stwu      r10, 4(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598ED8                 li        r10, 0x1973
+.text:82598EDC                 mr        r6, r25
+.text:82598EE0                 li        r5, 1
+.text:82598EE4                 li        r4, 0x100
+.text:82598EE8                 li        r3, 0x1852
+.text:82598EEC                 stwu      r9, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598EF0                 li        r30, 1
+.text:82598EF4                 stwu      r8, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598EF8                 stwu      r7, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598EFC                 stwu      r10, 4(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F00                 stwu      r6, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F04                 stwu      r5, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F08                 stwu      r4, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F0C                 stwu      r3, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F10                 stwu      r30, 4(r11)   # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F14                 stw       r11, 0(r31)   # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598F18
+.text:82598F18 loc_82598F18:                           # CODE XREF: sub_82598A20+480↑j
+.text:82598F18                 lbz       r11, 0x28C1(r31)
+.text:82598F1C                 rlwinm.   r11, r11, 0,26,26
+.text:82598F20                 beq       loc_82598FA8
+.text:82598F24                 cmpwi     cr6, r24, 0
+.text:82598F28                 beq       cr6, loc_82598F9C
+.text:82598F2C                 lwz       r11, 0(r31)
+.text:82598F30                 lwz       r10, 8(r31)
+.text:82598F34                 cmplw     cr6, r11, r10
+.text:82598F38                 ble       cr6, loc_82598F48
+.text:82598F3C                 mr        r3, r31
+.text:82598F40                 bl        sub_825972B0
+.text:82598F44                 mr        r11, r3
+.text:82598F48
+.text:82598F48 loc_82598F48:                           # CODE XREF: sub_82598A20+518↑j
+.text:82598F48                 lis       r10, -0x3FFE
+.text:82598F4C                 li        r8, 0x1E4E
+.text:82598F50                 ori       r9, r10, 0x2100 # 0xC0022100
+.text:82598F54                 li        r7, -2
+.text:82598F58                 mr        r6, r25
+.text:82598F5C                 addi      r10, r1, 0x1C0+var_148
+.text:82598F60                 addi      r4, r1, 0x1C0+var_138
+.text:82598F64                 stwu      r9, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F68                 addi      r3, r1, 0x1C0+var_148
+.text:82598F6C                 stwu      r8, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F70                 stwu      r7, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F74                 stwu      r6, 4(r11)    # [queue_head] candidate store -> 0x82A384D4 via r11 (implied_base=0x82A384D0, disp=+0x4)
+.text:82598F78                 std       r25, 0(r10)   # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598F7C                 stw       r25, 8(r10)   # [queue_head] candidate store -> 0x82A384D4 via r10 (implied_base=0x82A384CC, disp=+0x8)
+.text:82598F80                 stw       r11, 0(r31)   # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A384D4, disp=+0x0)
+.text:82598F84                 bl        VdPersistDisplay
+.text:82598F88                 cmplwi    r3, 0
+.text:82598F8C                 beq       loc_82598F9C
+.text:82598F90                 li        r3, 1
+.text:82598F94                 lwz       r4, 0x1C0+var_138(r1)
+.text:82598F98                 bl        MmFreePhysicalMemory
+.text:82598F9C
+.text:82598F9C loc_82598F9C:                           # CODE XREF: sub_82598A20+508↑j
+.text:82598F9C                                         # sub_82598A20+56C↑j
+.text:82598F9C                 lbz       r11, 0x28C1(r31)
+.text:82598FA0                 andi.     r11, r11, 0xDF
+.text:82598FA4                 stb       r11, 0x28C1(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C13, disp=+0x28c1)
+.text:82598FA8
+.text:82598FA8 loc_82598FA8:                           # CODE XREF: sub_82598A20+500↑j
+.text:82598FA8                 mr        r3, r31
+.text:82598FAC                 lwz       r30, 0x289C(r31)
+.text:82598FB0                 bl        sub_825972B0
+.text:82598FB4                 li        r5, 0
+.text:82598FB8                 li        r4, 0
+.text:82598FBC                 mr        r3, r31
+.text:82598FC0                 bl        sub_825A97B8
+.text:82598FC4                 lwz       r11, 0x36AC(r31)
+.text:82598FC8                 mr        r3, r31
+.text:82598FCC                 srwi      r4, r11, 2
+.text:82598FD0                 bl        sub_82596978
+.text:82598FD4                 lbz       r11, 0x28C1(r31)
+.text:82598FD8                 mr        r3, r31
+.text:82598FDC                 andi.     r11, r11, 0xBF
+.text:82598FE0                 stb       r11, 0x28C1(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A35C13, disp=+0x28c1)
+.text:82598FE4                 lwz       r11, 0x36C8(r31)
+.text:82598FE8                 stw       r30, 0x36C8(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A34E0C, disp=+0x36c8)
+.text:82598FEC                 stw       r11, 0x36CC(r31) # [queue_head] candidate store -> 0x82A384D4 via r31 (implied_base=0x82A34E08, disp=+0x36cc)
+.text:82598FF0                 bl        sub_825A55D0
+.text:82598FF4                 li        r4, 0
+.text:82598FF8                 mr        r3, r31
+.text:82598FFC                 bl        sub_8258ACC0
+.text:82599000                 addi      r1, r1, 0x1C0
+.text:82599004                 b         __restgprlr_24
+.text:82599004 # End of function sub_82598A20

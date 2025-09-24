@@ -15,27 +15,31 @@ extern "C" {
     void __imp__sub_828508A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
     uint32_t Mw05PeekSchedulerBlockEA();
-}
+	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
+    void Mw05ForceVdInitOnce();
+    void Mw05LogIsrIfRegisteredOnce();
 
-extern void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
+    // Minimal host-side kick (idempotent) to initialize system command buffer.
+    // Host Vd helper forward-decl (defined in kernel/imports.cpp)
+    uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
+    // Host Vd helpers we can invoke to seed minimal video state
+    void VdInitializeEngines();
+    void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
+    void VdEnableRingBufferRPtrWriteBack(uint32_t base);
+    void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
+}
 
 static inline bool KickVideoInitEnabled() {
-    if(const char* v = std::getenv("MW05_KICK_VIDEO")) {
-        return !(v[0] == '0' && v[1] == '\0');
-    }
-    return false;
+    const char* env = std::getenv("MW05_KICK_VIDEO");
+    return env && *env && *env != '0';
 }
 
-// Minimal host-side kick (idempotent) to initialize system command buffer.
-// Host Vd helper forward-decl (defined in kernel/imports.cpp)
-extern uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
-// Host Vd helpers we can invoke to seed minimal video state
-extern void VdInitializeEngines();
-extern void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
-extern void VdEnableRingBufferRPtrWriteBack(uint32_t base);
-extern void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
+static inline bool ForceVdInitEnabled() {
+	const char* env = std::getenv("MW05_FORCE_VD_INIT");
+	return env && *env && *env != '0';
+}
 
-static void KickMinimalVideo() {
+void KickMinimalVideo() {
     static bool s_done = false;
     if(s_done) return;
     s_done = true;
@@ -64,6 +68,7 @@ static void KickMinimalVideo() {
 void sub_828508A8(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.ThreadEntry.828508A8");
     if(KickVideoInitEnabled()) KickMinimalVideo();
+	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
     __imp__sub_828508A8(ctx, base);
 }
 
@@ -118,5 +123,6 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
     }
 
     if(KickVideoInitEnabled()) KickMinimalVideo();
+	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
     __imp__sub_82812ED0(ctx, base);
 }

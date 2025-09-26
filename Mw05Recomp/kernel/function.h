@@ -8,6 +8,7 @@
 #include "xbox.h"
 #include "memory.h"
 #include "trace.h"
+extern "C" uint32_t Mw05GetHostDefaultVdIsrMagic();
 
 // --- Detect "variadic function pointer" types like R(*)(Args..., ...)
 template <typename T>
@@ -402,14 +403,19 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
     }
     else
     {
-        if (auto guestFunc = g_memory.FindFunction(func))
-        {
+        // Skip if this is the host default VD ISR sentinel (not a guest function)
+        if constexpr (std::is_integral_v<TFunction>) {
+            if (func == Mw05GetHostDefaultVdIsrMagic()) {
+                KernelTraceHostOp("HOST.GuestToHostFunction.skip.host_isr");
+            } else if (auto guestFunc = g_memory.FindFunction(func)) {
+                guestFunc(newCtx, g_memory.base);
+            } else {
+                fprintf(stderr, "[boot][error] Guest function 0x%08X not found.\n", func);
+            }
+        } else if (auto guestFunc = g_memory.FindFunction(func)) {
             guestFunc(newCtx, g_memory.base);
-        }
-        else
-        {
-            fprintf(stderr, "[boot][error] Guest function 0x%08X not found.\n", func);
-            // Return default value for T; leave context updated minimally.
+        } else {
+            fprintf(stderr, "[boot][error] Guest function not found.\n");
         }
     }
 

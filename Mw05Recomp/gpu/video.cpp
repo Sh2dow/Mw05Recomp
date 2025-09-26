@@ -42,6 +42,9 @@
 
 #include <cstdlib> // getenv for MW05_* env toggles
 
+extern "C" uint32_t Mw05GetHostDefaultVdIsrMagic();
+extern "C" void Mw05RunHostDefaultVdIsrNudge(const char* tag);
+
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
 
@@ -106,6 +109,9 @@ extern "C"
 
     uint32_t VdGetGraphicsInterruptCallback();
     uint32_t VdGetGraphicsInterruptContext();
+
+	void Mw05MarkGuestSwappedOnce();
+    bool Mw05SawRealVdSwap();
 }
 #endif
 
@@ -2583,8 +2589,9 @@ static void DrawProfiler()
 
 static void DrawFPS()
 {
-    const bool showBootBanner = (!Mw05HasGuestSwapped());
-    if (!Config::ShowFPS || !showBootBanner)
+    const bool showBootBanner = (!Mw05SawRealVdSwap());
+    // Draw if either FPS is enabled or the boot banner should be shown
+    if (!Config::ShowFPS && !showBootBanner)
         return;
 
     double time = ImGui::GetTime();
@@ -2604,13 +2611,31 @@ static void DrawFPS()
         totalDeltaTime = 0.0;
         totalDeltaCount = 0;
     }
+    // Optional: mark guest as swapped after a short delay to push titles that
+    // gate progress on the first VdSwap (opt-in via MW05_FAKE_VDSWAP)
+    static bool s_fakeSwap = [](){
+        if (const char* v = std::getenv("MW05_FAKE_VDSWAP"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    static double s_bootStart = -1.0;
+    if (showBootBanner) {
+        if (s_bootStart < 0.0) s_bootStart = time;
+        if (s_fakeSwap && (time - s_bootStart) > 2.0 && !Mw05SawRealVdSwap()) {
+            Mw05MarkGuestSwappedOnce();
+        }
+    } else {
+        s_bootStart = -1.0;
+    }
+
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     // Ensure overlay is never clipped by a stale clip-rect
     if (dl) dl->PushClipRectFullScreen();
 
     ImFont* font = ImGui::GetFont();
-    const float fontSize = Scale(10);
+    float fontSize = Scale(10);
+    if (fontSize <= 0.0f) fontSize = 10.0f;
 
     // ---- Compute sizes shared by both blocks up-front ----
     const ImVec2 origin = { Scale(40), Scale(30) };
@@ -3066,7 +3091,12 @@ void Video::Present()
                     printf("[vd] GPU interrupt cb=0x%08X ctx=0x%08X\n", cb, VdGetGraphicsInterruptContext());
                     fflush(stdout);
                 }
-                GuestToHostFunction<void>(cb, VdGetGraphicsInterruptContext());
+                if (cb == Mw05GetHostDefaultVdIsrMagic()) {
+                    KernelTraceHostOp("HOST.VideoPresent.host_isr");
+                    Mw05RunHostDefaultVdIsrNudge("present");
+                } else {
+                    GuestToHostFunction<void>(cb, 0u, VdGetGraphicsInterruptContext());
+                }
             }
         }
     }

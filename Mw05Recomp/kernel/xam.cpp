@@ -392,10 +392,10 @@ uint32_t XamContentGetDeviceData(uint32_t DeviceID, XDEVICE_DATA* pDeviceData)
     pDeviceData->ulDeviceBytes = 0x10000000;
     pDeviceData->ulDeviceFreeBytes = 0x10000000;
     pDeviceData->wszName[0] = 'S';
-    pDeviceData->wszName[1] = 'o';
-    pDeviceData->wszName[2] = 'n';
-    pDeviceData->wszName[3] = 'i';
-    pDeviceData->wszName[4] = 'c';
+    pDeviceData->wszName[1] = 'p';
+    pDeviceData->wszName[2] = 'e';
+    pDeviceData->wszName[3] = 'e';
+    pDeviceData->wszName[4] = 'd';
     pDeviceData->wszName[5] = '\0';
 
     return 0;

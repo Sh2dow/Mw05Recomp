@@ -90,8 +90,9 @@ extern "C"
     void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
     void VdEnableRingBufferRPtrWriteBack(uint32_t base);
     void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
-}
     void VdCallGraphicsNotificationRoutines(uint32_t source);
+    void Mw05MarkGuestSwappedOnce();
+}
 
 
 #ifdef _WIN32
@@ -737,9 +738,22 @@ extern "C" {
             if (!(slw[0]=='0' && slw[1]=='\0')) {
                 const uint32_t lastEA = g_lastWaitEventEA.load(std::memory_order_acquire);
                 const uint32_t vdEA   = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                if (const char* tl2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                    if (!(tl2[0]=='0' && tl2[1]=='\0')) {
+                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.last_wait.state last=%08X vd=%08X", lastEA, vdEA);
+                    }
+                }
+
                 if (lastEA && lastEA != vdEA && GuestOffsetInRange(lastEA, sizeof(XDISPATCHER_HEADER))) {
                     if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(lastEA))) {
                         KeSetEvent(evt, 0, false);
+                // Trace last-wait state for diagnostics
+                if (const char* tl = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                    if (!(tl[0]=='0' && tl[1]=='\0')) {
+                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.last_wait.state last=%08X vd=%08X", lastEA, vdEA);
+                    }
+                }
+
                         KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal.last_wait ea=%08X", lastEA);
                     }
                 }
@@ -786,7 +800,7 @@ extern "C" {
             }
         } else {
             // Default: also emit a '1' source in addition to the vblank (0)
-            VdCallGraphicsNotificationRoutines(1u);
+            VdCallGraphicsNotificationRoutines(0u);
         }
         // If a real ISR is registered (not the host magic), also call it with extra sources
         if (uint32_t cb = VdGetGraphicsInterruptCallback()) {
@@ -804,7 +818,7 @@ extern "C" {
                         if (*p2==',') ++p2;
                     }
                 } else {
-                    GuestToHostFunction<void>(cb, 1u, ctx);
+                    GuestToHostFunction<void>(cb, 0u, ctx);
                 }
             }
         }
@@ -812,6 +826,171 @@ extern "C" {
         }
 
 
+            }
+        }
+
+        // Optional diagnostics to understand what the title is polling before calling VdGetSystemCommandBuffer/VdSwap
+        if (const char* d = std::getenv("MW05_VD_POLL_DIAG")) {
+            if (!(d[0]=='0' && d[1]=='\0')) {
+                static int s_diagTick = 0;
+                // Log every 8th tick to avoid spamming
+                if (((++s_diagTick) & 7) == 0) {
+                    auto read_be64 = [](uint32_t ea)->uint64_t {
+                        if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0;
+                        const void* p = g_memory.Translate(ea);
+                        if (!p) return 0;
+                        uint64_t v = *reinterpret_cast<const uint64_t*>(p);
+                    #if defined(_MSC_VER)
+                        v = _byteswap_uint64(v);
+                    #else
+                        v = __builtin_bswap64(v);
+                    #endif
+                        return v;
+                    };
+
+                    auto read_u32 = [](uint32_t ea)->uint32_t {
+                        if (!GuestOffsetInRange(ea, sizeof(uint32_t))) return 0;
+                        const void* p = g_memory.Translate(ea);
+                        if (!p) return 0;
+                        uint32_t v = *reinterpret_cast<const uint32_t*>(p);
+                        return v; // Many R/WB pointers are stored in native endian
+                    };
+
+                    const uint32_t rb_ea   = g_RbWriteBackPtr.load(std::memory_order_acquire);
+                    const uint32_t rb_val  = rb_ea ? read_u32(rb_ea) : 0;
+                    const uint32_t sys_ea  = g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_acquire);
+                    const uint32_t sys_val = sys_ea ? read_u32(sys_ea) : 0;
+                    const uint32_t vd_ea   = g_vdInterruptEventEA.load(std::memory_order_acquire);
+
+                    const uint64_t e50 = read_be64(0x00060E50);
+                    const uint64_t e58 = read_be64(0x00060E58);
+                    const uint64_t e60 = read_be64(0x00060E60);
+                    const uint64_t e68 = read_be64(0x00060E68);
+                    const uint64_t e70 = read_be64(0x00060E70);
+                    const uint64_t e78 = read_be64(0x00060E78);
+                    const uint64_t e80 = read_be64(0x00060E80);
+
+                    KernelTraceHostOpF(
+                        "HOST.VD.diag rb=(%08X,%08X) sysid=(%08X,%08X) vd=%08X e50=%016llX e58=%016llX e60=%016llX e68=%016llX e70=%016llX e78=%016llX e80=%016llX",
+                        rb_ea, rb_val, sys_ea, sys_val, vd_ea,
+                        (unsigned long long)e50, (unsigned long long)e58, (unsigned long long)e60,
+                        (unsigned long long)e68, (unsigned long long)e70, (unsigned long long)e78, (unsigned long long)e80);
+                }
+            }
+        }
+
+        // Optional pokes to satisfy early-boot polls (guarded by env)
+        if (const char* poke58 = std::getenv("MW05_VD_POKE_E58")) {
+            // Accept hex or decimal; examples: "0x600" or "1536". If the string starts with '+', OR the value.
+            if (poke58 && poke58[0]) {
+                const bool or_mode = (poke58[0] == '+');
+                const char* val_str = or_mode ? poke58 + 1 : poke58;
+                unsigned long v = std::strtoul(val_str, nullptr, 0);
+                auto write_be64 = [](uint32_t ea, uint64_t v64){
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return false;
+                    auto* p = static_cast<uint8_t*>(g_memory.Translate(ea));
+                    if (!p) return false;
+                    p[0] = uint8_t(v64 >> 56); p[1] = uint8_t(v64 >> 48);
+                    p[2] = uint8_t(v64 >> 40); p[3] = uint8_t(v64 >> 32);
+                    p[4] = uint8_t(v64 >> 24); p[5] = uint8_t(v64 >> 16);
+                    p[6] = uint8_t(v64 >>  8); p[7] = uint8_t(v64 >>  0);
+                    return true;
+                };
+                const uint32_t ea = 0x00060E58u;
+                // Only write if different to minimize churn
+                auto read_be64 = [](uint32_t ea)->uint64_t{
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0;
+                    const void* p = g_memory.Translate(ea);
+                    if (!p) return 0;
+                    uint64_t r = *reinterpret_cast<const uint64_t*>(p);
+                #if defined(_MSC_VER)
+                    r = _byteswap_uint64(r);
+                #else
+                    r = __builtin_bswap64(r);
+                #endif
+                    return r;
+                };
+                const uint64_t ov = read_be64(ea);
+                const uint64_t nv = or_mode ? (ov | uint64_t(v)) : uint64_t(v);
+                if (ov != nv) {
+                    if (write_be64(ea, nv)) {
+                        KernelTraceHostOpF("HOST.VD.poke%s e58=%016llX (was %016llX)", or_mode?"|":"", (unsigned long long)nv, (unsigned long long)ov);
+                    }
+                }
+            }
+        }
+
+        // Optional poke for e68 (OR mode supported with leading '+')
+        if (const char* poke68 = std::getenv("MW05_VD_POKE_E68")) {
+            if (poke68 && poke68[0]) {
+                const bool or_mode = (poke68[0] == '+');
+                const char* val_str = or_mode ? poke68 + 1 : poke68;
+                unsigned long v = std::strtoul(val_str, nullptr, 0);
+                auto write_be64 = [](uint32_t ea, uint64_t v64){
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return false;
+                    auto* p = static_cast<uint8_t*>(g_memory.Translate(ea));
+                    if (!p) return false;
+                    p[0] = uint8_t(v64 >> 56); p[1] = uint8_t(v64 >> 48);
+                    p[2] = uint8_t(v64 >> 40); p[3] = uint8_t(v64 >> 32);
+                    p[4] = uint8_t(v64 >> 24); p[5] = uint8_t(v64 >> 16);
+                    p[6] = uint8_t(v64 >>  8); p[7] = uint8_t(v64 >>  0);
+                    return true;
+                };
+                auto read_be64 = [](uint32_t ea)->uint64_t{
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0;
+                    const void* p = g_memory.Translate(ea);
+                    if (!p) return 0;
+                    uint64_t r = *reinterpret_cast<const uint64_t*>(p);
+                #if defined(_MSC_VER)
+                    r = _byteswap_uint64(r);
+                #else
+                    r = __builtin_bswap64(r);
+                #endif
+                    return r;
+                };
+                const uint32_t ea = 0x00060E68u;
+                const uint64_t ov = read_be64(ea);
+                const uint64_t nv = or_mode ? (ov | uint64_t(v)) : uint64_t(v);
+                if (ov != nv && write_be64(ea, nv)) {
+                    KernelTraceHostOpF("HOST.VD.poke%s e68=%016llX (was %016llX)", or_mode?"|":"", (unsigned long long)nv, (unsigned long long)ov);
+                }
+            }
+        }
+
+        // Optional poke for e70 (OR mode supported with leading '+')
+        if (const char* poke70 = std::getenv("MW05_VD_POKE_E70")) {
+            if (poke70 && poke70[0]) {
+                const bool or_mode = (poke70[0] == '+');
+                const char* val_str = or_mode ? poke70 + 1 : poke70;
+                unsigned long v = std::strtoul(val_str, nullptr, 0);
+                auto write_be64 = [](uint32_t ea, uint64_t v64){
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return false;
+                    auto* p = static_cast<uint8_t*>(g_memory.Translate(ea));
+                    if (!p) return false;
+                    p[0] = uint8_t(v64 >> 56); p[1] = uint8_t(v64 >> 48);
+                    p[2] = uint8_t(v64 >> 40); p[3] = uint8_t(v64 >> 32);
+                    p[4] = uint8_t(v64 >> 24); p[5] = uint8_t(v64 >> 16);
+                    p[6] = uint8_t(v64 >>  8); p[7] = uint8_t(v64 >>  0);
+                    return true;
+                };
+                auto read_be64 = [](uint32_t ea)->uint64_t{
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0;
+                    const void* p = g_memory.Translate(ea);
+                    if (!p) return 0;
+                    uint64_t r = *reinterpret_cast<const uint64_t*>(p);
+                #if defined(_MSC_VER)
+                    r = _byteswap_uint64(r);
+                #else
+                    r = __builtin_bswap64(r);
+                #endif
+                    return r;
+                };
+                const uint32_t ea = 0x00060E70u;
+                const uint64_t ov = read_be64(ea);
+                const uint64_t nv = or_mode ? (ov | uint64_t(v)) : uint64_t(v);
+                if (ov != nv && write_be64(ea, nv)) {
+                    KernelTraceHostOpF("HOST.VD.poke%s e70=%016llX (was %016llX)", or_mode?"|":"", (unsigned long long)nv, (unsigned long long)ov);
+                }
             }
         }
 
@@ -825,15 +1004,18 @@ struct Event final : KernelObject, HostObject<XKEVENT>
 {
     bool manualReset;
     std::atomic<bool> signaled;
+    uint32_t guestHeaderEA{0};
 
     Event(XKEVENT* header)
         : manualReset(!header->Type), signaled(!!header->SignalState)
     {
+        guestHeaderEA = g_memory.MapVirtual(header);
     }
 
     Event(bool manualReset, bool initialState)
         : manualReset(manualReset), signaled(initialState)
     {
+        guestHeaderEA = 0;
     }
 
     uint32_t Wait(uint32_t timeout) override
@@ -921,17 +1103,76 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
     }
     Video::Present();
 
-    // Nudge ring-buffer RPtr write-back so guest polling sees forward progress
+    // Advance ring-buffer RPtr write-back to the guest's current write position
+    // when possible, so polling logic sees precise progress; otherwise, nudge.
     uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
     if (wb)
     {
         if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
         {
-            uint32_t cur = *rptr;
             uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
-            uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
-            uint32_t next = (cur + 0x80u) & mask;
-            *rptr = next ? next : 0x40u;
+            const uint32_t size = (len_log2 < 32) ? (1u << len_log2) : 0u;
+            const uint32_t base = g_RbBase.load(std::memory_order_relaxed);
+            bool set_to_write = false;
+
+            if (size && base && GuestOffsetInRange(pWriteCur, sizeof(uint32_t)))
+            {
+                if (const uint32_t* pWC = reinterpret_cast<const uint32_t*>(g_memory.Translate(pWriteCur)))
+                {
+                    const uint32_t write_cur = *pWC;
+                    if (write_cur >= base && write_cur < (base + size))
+                    {
+                        const uint32_t offs = (write_cur - base) & (size - 1u);
+                        *rptr = offs ? offs : 0x20u;
+                        KernelTraceHostOpF("HOST.VdSwap.rptr.set offs=%04X (wc=%08X base=%08X size=%u)", offs, write_cur, base, size);
+                        set_to_write = true;
+                    }
+                }
+            }
+
+            if (!set_to_write)
+            {
+                uint32_t cur = *rptr;
+                const uint32_t mask = size ? (size - 1u) : 0xFFFFu;
+                const uint32_t step = 0x80u;
+                uint32_t next = (cur + step) & mask;
+                *rptr = next ? next : 0x40u;
+            }
+        }
+    }
+
+    // Optional: ack swap via e68 OR if enabled
+    static uint64_t s_ack_mask = [](){
+        uint64_t m = 0;
+        if (const char* v = std::getenv("MW05_VDSWAP_ACK_E68")) {
+            m = std::strtoull(v, nullptr, 0);
+        }
+        if (!m) m = 0x2ull; // default to bit1
+        return m;
+    }();
+    static const bool s_ack_enable = [](){
+        if (const char* v = std::getenv("MW05_VDSWAP_ACK"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_ack_enable) {
+        const uint32_t ea = 0x00060E68u;
+        if (GuestOffsetInRange(ea, sizeof(uint64_t))) {
+            if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                uint64_t v = *p;
+            #if defined(_MSC_VER)
+                v = _byteswap_uint64(v);
+            #else
+                v = __builtin_bswap64(v);
+            #endif
+                v |= s_ack_mask;
+            #if defined(_MSC_VER)
+                *p = _byteswap_uint64(v);
+            #else
+                *p = __builtin_bswap64(v);
+            #endif
+                KernelTraceHostOpF("HOST.VdSwap.ack.e68 |= %llX -> %llX", (unsigned long long)s_ack_mask, (unsigned long long)v);
+            }
         }
     }
 
@@ -1044,6 +1285,76 @@ static void Mw05StartVblankPumpOnce() {
             // Do not call Present() from the background thread; signal the main thread instead.
             if (s_force_present || (s_boot_overlay && !g_sawRealVdSwap.load(std::memory_order_acquire))) {
                 Video::RequestPresentFromBackground();
+            }
+
+
+            // Optional: tick frame counter e70 once per vblank when enabled
+            static const bool s_tick_e70 = [](){
+                if (const char* v = std::getenv("MW05_VD_TICK_E70"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_tick_e70) {
+                const uint32_t ea = 0x00060E70u;
+                if (GuestOffsetInRange(ea, sizeof(uint64_t))) {
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        v = _byteswap_uint64(v);
+                    #else
+                        v = __builtin_bswap64(v);
+                    #endif
+                        v += 1;
+                    #if defined(_MSC_VER)
+                        *p = _byteswap_uint64(v);
+                    #else
+                        *p = __builtin_bswap64(v);
+                    #endif
+                    }
+                }
+            }
+
+            // Optional: toggle e68 bit0 each vblank to emulate a flip flag if enabled
+            static const bool s_toggle_e68 = [](){
+                if (const char* v = std::getenv("MW05_VD_TOGGLE_E68"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_toggle_e68) {
+                const uint32_t ea = 0x00060E68u;
+                if (GuestOffsetInRange(ea, sizeof(uint64_t))) {
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        v = _byteswap_uint64(v);
+                    #else
+                        v = __builtin_bswap64(v);
+                    #endif
+                        v ^= 1ull;
+                    #if defined(_MSC_VER)
+                        *p = _byteswap_uint64(v);
+                    #else
+                        *p = __builtin_bswap64(v);
+                    #endif
+                    }
+                }
+            }
+
+            // One-shot forced swap/present to validate downstream flow (opt-in)
+            static bool s_forcedSwapDone = false;
+            static const bool s_forceSwapOnce = [](){
+                if (const char* v = std::getenv("MW05_FORCE_VDSWAP_ONCE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static int s_forceDelayTicks = 120; // ~2 seconds at 16 ms per tick
+            if (s_forceSwapOnce && !s_forcedSwapDone && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                if (--s_forceDelayTicks <= 0) {
+                    KernelTraceHostOp("HOST.ForceVdSwapOnce.fire");
+                    Mw05MarkGuestSwappedOnce();
+                    Video::RequestPresentFromBackground();
+                    s_forcedSwapDone = true;
+                }
             }
 
             // Keep the SDL window responsive even if the guest is idle.
@@ -1339,16 +1650,22 @@ struct Semaphore final : KernelObject, HostObject<XKSEMAPHORE>
 {
     std::atomic<uint32_t> count;
     uint32_t maximumCount;
+    uint32_t guestHeaderEA{0};
+
 
     Semaphore(XKSEMAPHORE* semaphore)
         : count(semaphore->Header.SignalState), maximumCount(semaphore->Limit)
     {
+        guestHeaderEA = g_memory.MapVirtual(&semaphore->Header);
     }
+
 
     Semaphore(uint32_t count, uint32_t maximumCount)
         : count(count), maximumCount(maximumCount)
     {
+        guestHeaderEA = 0;
     }
+
 
     uint32_t Wait(uint32_t timeout) override
     {
@@ -1791,10 +2108,41 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     // Kernel handle path
     if (IsKernelObject(Handle)) {
         log_once("WAIT classify: kernel-handle");
+
         KernelObject* kernel = GetKernelObject(Handle);
         if (!IsKernelObjectAlive(kernel)) {
             return STATUS_INVALID_HANDLE;
         }
+        if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+            if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+                KernelTraceHostOpF("HOST.Wait.path.NtWaitForSingleObjectEx.kernel_handle handle=%08X", Handle);
+            }
+        }
+        // Record last-wait EA/type if this handle maps to a known guest-backed object
+        if (auto* ev = dynamic_cast<Event*>(kernel)) {
+            if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
+                const uint32_t typ = ev->manualReset ? 0u : 1u;
+                g_lastWaitEventType.store(typ, std::memory_order_release);
+                if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                    if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                        KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForSingleObjectEx.handle->event)", ev->guestHeaderEA, typ);
+                    }
+                }
+            }
+        } else if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
+            if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
+                g_lastWaitEventType.store(5u, std::memory_order_release);
+                if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                    if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                        KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForSingleObjectEx.handle->semaphore)", sem->guestHeaderEA);
+                    }
+                }
+            }
+        }
+
+
         return kernel->Wait(timeout);
     }
 
@@ -1812,7 +2160,6 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     if (GuestOffsetInRange(Handle, sizeof(XDISPATCHER_HEADER))) {
         log_once("WAIT classify: dispatcher-EA");
         // DumpRawHeader16(Handle);  // see helper below
-
         auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(Handle));
         if (hdr) {
             Mw05RegisterVdInterruptEvent(Handle, hdr->Type == 0);
@@ -2160,6 +2507,11 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
                                 BOOLEAN /*Alertable*/,
                                 PLARGE_INTEGER IntervalGuest)
 {
+    // Mark that the last wait was a time delay, not a dispatcher; helps explain last==0
+    g_lastWaitEventEA.store(0u, std::memory_order_release);
+    g_lastWaitEventType.store(0xFFu, std::memory_order_release);
+    KernelTraceHostOp("HOST.Wait.observe.KeDelayExecutionThread");
+
     const bool fastBoot  = Mw05FastBootEnabled();
 
     // Ensure early video bring-up keeps the UI responsive during waits/delays
@@ -2581,6 +2933,14 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
 {
     if (!Object) return STATUS_INVALID_PARAMETER;
 
+    KernelTraceHostOp("HOST.Wait.enter.KeWaitForSingleObject");
+
+    if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+        if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", g_lastWaitEventEA.load(std::memory_order_relaxed), (unsigned)g_lastWaitEventType.load(std::memory_order_relaxed));
+        }
+    }
+
     // Heuristic: register display interrupt event on first wait to ensure vblank pump can signal it.
     if (g_vdInterruptEventEA.load(std::memory_order_acquire) == 0) {
         if (auto ea = g_memory.MapVirtual(Object)) {
@@ -2594,6 +2954,12 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
         g_lastWaitEventEA.store(ea, std::memory_order_release);
         g_lastWaitEventType.store(Object->Type, std::memory_order_release);
     }
+    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", g_lastWaitEventEA.load(std::memory_order_relaxed), (unsigned)g_lastWaitEventType.load(std::memory_order_relaxed));
+        }
+    }
+
 
     // Optional: force-ack the scheduler/event fence to break re-arm stalls
     if (Mw05ForceAckWaitEnabled()) {
@@ -2924,7 +3290,31 @@ static void EnsureSystemCommandBuffer()
 
 uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
+    KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.enter outPtr=%p outVal=%p", (void*)outCmdBufPtr, (void*)outValue);
     EnsureSystemCommandBuffer();
+
+    // Seed a non-zero value on first query to match titles that expect a ticking
+    // system-command value very early (opt-in via MW05_BOOT_TICK=1).
+    static const bool s_bootTick = [](){
+        if (const char* v = std::getenv("MW05_BOOT_TICK")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_bootTick) {
+        uint32_t cur = g_SysCmdBufValue.load(std::memory_order_acquire);
+        if (cur == 0) {
+            uint32_t nv = 1u;
+            g_SysCmdBufValue.store(nv, std::memory_order_release);
+            // If GPU-id address is set, reflect it there as well.
+            uint32_t sysIdEA = g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_acquire);
+            if (sysIdEA && GuestOffsetInRange(sysIdEA, sizeof(uint32_t))) {
+                if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(sysIdEA))) {
+                    *p = nv;
+                }
+            }
+        }
+    }
+
+    KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.res buf=%08X val=%08X", g_SysCmdBufGuest, g_SysCmdBufValue.load(std::memory_order_acquire));
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[vd] GetSystemCommandBuffer -> 0x%08X\n", g_SysCmdBufGuest);
         fflush(stdout);
@@ -2977,6 +3367,13 @@ void VdEnableRingBufferRPtrWriteBack(uint32_t base)
     auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(base));
     if (p) *p = 0;
     g_vdInterruptPending.store(true, std::memory_order_release);
+    // If the system command buffer GPU-identifier address hasn't been set yet,
+    // default it to the write-back area at base+8 so MW05_HOST_ISR_TICK_SYSID has a target.
+    if (g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_acquire) == 0) {
+        VdSetSystemCommandBufferGpuIdentifierAddress(base + 8);
+        KernelTraceHostOpF("HOST.VdSetSystemCommandBufferGpuIdentifierAddress.addr.auto base=%08X ea=%08X", base, base + 8);
+    }
+
     Mw05DispatchVdInterruptIfPending();
     // Ensure vblank pump is running so display waiters can progress.
     Mw05StartVblankPumpOnce();
@@ -3004,6 +3401,62 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
     }
     g_vdInterruptPending.store(true, std::memory_order_release);
     Mw05DispatchVdInterruptIfPending();
+}
+
+
+// Apply optional VD control-block pokes once, even if no default host ISR is installed.
+static void Mw05ApplyVdPokesOnce() {
+    static std::atomic<bool> s_done{false};
+    bool expected = false;
+    if (!s_done.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+
+    auto read_be64 = [](uint32_t ea) -> uint64_t {
+        if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
+        if (const void* p = g_memory.Translate(ea)) {
+            uint64_t v = *reinterpret_cast<const uint64_t*>(p);
+        #if defined(_MSC_VER)
+            return _byteswap_uint64(v);
+        #else
+            return __builtin_bswap64(v);
+        #endif
+        }
+        return 0ull;
+    };
+    auto write_be64 = [](uint32_t ea, uint64_t v64) -> bool {
+        if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return false;
+        if (auto* p = static_cast<uint8_t*>(g_memory.Translate(ea))) {
+        #if defined(_MSC_VER)
+            v64 = _byteswap_uint64(v64);
+        #else
+            v64 = __builtin_bswap64(v64);
+        #endif
+            *reinterpret_cast<uint64_t*>(p) = v64;
+            return true;
+        }
+        return false;
+    };
+
+    auto apply_env_poke = [&](const char* env_name, uint32_t ea, const char* reg_name) {
+        const char* s = std::getenv(env_name);
+        if (!s || !s[0]) return;
+        const bool or_mode = (s[0] == '+');
+        const char* val_str = or_mode ? s + 1 : s;
+        unsigned long v = std::strtoul(val_str, nullptr, 0);
+        const uint64_t ov = read_be64(ea);
+        const uint64_t nv = or_mode ? (ov | uint64_t(v)) : uint64_t(v);
+        if (ov != nv && write_be64(ea, nv)) {
+            KernelTraceHostOpF("HOST.VD.poke%s %s=%016llX (was %016llX)",
+                               or_mode ? "|" : "",
+                               reg_name,
+                               (unsigned long long)nv,
+                               (unsigned long long)ov);
+        }
+    };
+
+    apply_env_poke("MW05_VD_POKE_E58", 0x00060E58u, "e58");
+    apply_env_poke("MW05_VD_POKE_E68", 0x00060E68u, "e68");
+    apply_env_poke("MW05_VD_POKE_E70", 0x00060E70u, "e70");
 }
 
 // ---- forced VD bring-up (opt-in via MW05_FORCE_VD_INIT=1) ----
@@ -3063,6 +3516,7 @@ void Mw05ForceVdInitOnce() {
     }
 
     // Then bring engines up explicitly.
+    Mw05ApplyVdPokesOnce();
     VdInitializeEngines();
 
     // Make sure the system command buffer is allocated (idempotent).
@@ -3219,6 +3673,7 @@ void VdUnregisterGraphicsNotificationRoutine(uint32_t callback)
 void VdInitializeEngines()
 {
     KernelTraceHostOp("HOST.VdInitializeEngines");
+    Mw05ApplyVdPokesOnce();
     // Consider engines initialized; also start the vblank pump to ensure
     // display-related waiters can make progress during bring-up.
     Mw05AutoVideoInitIfNeeded();
@@ -3735,6 +4190,7 @@ static inline bool EarlyBootGate(const char* env_name, const char* trace_tag, st
     return false;
 }
 
+
 // Shared вЂњstart timeвЂќ for early-boot gates
 static const auto g_waits_t0 = std::chrono::steady_clock::now();
 
@@ -3750,6 +4206,25 @@ static uint32_t KeWaitForMultipleObjects_Impl(
     be<int64_t>* Timeout,
     be<uint32_t>* /*WaitBlockArray*/)
 {
+    // Record last-waited dispatcher EA for ISR nudge (prefer the last in the array)
+    if (Count) {
+        for (int i = int(Count) - 1; i >= 0; --i) {
+            if (Objects[i]) {
+                if (uint32_t ea = g_memory.MapVirtual(Objects[i].get())) {
+                    g_lastWaitEventEA.store(ea, std::memory_order_release);
+                    g_lastWaitEventType.store(Objects[i]->Type, std::memory_order_release);
+                    break;
+                }
+            }
+        }
+    }
+    if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+        if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", g_lastWaitEventEA.load(std::memory_order_relaxed), (unsigned)g_lastWaitEventType.load(std::memory_order_relaxed));
+        }
+    }
+
+
     // Early-boot/list-shims fast path (same behavior no matter who calls us)
     if (EarlyBootGate("MW05_FAST_BOOT",   "HOST.FastWait.KeWaitForMultipleObjects",   g_waits_t0) ||
         EarlyBootGate("MW05_LIST_SHIMS",  "HOST.MW05_LIST_SHIMS.KeWaitForMultipleObjects", g_waits_t0)) {
@@ -3901,6 +4376,8 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
     uint32_t Alertable,
     be<int64_t>* Timeout)
 {
+    KernelTraceHostOp("HOST.Wait.enter.NtWaitForMultipleObjectsEx");
+
     // Guards
     if (!HandlesOrDispatchers) return STATUS_INVALID_PARAMETER;
     // NT has a limit (64). Use your projectвЂ™s constant if it exists.
@@ -3919,11 +4396,34 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
             const uint32_t v = HandlesOrDispatchers[i];
             if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
                 auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
+
+
                 hdr->SignalState = be<int32_t>(1);
             }
         }
         Mw05NudgeEventWaiters();
         // For wait-any, pretend index 0 fired; for wait-all, success.
+
+    // Record last-waited dispatcher EA for ISR nudge (prefer last element if EAs present)
+    if (Count) {
+        for (int i = int(Count) - 1; i >= 0; --i) {
+            const uint32_t v = HandlesOrDispatchers[i];
+            if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
+                g_lastWaitEventEA.store(v, std::memory_order_release);
+                if (auto* hdr2 = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v))) {
+                    g_lastWaitEventType.store(hdr2->Type, std::memory_order_release);
+                }
+                break;
+            }
+        }
+    }
+    if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+        if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", g_lastWaitEventEA.load(std::memory_order_relaxed), (unsigned)g_lastWaitEventType.load(std::memory_order_relaxed));
+        }
+    }
+
+
         return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
     }
 
@@ -3934,6 +4434,19 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
 
     const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
     const bool wait_all = (WaitType != 0);
+    // Record last-waited dispatcher EA for ISR nudge (prefer last element if EAs present)
+    if (Count) {
+        for (int i = int(Count) - 1; i >= 0; --i) {
+            const uint32_t v = HandlesOrDispatchers[i];
+            if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
+                g_lastWaitEventEA.store(v, std::memory_order_release);
+                if (auto* hdr2 = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v))) {
+                    g_lastWaitEventType.store(hdr2->Type, std::memory_order_release);
+                }
+                break;
+            }
+        }
+    }
 
     // Build a vector of KernelObject* from mixed inputs
     std::vector<KernelObject*> objs;
@@ -3945,8 +4458,16 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
         if (IsKernelObject(v)) {
             KernelObject* ko = GetKernelObject(v);
             if (!IsKernelObjectAlive(ko)) return STATUS_INVALID_HANDLE;
+
             objs.push_back(ko);
+            if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+                    KernelTraceHostOpF("HOST.Wait.path.NtWaitForMultipleObjectsEx.kernel_handle handle=%08X", v);
+                }
+            }
+
             continue;
+
         }
 
         // Treat as guest dispatcher pointer (EA)
@@ -3965,6 +4486,54 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
                 break;
             default:
                 return STATUS_INVALID_HANDLE;
+            // Record last EA/type if this handle maps to a known guest-backed object
+            if (auto* ev = dynamic_cast<Event*>(ko)) {
+                if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
+                    const uint32_t typ = ev->manualReset ? 0u : 1u;
+                    g_lastWaitEventType.store(typ, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForMultipleObjectsEx.kernel_handle->event)", ev->guestHeaderEA, typ);
+                        }
+                    }
+                }
+            } else if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
+                if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
+                    g_lastWaitEventType.store(5u, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForMultipleObjectsEx.kernel_handle->semaphore)", sem->guestHeaderEA);
+                        }
+                    }
+                }
+            }
+
+            // Record last EA/type if this handle maps to a known guest-backed object
+            if (auto* ev = dynamic_cast<Event*>(ko)) {
+                if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
+                    const uint32_t typ = ev->manualReset ? 0u : 1u;
+                    g_lastWaitEventType.store(typ, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForMultipleObjectsEx.handle->event)", ev->guestHeaderEA, typ);
+                        }
+                    }
+                }
+            } else if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
+                if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
+                    g_lastWaitEventType.store(5u, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForMultipleObjectsEx.handle->semaphore)", sem->guestHeaderEA);
+                        }
+                    }
+                }
+            }
+
         }
         if (!ko) return STATUS_INVALID_HANDLE;
         objs.push_back(ko);

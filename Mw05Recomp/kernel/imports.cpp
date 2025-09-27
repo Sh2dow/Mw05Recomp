@@ -732,6 +732,20 @@ extern "C" {
             }
         }
 
+        // Optionally signal the last waited-on event (if different from the VD event)
+        if (const char* slw = std::getenv("MW05_HOST_ISR_FORCE_SIGNAL_LAST_WAIT")) {
+            if (!(slw[0]=='0' && slw[1]=='\0')) {
+                const uint32_t lastEA = g_lastWaitEventEA.load(std::memory_order_acquire);
+                const uint32_t vdEA   = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                if (lastEA && lastEA != vdEA && GuestOffsetInRange(lastEA, sizeof(XDISPATCHER_HEADER))) {
+                    if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(lastEA))) {
+                        KeSetEvent(evt, 0, false);
+                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal.last_wait ea=%08X", lastEA);
+                    }
+                }
+            }
+        }
+
         // Optionally tick the system command buffer GPU-identifier value
         if (const char* t = std::getenv("MW05_HOST_ISR_TICK_SYSID")) {
             if (!(t[0]=='0' && t[1]=='\0')) {

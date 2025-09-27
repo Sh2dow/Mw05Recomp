@@ -6,11 +6,20 @@
             "configurationType": "Debug",
             "buildRoot": "${projectDir}\\out\\build\\${name}",
             "installRoot": "${projectDir}\\out\\install\\${name}",
-            "cmakeCommandArgs": "",
-            "buildCommandArgs": "",
-            "ctestCommandArgs": "",
             "inheritEnvironments": [ "clang_cl_x64_x64" ],
-            "variables": []
+            "variables": [
+                { "name": "CMAKE_TOOLCHAIN_FILE", "value": "${projectDir}\\thirdparty\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake", "type": "FILEPATH" },
+                { "name": "VCPKG_ROOT",         "value": "${projectDir}\\thirdparty\\vcpkg", "type": "PATH" },
+                { "name": "VCPKG_TARGET_TRIPLET","value": "x64-windows-static" },
+                { "name": "VCPKG_HOST_TRIPLET",  "value": "x64-windows-static" },
+
+                { "name": "CMAKE_C_COMPILER",   "value": "C:/Program Files/LLVM/bin/clang-cl.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_CXX_COMPILER", "value": "C:/Program Files/LLVM/bin/clang-cl.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_LINKER",       "value": "C:/Program Files/LLVM/bin/lld-link.exe", "type": "FILEPATH" },
+
+                { "name": "CMAKE_RC_COMPILER", "value": "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/rc.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_MT",          "value": "C:/Program Files/LLVM/bin/llvm-mt.exe", "type": "FILEPATH" }
+            ]
         },
         {
             "name": "x64-Clang-Release",
@@ -18,11 +27,20 @@
             "configurationType": "RelWithDebInfo",
             "buildRoot": "${projectDir}\\out\\build\\${name}",
             "installRoot": "${projectDir}\\out\\install\\${name}",
-            "cmakeCommandArgs": "",
-            "buildCommandArgs": "",
-            "ctestCommandArgs": "",
             "inheritEnvironments": [ "clang_cl_x64_x64" ],
-            "variables": []
+            "variables": [
+                { "name": "CMAKE_TOOLCHAIN_FILE", "value": "${projectDir}\\thirdparty\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake", "type": "FILEPATH" },
+                { "name": "VCPKG_ROOT",         "value": "${projectDir}\\thirdparty\\vcpkg", "type": "PATH" },
+                { "name": "VCPKG_TARGET_TRIPLET","value": "x64-windows-static" },
+                { "name": "VCPKG_HOST_TRIPLET",  "value": "x64-windows-static" },
+
+                { "name": "CMAKE_C_COMPILER",   "value": "C:/Program Files/LLVM/bin/clang-cl.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_CXX_COMPILER", "value": "C:/Program Files/LLVM/bin/clang-cl.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_LINKER",       "value": "C:/Program Files/LLVM/bin/lld-link.exe", "type": "FILEPATH" },
+
+                { "name": "CMAKE_RC_COMPILER", "value": "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/rc.exe", "type": "FILEPATH" },
+                { "name": "CMAKE_MT",          "value": "C:/Program Files/LLVM/bin/llvm-mt.exe", "type": "FILEPATH" }
+            ]
         }
     ]
 }

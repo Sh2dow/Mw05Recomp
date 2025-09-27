@@ -9,6 +9,8 @@
 [submodule "tools/XenosRecomp"]
 	path = tools/XenosRecomp
 	url = https://github.com/Sh2dow/XenosRecomp.git
+	branch = main
+	update = merge
 [submodule "Mw05RecompResources"]
 	path = Mw05RecompResources
 	url = https://github.com/Sh2dow/Mw05RecompResources.git

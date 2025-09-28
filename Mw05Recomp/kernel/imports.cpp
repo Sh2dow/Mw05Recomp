@@ -1340,6 +1340,602 @@ static void Mw05StartVblankPumpOnce() {
                 }
             }
 
+            // Optional: toggle e58 mask each vblank to emulate a changing progress bit
+            static const bool s_toggle_e58 = [](){
+                if (const char* v = std::getenv("MW05_VD_TOGGLE_E58"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static const uint64_t s_toggle_e58_mask = [](){
+                const char* v = std::getenv("MW05_VD_TOGGLE_E58_MASK");
+                if (v && *v) {
+                    return std::strtoull(v, nullptr, 0);
+                }
+                return 0x100ull; // default to 0x100 as seeded by the title
+            }();
+            if (s_toggle_e58 && s_toggle_e58_mask) {
+                const uint32_t ea = 0x00060E58u;
+                if (GuestOffsetInRange(ea, sizeof(uint64_t))) {
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        v = _byteswap_uint64(v);
+                    #else
+                        v = __builtin_bswap64(v);
+                    #endif
+                        v ^= s_toggle_e58_mask;
+                    #if defined(_MSC_VER)
+                        *p = _byteswap_uint64(v);
+                    #else
+                        *p = __builtin_bswap64(v);
+                    #endif
+                    }
+                }
+            }
+
+            // Optional: PM4-style frontbuffer-ready writeback each vblank (opt-in)
+            static const bool s_pm4_fake_swap = [](){
+                if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_pm4_fake_swap) {
+                // OR-mask writeback (default: e68 |= 0x2)
+                static const uint32_t s_pm4_fb_addr = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_ADDR"))
+                        return (uint32_t)std::strtoul(v, nullptr, 0);
+                    return 0x00060E68u; // e68 by default
+                }();
+                static const uint64_t s_pm4_fb_or = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_OR"))
+                        return std::strtoull(v, nullptr, 0);
+                    return 0x2ull; // ack bit by default
+                }();
+                if (s_pm4_fb_addr && s_pm4_fb_or && GuestOffsetInRange(s_pm4_fb_addr, sizeof(uint64_t))) {
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(s_pm4_fb_addr))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        v = _byteswap_uint64(v);
+                    #else
+                        v = __builtin_bswap64(v);
+                    #endif
+                        const uint64_t nv = v | s_pm4_fb_or;
+                    #if defined(_MSC_VER)
+                        *p = _byteswap_uint64(nv);
+                    #else
+                        *p = __builtin_bswap64(nv);
+                    #endif
+                        KernelTraceHostOpF("HOST.PM4.fake_swap.or addr=%08X |= %llX -> %llX", s_pm4_fb_addr, (unsigned long long)s_pm4_fb_or, (unsigned long long)nv);
+                    }
+                }
+
+                // Optional: second PM4-style OR writeback target (independent addr/mask)
+                static const uint32_t s_pm4_fb2_addr = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP2_ADDR"))
+                        return (uint32_t)std::strtoul(v, nullptr, 0);
+                    return 0u; // disabled by default
+                }();
+                static const uint64_t s_pm4_fb2_or = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP2_OR"))
+                        return std::strtoull(v, nullptr, 0);
+                    return 0ull; // disabled by default
+                }();
+                if (s_pm4_fb2_addr && s_pm4_fb2_or && GuestOffsetInRange(s_pm4_fb2_addr, sizeof(uint64_t))) {
+                    if (auto* p2 = reinterpret_cast<uint64_t*>(g_memory.Translate(s_pm4_fb2_addr))) {
+                        uint64_t v2 = *p2;
+                    #if defined(_MSC_VER)
+                        v2 = _byteswap_uint64(v2);
+                    #else
+                        v2 = __builtin_bswap64(v2);
+                    #endif
+                        const uint64_t nv2 = v2 | s_pm4_fb2_or;
+                    #if defined(_MSC_VER)
+                        *p2 = _byteswap_uint64(nv2);
+                    #else
+                        *p2 = __builtin_bswap64(nv2);
+                    #endif
+                        KernelTraceHostOpF("HOST.PM4.fake_swap2.or addr=%08X |= %llX -> %llX", s_pm4_fb2_addr, (unsigned long long)s_pm4_fb2_or, (unsigned long long)nv2);
+                    }
+                }
+
+
+                // Optional token writeback (simulate PM4 write-data)
+                static const uint32_t s_pm4_token_addr = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TOKEN_ADDR"))
+                        return (uint32_t)std::strtoul(v, nullptr, 0);
+                    return 0u; // disabled by default
+                }();
+                static uint32_t s_pm4_token = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TOKEN_BASE"))
+                        return (uint32_t)std::strtoul(v, nullptr, 0);
+                    return 0xC00002F0u; // seen commonly in logs
+                }();
+                static const uint32_t s_pm4_token_inc = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TOKEN_INC"))
+                        return (uint32_t)std::strtoul(v, nullptr, 0);
+                    return 1u;
+                }();
+                static const bool s_token_on_flip = [](){
+                    if (const char* v = std::getenv("MW05_VD_TOKEN_ON_FLIP"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                static int s_prev_flip_for_token = -1;
+                if (s_pm4_token_addr && GuestOffsetInRange(s_pm4_token_addr, sizeof(uint32_t))) {
+                    bool should_emit_token = true;
+                    if (s_token_on_flip) {
+                        // Sample flip bit from e68
+                        const uint32_t ea_e68 = 0x00060E68u;
+                        if (GuestOffsetInRange(ea_e68, sizeof(uint64_t))) {
+                            if (auto* p68 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e68))) {
+                                uint64_t v68 = *p68;
+                            #if defined(_MSC_VER)
+                                v68 = _byteswap_uint64(v68);
+                            #else
+                                v68 = __builtin_bswap64(v68);
+                            #endif
+                                const int cur_flip = int(v68 & 1ull);
+                                if (s_prev_flip_for_token < 0) {
+                                    s_prev_flip_for_token = cur_flip;
+                                    should_emit_token = false; // don't emit on first observation
+                                } else {
+                                    should_emit_token = (cur_flip == 1 && s_prev_flip_for_token == 0);
+                                    s_prev_flip_for_token = cur_flip;
+                                }
+                            }
+                        }
+                    }
+                    if (should_emit_token) {
+                        if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(s_pm4_token_addr))) {
+                            const uint32_t val = s_pm4_token;
+                            // big-endian store
+                            uint32_t be =
+                        #if defined(_MSC_VER)
+                                _byteswap_ulong(val);
+                        #else
+                                __builtin_bswap32(val);
+                        #endif
+                            *p = be;
+                            KernelTraceHostOpF("HOST.PM4.fake_swap.token addr=%08X val=%08X", s_pm4_token_addr, val);
+                            s_pm4_token += s_pm4_token_inc;
+                        }
+                    }
+                }
+
+                // Optional: synthesize a VdSwap-equivalent present on rising flip until a real VdSwap happens
+                static const bool s_synth_vdswap_on_flip = [](){
+                    if (const char* v = std::getenv("MW05_SYNTH_VDSWAP_ON_FLIP"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                static int s_prev_flip_for_synth = -1;
+                if (s_synth_vdswap_on_flip && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    const uint32_t ea_e68 = 0x00060E68u;
+                    if (GuestOffsetInRange(ea_e68, sizeof(uint64_t))) {
+                        if (auto* p68 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e68))) {
+                            uint64_t v68 = *p68;
+                        #if defined(_MSC_VER)
+                            v68 = _byteswap_uint64(v68);
+                        #else
+                            v68 = __builtin_bswap64(v68);
+                        #endif
+                            const int cur_flip = int(v68 & 1ull);
+                            bool rising = false;
+                            if (s_prev_flip_for_synth < 0) {
+                                s_prev_flip_for_synth = cur_flip;
+                            } else {
+                                rising = (cur_flip == 1 && s_prev_flip_for_synth == 0);
+                                s_prev_flip_for_synth = cur_flip;
+                            }
+                            if (rising) {
+                                KernelTraceHostOp("HOST.SynthVdSwapOnFlip.fire");
+                                Mw05MarkGuestSwappedOnce();
+                                Video::RequestPresentFromBackground();
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            // Optional: lightweight VD read-trace (sample and log on change)
+            static const bool s_vd_read_trace = [](){
+                if (const char* v = std::getenv("MW05_VD_READ_TRACE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_vd_read_trace) {
+                auto rd64 = [](uint32_t ea)->uint64_t{
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        return _byteswap_uint64(v);
+                    #else
+                        return __builtin_bswap64(v);
+                    #endif
+                    }
+                    return 0ull;
+                };
+                struct Snap { uint64_t e48,e50,e58,e60,e68,e70,e78,e80; };
+                static Snap prev{~0ull,~0ull,~0ull,~0ull,~0ull,~0ull,~0ull,~0ull};
+                Snap cur{ rd64(0x00060E48u), rd64(0x00060E50u), rd64(0x00060E58u), rd64(0x00060E60u), rd64(0x00060E68u), rd64(0x00060E70u), rd64(0x00060E78u), rd64(0x00060E80u) };
+                if (cur.e48!=prev.e48 || cur.e50!=prev.e50 || cur.e58!=prev.e58 || cur.e60!=prev.e60 || cur.e68!=prev.e68 || cur.e70!=prev.e70 || cur.e78!=prev.e78 || cur.e80!=prev.e80) {
+                    KernelTraceHostOpF("HOST.VD.read.trace e48=%016llX e50=%016llX e58=%016llX e60=%016llX e68=%016llX e70=%016llX e78=%016llX e80=%016llX",
+                        (unsigned long long)cur.e48,(unsigned long long)cur.e50,(unsigned long long)cur.e58,(unsigned long long)cur.e60,(unsigned long long)cur.e68,(unsigned long long)cur.e70,(unsigned long long)cur.e78,(unsigned long long)cur.e80);
+                    prev = cur;
+                }
+            }
+
+
+                // Late PM4 enforcement pass (optional): re-OR after reads to win races with title writes
+                static const bool s_pm4_fake_swap_tail = [](){
+                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TAIL"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                if (s_pm4_fake_swap_tail) {
+                    static const uint32_t s_pm4_fb_addr_tail = [](){
+                        if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_ADDR"))
+                            return (uint32_t)std::strtoul(v, nullptr, 0);
+                        return 0x00060E68u; // default to e68
+                    }();
+                    static const uint64_t s_pm4_fb_or_tail = [](){
+                        if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_OR"))
+                            return std::strtoull(v, nullptr, 0);
+                        return 0x2ull;
+                    }();
+                    if (s_pm4_fb_addr_tail && s_pm4_fb_or_tail && GuestOffsetInRange(s_pm4_fb_addr_tail, sizeof(uint64_t))) {
+
+                // Auto VdSwap heuristic (opt-in): when conditions look ready for N frames, seed a swap once
+                static const bool s_auto_vdswap_heur = [](){
+                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                static const bool s_auto_vdswap_once = [](){
+                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_ONCE"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return true;
+                }();
+                static int s_auto_vdswap_delay = [](){
+                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_DELAY"))
+                        return std::max(1, (int)std::strtoul(v, nullptr, 0));
+                    return 8; // default: ~8 frames of ready state
+                }();
+                static const uint64_t s_auto_e58_mask = [](){
+                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E58_MASK"))
+                        return std::strtoull(v, nullptr, 0);
+                    return 0x700ull;
+                }();
+                static const uint64_t s_auto_e68_mask = [](){
+                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E68_MASK"))
+                        return std::strtoull(v, nullptr, 0);
+                    return 0x2ull; // require ack bit
+                }();
+                static int s_auto_ok_frames = 0;
+                static bool s_auto_done = false;
+                if (s_auto_vdswap_heur && !s_auto_done && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    auto rd64 = [](uint32_t ea)->uint64_t {
+                        if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
+                        if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                            uint64_t v = *p;
+                        #if defined(_MSC_VER)
+                            return _byteswap_uint64(v);
+                        #else
+                            return __builtin_bswap64(v);
+                        #endif
+                        }
+                        return 0ull;
+                    };
+                    const uint64_t e58 = rd64(0x00060E58u);
+                    const uint64_t e68 = rd64(0x00060E68u);
+                    const bool e58_ok = (e58 & s_auto_e58_mask) == s_auto_e58_mask;
+                    const bool e68_ok = (e68 & s_auto_e68_mask) == s_auto_e68_mask;
+                    if (e58_ok && e68_ok) {
+                        if (++s_auto_ok_frames >= s_auto_vdswap_delay) {
+                            KernelTraceHostOp("HOST.AutoVdSwapHeur.fire");
+                            Mw05MarkGuestSwappedOnce();
+                            Video::RequestPresentFromBackground();
+                            if (s_auto_vdswap_once) s_auto_done = true;
+                        }
+                    } else {
+                        s_auto_ok_frames = 0;
+                    }
+                }
+
+                        if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(s_pm4_fb_addr_tail))) {
+                            uint64_t v = *p;
+                        #if defined(_MSC_VER)
+                            v = _byteswap_uint64(v);
+                        #else
+                            v = __builtin_bswap64(v);
+                        #endif
+                            const uint64_t nv = v | s_pm4_fb_or_tail;
+                            if (nv != v) {
+                            #if defined(_MSC_VER)
+                                *p = _byteswap_uint64(nv);
+                            #else
+                                *p = __builtin_bswap64(nv);
+                            #endif
+                                KernelTraceHostOpF("HOST.PM4.fake_swap.or.tail addr=%08X |= %llX -> %llX", s_pm4_fb_addr_tail, (unsigned long long)s_pm4_fb_or_tail, (unsigned long long)nv);
+                            }
+                        }
+
+                            // Optional: second PM4-style tail OR target (independent addr/mask)
+                            static const uint32_t s_pm4_fb2_addr_tail = [](){
+                                if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP2_ADDR"))
+                                    return (uint32_t)std::strtoul(v, nullptr, 0);
+                                return 0u; // disabled by default
+                            }();
+                            static const uint64_t s_pm4_fb2_or_tail = [](){
+                                if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP2_OR"))
+                                    return std::strtoull(v, nullptr, 0);
+                                return 0ull; // disabled by default
+                            }();
+                            if (s_pm4_fb2_addr_tail && s_pm4_fb2_or_tail && GuestOffsetInRange(s_pm4_fb2_addr_tail, sizeof(uint64_t))) {
+                                if (auto* p2 = reinterpret_cast<uint64_t*>(g_memory.Translate(s_pm4_fb2_addr_tail))) {
+                                    uint64_t v2 = *p2;
+                                #if defined(_MSC_VER)
+                                    v2 = _byteswap_uint64(v2);
+                                #else
+                                    v2 = __builtin_bswap64(v2);
+                                #endif
+                                    const uint64_t nv2 = v2 | s_pm4_fb2_or_tail;
+                                    if (nv2 != v2) {
+                                    #if defined(_MSC_VER)
+                                        *p2 = _byteswap_uint64(nv2);
+                                    #else
+                                        *p2 = __builtin_bswap64(nv2);
+                                    #endif
+                                        KernelTraceHostOpF("HOST.PM4.fake_swap2.or.tail addr=%08X |= %llX -> %llX", s_pm4_fb2_addr_tail, (unsigned long long)s_pm4_fb2_or_tail, (unsigned long long)nv2);
+                                    }
+                                }
+                            }
+
+                    }
+                }
+
+
+                    // Optional: e68 flip/ack handshake; supports pulse-ack mode
+                    static const bool s_e68_handshake = [](){
+                        if (const char* v = std::getenv("MW05_VD_E68_HANDSHAKE"))
+                            return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    static const bool s_e68_ack_pulse = [](){
+                        if (const char* v = std::getenv("MW05_VD_E68_ACK_PULSE"))
+                            return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    if (s_e68_handshake) {
+                        const uint32_t ea = 0x00060E68u;
+                        if (GuestOffsetInRange(ea, sizeof(uint64_t))) {
+                            if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                                uint64_t v = *p;
+                            #if defined(_MSC_VER)
+                                v = _byteswap_uint64(v);
+                            #else
+                                v = __builtin_bswap64(v);
+                            #endif
+                                static int prev_flip = -1; // unknown
+                                static bool pulse_armed = false; // for pulse mode
+                                const int cur_flip = int(v & 1ull);
+                                uint64_t nv = v;
+                                bool did_set = false, did_clear = false;
+                                if (prev_flip < 0) {
+                                    // First observation sets baseline; don't touch ack yet
+                                    prev_flip = cur_flip;
+                                } else if (cur_flip != prev_flip) {
+                                    // Edge detected
+                                    if (cur_flip) {
+                                        // Rising edge: set ack
+                                        nv |= 0x2ull;
+                                        did_set = true;
+                                        if (s_e68_ack_pulse) pulse_armed = true;
+                                    } else {
+                                        // Falling edge: clear ack
+                                        nv &= ~0x2ull;
+                                        did_clear = true;
+                                        pulse_armed = false;
+                                    }
+                                    prev_flip = cur_flip;
+                                } else {
+                                    // No edge; for pulse mode, clear ack on the next pass while flip is high
+                                    if (s_e68_ack_pulse && pulse_armed && cur_flip) {
+                                        nv &= ~0x2ull;
+                                        did_clear = true;
+                                        pulse_armed = false;
+                                    }
+                                }
+                                if (nv != v) {
+                                #if defined(_MSC_VER)
+                                    *p = _byteswap_uint64(nv);
+                                #else
+                                    *p = __builtin_bswap64(nv);
+                                #endif
+                                    KernelTraceHostOpF("HOST.VD.e68.handshake %s ack -> %016llX", (did_set?"set":"clear"), (unsigned long long)nv);
+                                }
+                            }
+                        }
+                    }
+
+
+                    // Optional: force e48 low 16 bits; preserve e48 high 48 bits
+                    static const bool s_e48_force_low16_enabled = [](){
+                        return std::getenv("MW05_VD_E48_LOW16_FORCE") != nullptr;
+                    }();
+                    static const uint64_t s_e48_force_low16_value = [](){
+                        if (const char* v = std::getenv("MW05_VD_E48_LOW16_FORCE"))
+                            return std::strtoull(v, nullptr, 0) & 0xFFFFull;
+                        return 0ull;
+                    }();
+                    if (s_e48_force_low16_enabled) {
+                        const uint32_t ea_e48 = 0x00060E48u;
+                        if (GuestOffsetInRange(ea_e48, sizeof(uint64_t))) {
+                            if (auto* p48 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e48))) {
+                                uint64_t v48 = *p48;
+                            #if defined(_MSC_VER)
+                                v48 = _byteswap_uint64(v48);
+                            #else
+                                v48 = __builtin_bswap64(v48);
+                            #endif
+                                const uint64_t forced = (v48 & 0xFFFFFFFFFFFF0000ull) | (s_e48_force_low16_value & 0xFFFFull);
+                                if (forced != v48) {
+                                #if defined(_MSC_VER)
+                                    *p48 = _byteswap_uint64(forced);
+                                #else
+                                    *p48 = __builtin_bswap64(forced);
+                                #endif
+                                    KernelTraceHostOpF("HOST.VD.e48.low16.force %04llX -> %016llX",
+                                        (unsigned long long)(s_e48_force_low16_value & 0xFFFFull),
+                                        (unsigned long long)forced);
+                                }
+                            }
+                        }
+                    }
+
+
+                    // Optional: mirror e60 high bits into e58 while preserving e58 low 16 (readiness flags)
+                    static const bool s_e58_mirror_hi = [](){
+                        if (const char* v = std::getenv("MW05_VD_E58_MIRROR_E60_HI"))
+                            return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    if (s_e58_mirror_hi) {
+                        const uint32_t ea_e58 = 0x00060E58u;
+                        const uint32_t ea_e60 = 0x00060E60u;
+
+                    // Optional: force e58 low 16 bits; always mirror e60 high bits
+                    static const uint64_t s_e58_force_low16 = [](){
+                        if (const char* v = std::getenv("MW05_VD_E58_LOW16_FORCE"))
+                            return std::strtoull(v, nullptr, 0) & 0xFFFFull;
+                        return 0ull;
+                    }();
+                    if (s_e58_force_low16) {
+                        const uint32_t ea_e58 = 0x00060E58u;
+                        const uint32_t ea_e60 = 0x00060E60u;
+                        if (GuestOffsetInRange(ea_e58, sizeof(uint64_t)) && GuestOffsetInRange(ea_e60, sizeof(uint64_t))) {
+                            if (auto* p58 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e58))) {
+                                if (auto* p60 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e60))) {
+                                    uint64_t v58 = *p58, v60 = *p60;
+                                #if defined(_MSC_VER)
+                                    v58 = _byteswap_uint64(v58);
+                                    v60 = _byteswap_uint64(v60);
+                                #else
+                                    v58 = __builtin_bswap64(v58);
+                                    v60 = __builtin_bswap64(v60);
+                                #endif
+                                    const uint64_t forced = (v60 & 0xFFFFFFFFFFFF0000ull) | (s_e58_force_low16 & 0xFFFFull);
+                                    if (forced != v58) {
+                                    #if defined(_MSC_VER)
+                                        *p58 = _byteswap_uint64(forced);
+                                    #else
+                                        *p58 = __builtin_bswap64(forced);
+                                    #endif
+                                        KernelTraceHostOpF("HOST.VD.e58.low16.force %04llX -> %016llX", (unsigned long long)(s_e58_force_low16 & 0xFFFFull), (unsigned long long)forced);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                        if (GuestOffsetInRange(ea_e58, sizeof(uint64_t)) && GuestOffsetInRange(ea_e60, sizeof(uint64_t))) {
+                            if (auto* p58 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e58))) {
+                                if (auto* p60 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e60))) {
+                                    uint64_t v58 = *p58, v60 = *p60;
+                                #if defined(_MSC_VER)
+                                    v58 = _byteswap_uint64(v58);
+                                    v60 = _byteswap_uint64(v60);
+                                #else
+                                    v58 = __builtin_bswap64(v58);
+                                    v60 = __builtin_bswap64(v60);
+                                #endif
+                                    const uint64_t new58 = (v60 & 0xFFFFFFFFFFFF0000ull) | (v58 & 0xFFFFull);
+                                    if (new58 != v58) {
+                                    #if defined(_MSC_VER)
+                                        *p58 = _byteswap_uint64(new58);
+                                    #else
+                                        *p58 = __builtin_bswap64(new58);
+                                    #endif
+                                        KernelTraceHostOpF("HOST.VD.e58.mirror_e60_hi %016llX -> %016llX", (unsigned long long)v58, (unsigned long long)new58);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tail enforcement: ensure e58 low16 is forced after any later pokes in this tick
+                    static const uint64_t s_e58_force_low16_tail = [](){
+                        if (const char* v = std::getenv("MW05_VD_E58_LOW16_FORCE"))
+                            return std::strtoull(v, nullptr, 0) & 0xFFFFull;
+                        return 0ull;
+                    }();
+                    if (s_e58_force_low16_tail) {
+                        const uint32_t ea_e58 = 0x00060E58u;
+                        const uint32_t ea_e60 = 0x00060E60u;
+                        if (GuestOffsetInRange(ea_e58, sizeof(uint64_t)) && GuestOffsetInRange(ea_e60, sizeof(uint64_t))) {
+                            if (auto* p58 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e58))) {
+                                if (auto* p60 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e60))) {
+                                    uint64_t v58 = *p58, v60 = *p60;
+                                #if defined(_MSC_VER)
+                                    v58 = _byteswap_uint64(v58);
+                                    v60 = _byteswap_uint64(v60);
+                                #else
+                                    v58 = __builtin_bswap64(v58);
+                                    v60 = __builtin_bswap64(v60);
+                                #endif
+                                    const uint64_t forced = (v60 & 0xFFFFFFFFFFFF0000ull) | (s_e58_force_low16_tail & 0xFFFFull);
+                                    if (forced != v58) {
+                                    #if defined(_MSC_VER)
+                                        *p58 = _byteswap_uint64(forced);
+                                    #else
+                                        *p58 = __builtin_bswap64(forced);
+                                    #endif
+                                        KernelTraceHostOpF("HOST.VD.e58.low16.force.tail %04llX -> %016llX", (unsigned long long)(s_e58_force_low16_tail & 0xFFFFull), (unsigned long long)forced);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+
+                    // Tail enforcement: ensure e48 low16 is forced after any later pokes in this tick
+                    static const bool s_e48_force_low16_tail_enabled = [](){
+                        return std::getenv("MW05_VD_E48_LOW16_FORCE") != nullptr;
+                    }();
+                    static const uint64_t s_e48_force_low16_tail_value = [](){
+                        if (const char* v = std::getenv("MW05_VD_E48_LOW16_FORCE"))
+                            return std::strtoull(v, nullptr, 0) & 0xFFFFull;
+                        return 0ull;
+                    }();
+                    if (s_e48_force_low16_tail_enabled) {
+                        const uint32_t ea_e48 = 0x00060E48u;
+                        if (GuestOffsetInRange(ea_e48, sizeof(uint64_t))) {
+                            if (auto* p48 = reinterpret_cast<uint64_t*>(g_memory.Translate(ea_e48))) {
+                                uint64_t v48 = *p48;
+                            #if defined(_MSC_VER)
+                                v48 = _byteswap_uint64(v48);
+                            #else
+                                v48 = __builtin_bswap64(v48);
+                            #endif
+                                const uint64_t forced = (v48 & 0xFFFFFFFFFFFF0000ull) | (s_e48_force_low16_tail_value & 0xFFFFull);
+                                if (forced != v48) {
+                                #if defined(_MSC_VER)
+                                    *p48 = _byteswap_uint64(forced);
+                                #else
+                                    *p48 = __builtin_bswap64(forced);
+                                #endif
+                                    KernelTraceHostOpF("HOST.VD.e48.low16.force.tail %04llX -> %016llX",
+                                        (unsigned long long)(s_e48_force_low16_tail_value & 0xFFFFull),
+                                        (unsigned long long)forced);
+                                }
+                            }
+                        }
+                    }
+
+
+
             // One-shot forced swap/present to validate downstream flow (opt-in)
             static bool s_forcedSwapDone = false;
             static const bool s_forceSwapOnce = [](){
@@ -1568,6 +2164,7 @@ static bool Mw05SignalVdInterruptEvent()
                     }
                 } else if (const char* d = std::getenv("MW05_DEFAULT_VD_ISR")) {
                     if (!(d[0]=='0' && d[1]=='\0')) {
+
                         // Host-side default ISR: nudge GPU/VD paths so waiters make progress
                         KernelTraceHostOp("HOST.VdInterruptEvent.dispatch.default_isr");
                         // Bump ring write-back pointer modestly
@@ -1612,6 +2209,15 @@ extern "C" void Mw05MarkGuestSwappedOnce()
         Mw05DispatchVdInterruptIfPending();
     }
 }
+
+extern "C" void Mw05MarkRealVdSwap()
+{
+    // Set the flag and log once on first transition to true
+    if (!g_sawRealVdSwap.exchange(true, std::memory_order_acq_rel)) {
+        KernelTraceHostOp("HOST.MarkRealVdSwap");
+    }
+}
+
 
 // Minimal reservation tracking for NtAllocateVirtualMemory reserve/commit emulation
 struct NtReservation

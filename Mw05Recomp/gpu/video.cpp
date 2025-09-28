@@ -113,6 +113,8 @@ extern "C"
 	void Mw05MarkGuestSwappedOnce();
     bool Mw05SawRealVdSwap();
 }
+    extern "C" void Mw05MarkRealVdSwap();
+
 #endif
 
 namespace plume
@@ -3054,6 +3056,19 @@ void Video::Present()
         EnqueuePipelineTask(PipelineTaskType::PrecompilePipelines, {});
         g_shouldPrecompilePipelines = false;
     }
+
+    // Optional sledgehammer: treat each Present as if a real VdSwap happened
+    static const bool s_treat_present_as_vdswap = [](){
+        if (const char* v = std::getenv("MW05_TREAT_PRESENT_AS_VDSWAP"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_treat_present_as_vdswap && !Mw05SawRealVdSwap()) {
+        KernelTraceHostOp("HOST.TreatPresentAsVdSwap.fire");
+        Mw05MarkRealVdSwap();
+        Mw05MarkGuestSwappedOnce();
+    }
+
 
     g_executedCommandList.wait(false);
     g_executedCommandList = false;

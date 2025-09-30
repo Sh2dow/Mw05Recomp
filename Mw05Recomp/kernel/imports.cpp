@@ -17,6 +17,7 @@
 #include <ui/game_window.h>
 #include <os/logger.h>
 #include <gpu/video.h>
+#include <gpu/pm4_parser.h>
 
 #include "kernel/event.h"
 #include "kernel/semaphore.h"
@@ -49,6 +50,13 @@ static std::atomic<bool> g_vblankPumpRun{false};
 static std::atomic<bool> g_sawRealVdSwap{false};
 
 static std::atomic<bool> g_guestHasSwapped{false};
+static std::atomic<uint64_t> g_lastPresentMs{0};
+
+extern "C" void Mw05NoteHostPresent(uint64_t ms)
+{
+    g_lastPresentMs.store(ms, std::memory_order_release);
+}
+
 
 extern "C"
 {
@@ -92,6 +100,8 @@ extern "C"
     void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
     void VdCallGraphicsNotificationRoutines(uint32_t source);
     void Mw05MarkGuestSwappedOnce();
+    bool Mw05AnyPresentSeen();
+
 }
 
 
@@ -640,6 +650,14 @@ extern "C" {
 
 	void Mw05RunHostDefaultVdIsrNudge(const char* tag)
 	{
+        // Controls whether the host default VD ISR requests a Present at the end of each nudge.
+        // Default: enabled (preserves current behavior). Set MW05_ISR_AUTO_PRESENT=0 to disable for diagnostics.
+        static const bool s_isr_auto_present = [](){
+            if (const char* v = std::getenv("MW05_ISR_AUTO_PRESENT"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return true;
+        }();
+
         static thread_local bool s_inHostIsrNudge = false;
         if (s_inHostIsrNudge) {
             KernelTraceHostOp("HOST.HostDefaultVdIsr.nudge.reentrant");
@@ -654,6 +672,15 @@ extern "C" {
         uint32_t step = 0x40u;
         if (const char* s = std::getenv("MW05_HOST_ISR_RB_STEP")) {
             // Accept hex (0x...) or decimal
+
+        // Controls whether the host default VD ISR requests a Present at the end of each nudge.
+        // Default: enabled (preserves current behavior). Set MW05_ISR_AUTO_PRESENT=0 to disable for diagnostics.
+        static const bool s_isr_auto_present = [](){
+            if (const char* v = std::getenv("MW05_ISR_AUTO_PRESENT"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return true;
+        }();
+
             char* endp = nullptr;
             unsigned long v = std::strtoul(s, &endp, (s[0]=='0' && (s[1]=='x'||s[1]=='X')) ? 16 : 10);
             if (v > 0 && v < 0x100000) step = static_cast<uint32_t>(v);
@@ -996,7 +1023,9 @@ extern "C" {
 
         s_inHostIsrNudge = false;
 
-        Video::RequestPresentFromBackground();
+        if (s_isr_auto_present) {
+            Video::RequestPresentFromBackground();
+        }
     }
 }
 
@@ -1126,6 +1155,9 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
                         *rptr = offs ? offs : 0x20u;
                         KernelTraceHostOpF("HOST.VdSwap.rptr.set offs=%04X (wc=%08X base=%08X size=%u)", offs, write_cur, base, size);
                         set_to_write = true;
+
+                        // Scan ring buffer for PM4 draw commands
+                        PM4_OnRingBufferWrite(offs);
                     }
                 }
             }
@@ -1199,11 +1231,6 @@ static void Mw05StartVblankPumpOnce() {
         // now listens to MW05_FORCE_PRESENT_BG instead.
         static const bool s_force_present = [](){
             if (const char* v = std::getenv("MW05_FORCE_PRESENT_BG"))
-                return !(v[0]=='0' && v[1]=='\0');
-            return false;
-        }();
-        static const bool s_boot_overlay = [](){
-            if (const char* v = std::getenv("MW05_BOOT_OVERLAY"))
                 return !(v[0]=='0' && v[1]=='\0');
             return false;
         }();
@@ -1283,7 +1310,17 @@ static void Mw05StartVblankPumpOnce() {
 
             // Optional: request a present each vblank to keep swapchain moving.
             // Do not call Present() from the background thread; signal the main thread instead.
-            if (s_force_present || (s_boot_overlay && !g_sawRealVdSwap.load(std::memory_order_acquire))) {
+            // Keep swapchain/fps moving until the guest has performed at least one swap.
+            // Additionally, if no Present has occurred for MW05_PRESENT_HEARTBEAT_MS, request one to keep UI/FPS responsive.
+            static const uint64_t s_present_heartbeat_ms = [](){
+                if (const char* v = std::getenv("MW05_PRESENT_HEARTBEAT_MS"))
+                    return (uint64_t)std::strtoull(v, nullptr, 10);
+                return uint64_t(0);
+            }();
+            const uint64_t last_ms = g_lastPresentMs.load(std::memory_order_acquire);
+            const uint64_t now_ms  = SDL_GetTicks64();
+            const bool stale = s_present_heartbeat_ms && (now_ms - last_ms > s_present_heartbeat_ms);
+            if (s_force_present || !Mw05HasGuestSwapped() || stale) {
                 Video::RequestPresentFromBackground();
             }
 
@@ -1566,6 +1603,57 @@ static void Mw05StartVblankPumpOnce() {
                     prev = cur;
                 }
             }
+
+            // Optional: read-only swap-edge detector on e68. Logs when selected bit toggles.
+            static const bool s_swap_detect = [](){
+                if (const char* v = std::getenv("MW05_PM4_SWAP_DETECT"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static const uint64_t s_swap_mask = [](){
+                if (const char* v = std::getenv("MW05_PM4_SWAP_DETECT_MASK"))
+                    return std::strtoull(v, nullptr, 0);
+                return 0x1ull; // default: watch bit 0
+            }();
+            if (s_swap_detect) {
+                auto rd64e = [](uint32_t ea)->uint64_t{
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        return _byteswap_uint64(v);
+                    #else
+                        return __builtin_bswap64(v);
+                    #endif
+                    }
+                    return 0ull;
+                };
+                static int s_prev_bit = -1;
+                static uint64_t s_prev_e68 = ~0ull;
+                static const bool s_pm4_swap_present = [](){
+                    if (const char* v = std::getenv("MW05_PM4_SWAP_PRESENT"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false; // default off unless explicitly enabled
+                }();
+                const uint64_t e68 = rd64e(0x00060E68u);
+                const int bit = (e68 & s_swap_mask) ? 1 : 0;
+                if (s_prev_bit < 0) {
+                    KernelTraceHostOpF("HOST.PM4.swap.init mask=%llX bit=%d e68=%016llX", (unsigned long long)s_swap_mask, bit, (unsigned long long)e68);
+                } else if (bit != s_prev_bit) {
+                    KernelTraceHostOpF("HOST.PM4.swap.edge mask=%llX %d->%d e68=%016llX", (unsigned long long)s_swap_mask, s_prev_bit, bit, (unsigned long long)e68);
+                    if (s_pm4_swap_present && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                        KernelTraceHostOp("HOST.PM4.swap.present");
+                        Mw05MarkGuestSwappedOnce();
+                        Video::RequestPresentFromBackground();
+                    }
+                }
+                if (e68 != s_prev_e68) {
+                    KernelTraceHostOpF("HOST.VD.e68.change %016llX->%016llX", (unsigned long long)s_prev_e68, (unsigned long long)e68);
+                }
+                s_prev_bit = bit;
+                s_prev_e68 = e68;
+            }
+
 
 
                 // Late PM4 enforcement pass (optional): re-OR after reads to win races with title writes
@@ -2200,24 +2288,34 @@ static void Mw05DispatchVdInterruptIfPending()
     }
 }
 
-extern "C" void Mw05MarkGuestSwappedOnce()
+extern "C"
 {
-    bool expected = false;
-    if (g_guestHasSwapped.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        KernelTraceHostOp("HOST.FakeVdSwap.marked");
-        // Keep event flow moving in case callers poll on display sync
-        Mw05DispatchVdInterruptIfPending();
+    void Mw05MarkGuestSwappedOnce()
+    {
+        bool expected = false;
+        if (g_guestHasSwapped.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            KernelTraceHostOp("HOST.FakeVdSwap.marked");
+            // Keep event flow moving in case callers poll on display sync
+            Mw05DispatchVdInterruptIfPending();
+        }
+    }
+
+    void Mw05MarkRealVdSwap()
+    {
+        // Set the flag and log once on first transition to true
+        if (!g_sawRealVdSwap.exchange(true, std::memory_order_acq_rel)) {
+            KernelTraceHostOp("HOST.MarkRealVdSwap");
+        }
+    }
+
+    // Expose ring buffer region for tracing purposes (read-only accessors)
+    uint32_t Mw05GetRingBaseEA() { return g_RbBase.load(std::memory_order_relaxed); }
+    uint32_t Mw05GetRingSizeBytes()
+    {
+        const uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
+        return (len_log2 < 32u) ? (1u << len_log2) : 0u;
     }
 }
-
-extern "C" void Mw05MarkRealVdSwap()
-{
-    // Set the flag and log once on first transition to true
-    if (!g_sawRealVdSwap.exchange(true, std::memory_order_acq_rel)) {
-        KernelTraceHostOp("HOST.MarkRealVdSwap");
-    }
-}
-
 
 // Minimal reservation tracking for NtAllocateVirtualMemory reserve/commit emulation
 struct NtReservation
@@ -4007,6 +4105,9 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
     }
     g_vdInterruptPending.store(true, std::memory_order_release);
     Mw05DispatchVdInterruptIfPending();
+
+    // Initialize PM4 parser with ring buffer info
+    PM4_SetRingBuffer(base, len);
 }
 
 

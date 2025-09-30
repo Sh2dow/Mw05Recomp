@@ -128,6 +128,8 @@ set(MW05_RECOMP_GPU_CXX_SOURCES
     "gpu/imgui/imgui_common.cpp"
     "gpu/imgui/imgui_snapshot.cpp"
     "gpu/mw05_trace_shims.cpp"
+    "gpu/mw05_draw_diagnostic.cpp"
+    "gpu/pm4_parser.cpp"
 )
 
 set(MW05_RECOMP_APU_CXX_SOURCES

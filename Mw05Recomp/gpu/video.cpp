@@ -39,11 +39,16 @@
 #if defined(ASYNC_PSO_DEBUG) || defined(PSO_CACHING)
 #include <magic_enum/magic_enum.hpp>
 #endif
+extern "C" void Mw05NoteHostPresent(uint64_t ms);
+
 
 #include <cstdlib> // getenv for MW05_* env toggles
 
-extern "C" uint32_t Mw05GetHostDefaultVdIsrMagic();
-extern "C" void Mw05RunHostDefaultVdIsrNudge(const char* tag);
+extern "C"
+{
+    uint32_t Mw05GetHostDefaultVdIsrMagic();
+    void Mw05RunHostDefaultVdIsrNudge(const char* tag);
+}
 
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
@@ -112,8 +117,8 @@ extern "C"
 
 	void Mw05MarkGuestSwappedOnce();
     bool Mw05SawRealVdSwap();
+    void Mw05MarkRealVdSwap();
 }
-    extern "C" void Mw05MarkRealVdSwap();
 
 #endif
 
@@ -306,7 +311,6 @@ static Profiler g_swapChainAcquireProfiler;
 
 static bool g_profilerVisible;
 
-static bool g_bootOverlayEnabled = false;
 extern "C" bool Mw05HasGuestSwapped();
 
 static bool g_profilerWasToggled;
@@ -772,8 +776,12 @@ static void DestructTempResources()
     g_tempBuffers[g_frame].clear();
 }
 
+static std::atomic<bool> g_anyPresentSeen{false};
+
 static std::thread::id g_presentThreadId = std::this_thread::get_id();
 static std::atomic<bool> g_readyForCommands;
+extern "C" bool Mw05AnyPresentSeen() { return g_anyPresentSeen.load(std::memory_order_acquire); }
+
 
 PPC_FUNC_IMPL(__imp__sub_824ECA00);
 PPC_FUNC(sub_824ECA00)
@@ -2116,13 +2124,6 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
     g_enhancedMotionBlurShader->shader = CREATE_SHADER(enhanced_motion_blur_ps);
 
     CreateImGuiBackend();
-    // Enable boot overlay banner if requested via env (no profiler/show-fps changes)
-    if (const char* v = std::getenv("MW05_BOOT_OVERLAY")) {
-        if (!(v[0]=='0' && v[1]=='\0')) {
-            g_bootOverlayEnabled = true;
-            KernelTraceHostOp("HOST.VideoBootOverlay.enabled");
-        }
-    }
 
 
     auto gammaCorrectionShader = CREATE_SHADER(gamma_correction_ps);
@@ -2183,6 +2184,8 @@ void Video::WaitForGPU()
 
 static uint32_t CreateDevice(uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5, be<uint32_t>* a6)
 {
+    KernelTraceHostOp("HOST.MW05.CreateDevice.enter");
+
     g_xdbfTextureCache = std::unordered_map<uint16_t, GuestTexture *>();
 
     for (auto &achievement : g_xdbfWrapper.GetAchievements(XDBF_LANGUAGE_ENGLISH))
@@ -2591,7 +2594,7 @@ static void DrawProfiler()
 
 static void DrawFPS()
 {
-    const bool showBootBanner = (!Mw05SawRealVdSwap());
+    const bool showBootBanner = (!g_anyPresentSeen.load(std::memory_order_acquire));
     // Draw if either FPS is enabled or the boot banner should be shown
     if (!Config::ShowFPS && !showBootBanner)
         return;
@@ -2704,7 +2707,7 @@ static void DrawFPS()
     // ---- Banner UNDER FPS ----
     if (showBootBanner)
     {
-        static const char* banner = "Load awaiting VdSwap";
+        static const char* banner = "Load awaiting Present";
         ImVec2 bannerTextSize = {0,0};
         if (font) bannerTextSize = font->CalcTextSizeA(drawFontSize, FLT_MAX, 0, banner);
 
@@ -3028,6 +3031,7 @@ void Video::Present()
 {
     // Always write a host trace entry when Present is entered to diagnose bring-up
     KernelTraceHostOp("HOST.VideoPresent.enter");
+
     // Avoid any work until renderer is initialized
     if (!g_rendererReady || !g_device || !g_queue)
     {
@@ -3037,8 +3041,15 @@ void Video::Present()
             KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, (void*)g_device.get(), (void*)g_queue.get());
             s_loggedSkip = true;
         }
+        // Tick present profiler so FPS overlay won't appear stale while renderer initializes
+        static auto s_last = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        g_presentProfiler.Set(std::chrono::duration<double, std::milli>(now - s_last).count());
+        s_last = now;
         return;
     }
+    // Mark that at least one Present occurred so the boot banner can clear
+    g_anyPresentSeen.store(true, std::memory_order_release);
     g_readyForCommands = false;
 
     RenderCommand cmd;
@@ -3055,18 +3066,6 @@ void Video::Present()
     {
         EnqueuePipelineTask(PipelineTaskType::PrecompilePipelines, {});
         g_shouldPrecompilePipelines = false;
-    }
-
-    // Optional sledgehammer: treat each Present as if a real VdSwap happened
-    static const bool s_treat_present_as_vdswap = [](){
-        if (const char* v = std::getenv("MW05_TREAT_PRESENT_AS_VDSWAP"))
-            return !(v[0]=='0' && v[1]=='\0');
-        return false;
-    }();
-    if (s_treat_present_as_vdswap && !Mw05SawRealVdSwap()) {
-        KernelTraceHostOp("HOST.TreatPresentAsVdSwap.fire");
-        Mw05MarkRealVdSwap();
-        Mw05MarkGuestSwappedOnce();
     }
 
 
@@ -3159,6 +3158,9 @@ void Video::Present()
                (unsigned long long)draws, (unsigned long long)cmds, (int)g_swapChainValid);
         fflush(stdout);
     }
+    // Note the time of this present for background heartbeat logic
+    Mw05NoteHostPresent(SDL_GetTicks64());
+
     g_quadIndexData.reset();
 
     if (g_swapChain)
@@ -6235,6 +6237,7 @@ void SetShadowResolutionMidAsmHook(PPCRegister& r11)
 
 static void SetResolution(be<uint32_t>* device)
 {
+    KernelTraceHostOp("HOST.MW05.SetResolution.enter");
     Video::ComputeViewportDimensions();
 
     uint32_t width = uint32_t(round(Video::s_viewportWidth * Config::ResolutionScale));
@@ -7933,6 +7936,14 @@ PPC_FUNC(sub_82E3B1C0)
         g_userHeap.Free(newIndices);
 }
 
+// Pass-through wrapper for MW05 present wrapper to allow original guest body to run
+struct PPCContext; // fwd decl
+extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
+static void MW05_PresentPass(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOp("HOST.sub_82598A20.pass_through");
+    __imp__sub_82598A20(ctx, base);
+}
+
 #if MW05_ENABLE_UNLEASHED
 // Unleashed (Hedgehog) hooks
 GUEST_FUNCTION_HOOK(sub_82BD99B0, CreateDevice);
@@ -7941,6 +7952,7 @@ GUEST_FUNCTION_HOOK(sub_82BE6230, DestructResource);
 
 GUEST_FUNCTION_HOOK(sub_82BE9300, LockTextureRect);
 GUEST_FUNCTION_HOOK(sub_82BE7780, UnlockTextureRect);
+
 
 GUEST_FUNCTION_HOOK(sub_82BE6B98, LockVertexBuffer);
 GUEST_FUNCTION_HOOK(sub_82BE6BE8, UnlockVertexBuffer);
@@ -8001,12 +8013,79 @@ GUEST_FUNCTION_HOOK(sub_82E9EE38, SetResolution);
 GUEST_FUNCTION_HOOK(sub_82AE2BF8, ScreenShaderInit);
 #else
 // MW05 hooks (identified from MW05 recompiled mapping / IDA HTML)
-// - Present path calls VdGetSystemCommandBuffer + VdSwap
-GUEST_FUNCTION_HOOK(sub_82598A20, Video::Present);
+// - Present path pass-through: let original guest body run so it can call VdSwap and pre-swap helpers
+GUEST_FUNCTION_HOOK(sub_82598A20, MW05_PresentPass);
 // - Initial video bring-up: initialize engines + set graphics interrupt callback
 GUEST_FUNCTION_HOOK(sub_825A85E0, CreateDevice);
 // - Apply/set display mode and update cached display info
 GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
+// Forward decls for MW05 research shim handlers
+struct PPCContext;
+void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
+void MW05Shim_sub_825972B0(PPCContext&, uint8_t*);
+void MW05Shim_sub_825A54F0(PPCContext&, uint8_t*);
+void MW05Shim_sub_825A6DF0(PPCContext&, uint8_t*);
+void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
+
+    void MW05Shim_sub_825986F8(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825987E0(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825988B0(PPCContext&, uint8_t*);
+    void MW05Shim_sub_82599010(PPCContext&, uint8_t*);
+    void MW05Shim_sub_82599208(PPCContext&, uint8_t*);
+    void MW05Shim_sub_82599338(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7A40(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7DE8(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7E60(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7EA0(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7208(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A74B8(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7F10(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7F88(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A8040(PPCContext&, uint8_t*);
+    // New: scheduler/notify-adjacent shims (from Store64 writer LRs)
+    void MW05Shim_sub_8262F248(PPCContext&, uint8_t*);
+    void MW05Shim_sub_8262F2A0(PPCContext&, uint8_t*);
+    void MW05Shim_sub_8262F330(PPCContext&, uint8_t*);
+    void MW05Shim_sub_823BC638(PPCContext&, uint8_t*);
+    void MW05Shim_sub_82812E20(PPCContext&, uint8_t*);
+
+// Note: MW05 draw diagnostic shims are defined in gpu/mw05_draw_diagnostic.cpp
+// and their declarations are already in ppc_recomp_shared.h
+
+
+// Research: trace MW05 pre-swap helpers (defined in gpu/mw05_trace_shims.cpp)
+GUEST_FUNCTION_HOOK(sub_82595FC8, MW05Shim_sub_82595FC8);
+GUEST_FUNCTION_HOOK(sub_825972B0, MW05Shim_sub_825972B0);
+GUEST_FUNCTION_HOOK(sub_825A54F0, MW05Shim_sub_825A54F0);
+GUEST_FUNCTION_HOOK(sub_825A6DF0, MW05Shim_sub_825A6DF0);
+GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);
+
+    // Additional MW05 dynamic-discovery traces (log + forward only)
+    GUEST_FUNCTION_HOOK(sub_825986F8, MW05Shim_sub_825986F8);
+    GUEST_FUNCTION_HOOK(sub_825987E0, MW05Shim_sub_825987E0);
+    GUEST_FUNCTION_HOOK(sub_825988B0, MW05Shim_sub_825988B0);
+    GUEST_FUNCTION_HOOK(sub_82599010, MW05Shim_sub_82599010);
+    GUEST_FUNCTION_HOOK(sub_82599208, MW05Shim_sub_82599208);
+    GUEST_FUNCTION_HOOK(sub_82599338, MW05Shim_sub_82599338);
+    GUEST_FUNCTION_HOOK(sub_825A7A40, MW05Shim_sub_825A7A40);
+    GUEST_FUNCTION_HOOK(sub_825A7DE8, MW05Shim_sub_825A7DE8);
+    GUEST_FUNCTION_HOOK(sub_825A7E60, MW05Shim_sub_825A7E60);
+    // Additional scheduler/notify-adjacent discovery hooks
+    GUEST_FUNCTION_HOOK(sub_8262F248, MW05Shim_sub_8262F248);
+    GUEST_FUNCTION_HOOK(sub_8262F2A0, MW05Shim_sub_8262F2A0);
+    // sub_8262F330 is provided by mw05_boot_shims.cpp; avoid duplicate/override here
+    GUEST_FUNCTION_HOOK(sub_823BC638, MW05Shim_sub_823BC638);
+    GUEST_FUNCTION_HOOK(sub_82812E20, MW05Shim_sub_82812E20);
+
+    GUEST_FUNCTION_HOOK(sub_825A7EA0, MW05Shim_sub_825A7EA0);
+    GUEST_FUNCTION_HOOK(sub_825A7208, MW05Shim_sub_825A7208);
+    GUEST_FUNCTION_HOOK(sub_825A74B8, MW05Shim_sub_825A74B8);
+    GUEST_FUNCTION_HOOK(sub_825A7F10, MW05Shim_sub_825A7F10);
+    GUEST_FUNCTION_HOOK(sub_825A7F88, MW05Shim_sub_825A7F88);
+    GUEST_FUNCTION_HOOK(sub_825A8040, MW05Shim_sub_825A8040);
+
+// Note: MW05 draw diagnostic shims are defined in gpu/mw05_draw_diagnostic.cpp
+// They are automatically registered via the recompiled function table and don't need GUEST_FUNCTION_HOOK here
 
 // - Viewport setup: packs x/y/w/h + depth to command buffer
 //   sub_825A7B78 takes (device, GuestViewport*) among others; we only consume first two.

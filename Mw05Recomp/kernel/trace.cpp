@@ -237,6 +237,8 @@ void KernelTraceHostOp(const char* name)
 // Minimal printf-style wrapper around KernelTraceHostOp.
 // Safe to call from multiple threads (each gets its own buffer).
 void KernelTraceHostOpF(const char* fmt, ...) {
+    // Avoid formatting cost when tracing is disabled
+    if (!KernelTraceEnabled()) return;
     thread_local char buf[256];
     va_list ap;
     va_start(ap, fmt);

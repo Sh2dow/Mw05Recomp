@@ -43,6 +43,7 @@ PPC_EXTERN_FUNC(sub_828134E0);
 
 extern "C" void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/); // declaration with exact signature
 extern "C" bool Mw05HasGuestSwapped();
+extern "C" void UnblockMainThreadEarly(); // Workaround to set flag before main thread starts
 
 
 #ifdef _WIN32
@@ -555,6 +556,9 @@ int main(int argc, char *argv[])
     KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
         reinterpret_cast<const void*>(sub_828134E0),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
+
+    // Workaround: Set the flag that the main thread will wait for
+    UnblockMainThreadEarly();
 
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events

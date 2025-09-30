@@ -7,6 +7,8 @@
 #include "xbox.h"
 #include <cstdlib>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <kernel/trace.h>
 
 extern std::atomic<uint32_t> g_watchEA;
@@ -14,6 +16,8 @@ extern std::atomic<uint32_t> g_watchEA;
 extern "C" {
     void __imp__sub_828508A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_824411E0(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_82442080(PPCContext& ctx, uint8_t* base);
     uint32_t Mw05PeekSchedulerBlockEA();
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
     void Mw05ForceVdInitOnce();
@@ -37,6 +41,61 @@ static inline bool KickVideoInitEnabled() {
 static inline bool ForceVdInitEnabled() {
 	const char* env = std::getenv("MW05_FORCE_VD_INIT");
 	return env && *env && *env != '0';
+}
+
+static inline bool UnblockMainThreadEnabled() {
+	const char* env = std::getenv("MW05_UNBLOCK_MAIN");
+	return env && *env && *env != '0';
+}
+
+// Background thread that continuously sets the flag to unblock the main thread.
+// The main thread at sub_82441CF0 waits for dword_82A2CF40 to become non-zero,
+// then clears it at the end of each iteration. This thread keeps setting it.
+static std::atomic<bool> g_unblockThreadRunning{false};
+static std::thread g_unblockThread;
+
+static void UnblockThreadFunc() {
+	const uint32_t flag_ea = 0x82A2CF40;
+	KernelTraceHostOpF("HOST.UnblockThread.start flag_ea=%08X", flag_ea);
+
+	while (g_unblockThreadRunning.load(std::memory_order_acquire)) {
+		uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(flag_ea));
+		if (flag_ptr) {
+			// Set the flag to 1 (big-endian)
+			*flag_ptr = __builtin_bswap32(1);
+		}
+		// Sleep briefly to avoid spinning too hard
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+
+	KernelTraceHostOp("HOST.UnblockThread.exit");
+}
+
+// Workaround: Start a background thread that continuously sets the flag.
+// The main thread at sub_82441CF0 waits for dword_82A2CF40 to become non-zero.
+// This flag should be set by sub_82442080, but the initialization chain is never triggered.
+extern "C" void UnblockMainThreadEarly() {
+	if(!UnblockMainThreadEnabled()) return;
+
+	const uint32_t flag_ea = 0x82A2CF40;
+	uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(flag_ea));
+	if(!flag_ptr) {
+		KernelTraceHostOpF("HOST.UnblockMainThreadEarly FAILED: could not translate ea=%08X", flag_ea);
+		return;
+	}
+
+	// Set the flag to 1 initially (big-endian)
+	*flag_ptr = __builtin_bswap32(1);
+
+	// Read it back to verify
+	uint32_t readback = __builtin_bswap32(*flag_ptr);
+	KernelTraceHostOpF("HOST.UnblockMainThreadEarly set flag ea=%08X to 1, readback=%u ptr=%p", flag_ea, readback, flag_ptr);
+
+	// Start background thread to keep setting the flag
+	if (!g_unblockThreadRunning.exchange(true, std::memory_order_acq_rel)) {
+		g_unblockThread = std::thread(UnblockThreadFunc);
+		KernelTraceHostOp("HOST.UnblockMainThreadEarly started background thread");
+	}
 }
 
 void KickMinimalVideo() {

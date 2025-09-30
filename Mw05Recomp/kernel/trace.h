@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <cstring>
+#include <cstdlib>
 #include <cpu/ppc_context.h>
 #include "memory.h"
 
@@ -24,6 +25,10 @@ void KernelTraceHostOp(const char* name);
 void KernelTraceHostOpF(const char* fmt, ...);
 
 extern std::atomic<uint32_t> g_watchEA;
+
+// Accessors exposed by kernel/imports.cpp
+extern "C" uint32_t Mw05GetRingBaseEA();
+extern "C" uint32_t Mw05GetRingSizeBytes();
 
 // Loader/streaming sentinel bridge (implemented in cpu/mw05_streaming_bridge.cpp)
 extern "C" bool Mw05HandleSchedulerSentinel(uint8_t* base, uint32_t slotEA, uint64_t lr);
@@ -54,6 +59,37 @@ static inline bool Overlaps(uint32_t ea, size_t n, uint32_t watch) {
     return !(a1 < w0 || a0 > w1);
 }
 
+// Forward declaration for PM4 parser hook
+void PM4_OnRingBufferWriteAddr(uint32_t writeAddr, size_t writeSize);
+
+// RB write tracer (env-gated)
+static inline void TraceRbWrite(uint32_t ea, size_t n) {
+    const uint32_t base = Mw05GetRingBaseEA();
+    const uint32_t size = Mw05GetRingSizeBytes();
+    if (!base || !size) return;
+
+    const uint64_t a0 = ea, a1 = uint64_t(ea) + (n ? (n - 1) : 0);
+    const uint64_t b0 = base, b1 = uint64_t(base) + (size - 1);
+
+    // Check if write overlaps ring buffer
+    if (!(a1 < b0 || a0 > b1)) {
+        // Notify PM4 parser of ring buffer write
+        PM4_OnRingBufferWriteAddr(ea, n);
+
+        // Optional verbose tracing
+        static const bool s_trace = [](){
+            if (const char* v = std::getenv("MW05_TRACE_RB_WRITES"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
+        if (s_trace) {
+            PPCContext* c = GetPPCContext();
+            const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+            KernelTraceHostOpF("HOST.RB.write ea=%08X..%08X n=%zu lr=%08llX", ea, (uint32_t)a1, n, lr);
+        }
+    }
+}
+
 inline void StoreBE8_Watched(uint8_t* /*base*/, uint32_t ea, uint8_t v8)
 {
     static bool banner8 = (KernelTraceHostOp("HOST.watch.store8 override ACTIVE"), true);
@@ -69,6 +105,8 @@ inline void StoreBE8_Watched(uint8_t* /*base*/, uint32_t ea, uint8_t v8)
             KernelTraceHostOpF("HOST.watch.hit8 ea=%08X val=%02X lr=%08llX", ea, v8, lr);
         }
     }
+
+    TraceRbWrite(ea, 1);
 
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         p[0] = v8; // endianness irrelevant for a single byte
@@ -104,6 +142,9 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             if (Mw05HandleSchedulerSentinel(base, ea, 0)) {
                 return;
             }
+    // Trace potential ring-buffer write (32-bit stores are the common PM4 path)
+    TraceRbWrite(ea, 4);
+
         }
     }
 
@@ -160,6 +201,8 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
         return;
     }
 
+    TraceRbWrite(ea, 8);
+
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         p[0] = uint8_t(v64 >> 56);
         p[1] = uint8_t(v64 >> 48);
@@ -204,6 +247,8 @@ inline void StoreBE128_Watched(uint8_t* base, uint32_t ea, uint64_t hi, uint64_t
         }
     }
 
+    TraceRbWrite(ea, 16);
+
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         for (int i = 0; i < 16; ++i) p[i] = be[i];
     }
@@ -235,6 +280,8 @@ inline void StoreBE128_Watched_P(uint8_t* base, uint32_t ea, const void* src16)
             break;
         }
     }
+
+    TraceRbWrite(ea, 16);
 
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
         for (int i = 0; i < 16; ++i) p[i] = s[i];

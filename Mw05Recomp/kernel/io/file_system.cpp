@@ -188,11 +188,32 @@ FileHandle* XCreateFileA
     uint32_t dwFlagsAndAttributes
 )
 {
+    if (FileTraceEnabled()) {
+        KernelTraceHostOpF("HOST.FileSystem.XCreateFileA.enter guest=\"%s\"", lpFileName ? lpFileName : "<null>");
+    }
+
     assert(((dwDesiredAccess & ~(GENERIC_READ | GENERIC_WRITE | FILE_READ_DATA)) == 0) && "Unknown desired access bits.");
     assert(((dwShareMode & ~(FILE_SHARE_READ | FILE_SHARE_WRITE)) == 0) && "Unknown share mode bits.");
     assert(((dwCreationDisposition & ~(CREATE_NEW | CREATE_ALWAYS | OPEN_ALWAYS | OPEN_EXISTING | TRUNCATE_EXISTING)) == 0) && "Unknown creation disposition bits.");
 
     std::filesystem::path filePath = FileSystem::ResolvePath(lpFileName, true);
+
+    // If this is a directory open (common for NtCreateFile with FILE_DIRECTORY_FILE),
+    // don't try to open a stream; just succeed and return a handle that carries the path.
+    const bool isDir = std::filesystem::is_directory(filePath);
+    if (isDir) {
+        if (FileTraceEnabled()) {
+            auto hostPathU8 = filePath.u8string();
+            std::string hostPath(hostPathU8.begin(), hostPathU8.end());
+            KernelTraceHostOpF("HOST.FileSystem.ResolvePath.open.dir guest=\"%s\" host=\"%s\"", lpFileName ? lpFileName : "<null>", hostPath.c_str());
+        }
+        FileHandle* dirHandle = CreateKernelObject<FileHandle>();
+        // Leave stream closed for directories; we never read/write them as files.
+        dirHandle->path = std::move(filePath);
+        dirHandle->guestPath = lpFileName ? lpFileName : "";
+        return dirHandle;
+    }
+
     std::fstream fileStream;
     std::ios::openmode fileOpenMode = std::ios::binary;
     if (dwDesiredAccess & (GENERIC_READ | FILE_READ_DATA))
@@ -544,16 +565,13 @@ uint32_t XWriteFile(FileHandle* hFile, const void* lpBuffer, uint32_t nNumberOfB
     return TRUE;
 }
 
+
 std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool checkForMods)
 {
     if (checkForMods)
     {
-        #if MW05_ENABLE_UNLEASHED
+#if MW05_ENABLE_UNLEASHED
         std::filesystem::path resolvedPath = ModLoader::ResolvePath(path);
-        #else
-        std::filesystem::path resolvedPath = std::filesystem::path(path);
-        #endif
-
         if (!resolvedPath.empty())
         {
             if (FileTraceEnabled()) {
@@ -562,19 +580,68 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
                 std::string guestPath(path);
                 KernelTraceHostOpF("HOST.FileSystem.ResolvePath.map guest=\"%s\" host=\"%s\" source=mod", guestPath.c_str(), hostPath.c_str());
             }
-#if MW05_ENABLE_UNLEASHED
             if (ModLoader::s_isLogTypeConsole)
-#else
-            if (false)
-#endif
                 LOGF_IMPL(Utility, "Mod Loader", "Loading file: \"{}\"", reinterpret_cast<const char*>(resolvedPath.u8string().c_str()));
-
             return resolvedPath;
         }
+#endif
     }
 
     thread_local std::string builtPath;
     builtPath.clear();
+
+    // Special-case: MW05 FS service requests for ZDIR (e.g., "FS\\ZD", "FS\\ZDBIN").
+    // These are service tokens, not real subfolders; locate an actual ZDIR file under the game root.
+    {
+        auto starts_with_ci = [](std::string_view s, std::string_view p){
+            if (s.size() < p.size()) return false;
+            for (size_t i = 0; i < p.size(); ++i) {
+                char a = (char)std::tolower((unsigned char)s[i]);
+                char b = (char)std::tolower((unsigned char)p[i]);
+                if (a != b) return false;
+            }
+            return true;
+        };
+        if (starts_with_ci(path, "FS\\")) {
+            std::string_view rest = path.substr(3);
+            if (starts_with_ci(rest, "ZD")) {
+                static std::string s_cachedZdir;
+                if (s_cachedZdir.empty()) {
+                    const std::string gameRoot = std::string(XamGetRootPath("game"));
+                    if (!gameRoot.empty()) {
+                        const char* candidates[] = {
+                            "/ZDIR.BIN", "/ZDIR.bin", "/ZDIR", "/GLOBAL/ZDIR.BIN", "/GLOBAL/ZDIR.bin", "/GLOBAL/ZDIR"
+                        };
+                        for (const char* c : candidates) {
+                            std::string tryPath = gameRoot; tryPath += c;
+                            if (std::filesystem::exists(tryPath)) { s_cachedZdir = std::move(tryPath); break; }
+                        }
+                        if (s_cachedZdir.empty()) {
+                            std::error_code ec;
+                            for (auto it = std::filesystem::recursive_directory_iterator(gameRoot, ec);
+                                 !ec && it != std::filesystem::recursive_directory_iterator(); ++it) {
+                                if (!it->is_regular_file(ec)) continue;
+                                auto name = it->path().filename().string();
+                                if (name.size() >= 4) {
+                                    bool zdir = (std::tolower((unsigned char)name[0])=='z' &&
+                                                 std::tolower((unsigned char)name[1])=='d' &&
+                                                 std::tolower((unsigned char)name[2])=='i' &&
+                                                 std::tolower((unsigned char)name[3])=='r');
+                                    if (zdir) { s_cachedZdir = it->path().string(); break; }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!s_cachedZdir.empty()) {
+                    if (FileTraceEnabled()) {
+                        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.fs_zdir.map guest=\"%s\" host=\"%s\"", std::string(path).c_str(), s_cachedZdir.c_str());
+                    }
+                    return std::u8string_view((const char8_t*)s_cachedZdir.c_str());
+                }
+            }
+        }
+    }
 
     size_t index = path.find(":\\");
     if (index != std::string::npos)
@@ -582,10 +649,10 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
         // rooted folder, handle direction
         std::string_view root = path.substr(0, index);
 
-        // HACK: The game tries to load work folder from the "game" root path for 
-        // Application and shader archives, which does not work in Recomp because 
+        // HACK: The game tries to load work folder from the "game" root path for
+        // Application and shader archives, which does not work in Recomp because
         // we don't support stacking the update and game files on top of each other.
-        // 
+        //
         // We can fix it by redirecting it to update instead as we know the original
         // game files don't have a work folder.
         if (path.starts_with("game:\\work\\"))
@@ -598,18 +665,94 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
             builtPath += newRoot;
             builtPath += '/';
         }
-        
+
         builtPath += path.substr(index + 2);
     }
     else
     {
-        builtPath += path;
+        // Treat leading backslash paths (e.g. "\GLOBAL") as rooted under the default game mount,
+        // mirroring the canonicalization used for NT-style kernel paths in imports.cpp.
+        if (!path.empty() && (path.front() == '\\' || path.front() == '/'))
+        {
+            const auto newRoot = XamGetRootPath("game");
+            if (!newRoot.empty())
+            {
+                builtPath += newRoot;
+    // Special-case: MW05 FS service requests for ZDIR (e.g., "FS\\ZD", "FS\\ZDBIN").
+    // These are service tokens, not real subfolders; locate an actual ZDIR file under the game root.
+    {
+        auto starts_with_ci = [](std::string_view s, std::string_view p){
+            if (s.size() < p.size()) return false;
+            for (size_t i = 0; i < p.size(); ++i) {
+                char a = (char)std::tolower((unsigned char)s[i]);
+                char b = (char)std::tolower((unsigned char)p[i]);
+                if (a != b) return false;
+            }
+            return true;
+        };
+        if (starts_with_ci(path, "FS\\")) {
+            std::string_view rest = path.substr(3);
+            if (starts_with_ci(rest, "ZD")) {
+                static std::string s_cachedZdir;
+                if (s_cachedZdir.empty()) {
+                    const std::string gameRoot = std::string(XamGetRootPath("game"));
+                    if (!gameRoot.empty()) {
+                        const char* candidates[] = {
+                            "/ZDIR.BIN", "/ZDIR.bin", "/ZDIR", "/GLOBAL/ZDIR.BIN", "/GLOBAL/ZDIR.bin", "/GLOBAL/ZDIR"
+                        };
+                        for (const char* c : candidates) {
+                            std::string tryPath = gameRoot; tryPath += c;
+                            if (std::filesystem::exists(tryPath)) { s_cachedZdir = std::move(tryPath); break; }
+                        }
+                        if (s_cachedZdir.empty()) {
+                            std::error_code ec;
+                            for (auto it = std::filesystem::recursive_directory_iterator(gameRoot, ec);
+                                 !ec && it != std::filesystem::recursive_directory_iterator(); ++it) {
+                                if (!it->is_regular_file(ec)) continue;
+                                auto name = it->path().filename().string();
+                                if (name.size() >= 4) {
+                                    bool zdir = (std::tolower((unsigned char)name[0])=='z' &&
+                                                 std::tolower((unsigned char)name[1])=='d' &&
+                                                 std::tolower((unsigned char)name[2])=='i' &&
+                                                 std::tolower((unsigned char)name[3])=='r');
+                                    if (zdir) { s_cachedZdir = it->path().string(); break; }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!s_cachedZdir.empty()) {
+                    if (FileTraceEnabled()) {
+                        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.fs_zdir.map guest=\"%s\" host=\"%s\"", std::string(path).c_str(), s_cachedZdir.c_str());
+                    }
+                    return std::u8string_view((const char8_t*)s_cachedZdir.c_str());
+                }
+            }
+        }
+    }
+
+                builtPath += '/';
+            }
+            builtPath += path.substr(1);
+        }
+        else
+        {
+            // No device root and no leading slash — treat as relative to the game root.
+            const auto newRoot = XamGetRootPath("game");
+            if (!newRoot.empty())
+            {
+                builtPath += newRoot;
+                builtPath += '/';
+            }
+            builtPath += path;
+        }
     }
 
     std::replace(builtPath.begin(), builtPath.end(), '\\', '/');
 
     if (FileTraceEnabled()) {
         std::string guestPath(path);
+
         KernelTraceHostOpF("HOST.FileSystem.ResolvePath.map guest=\"%s\" host=\"%s\" source=default", guestPath.c_str(), builtPath.c_str());
     }
 

@@ -35,6 +35,41 @@
 
 #include <ppc/ppc_context.h>
 
+#include <cstdlib>
+
+static void MwSetEnv(const char* k, const char* v) {
+#ifdef _WIN32
+    _putenv_s(k, v ? v : "");
+#else
+    if (v) setenv(k, v, 1); else unsetenv(k);
+#endif
+}
+
+static void MwSetEnvDefault(const char* k, const char* v) {
+    const char* cur = std::getenv(k);
+    if (cur && *cur) return; // respect caller-provided env
+    MwSetEnv(k, v);
+}
+
+static void MwApplyDebugProfile() {
+    MwSetEnvDefault("MW05_HOST_TRACE_FILE",              "mw05_host_trace.log");
+    MwSetEnvDefault("MW05_HOST_TRACE_IMPORTS",           "1");
+    MwSetEnvDefault("MW05_HOST_TRACE_HOSTOPS",           "1");
+    MwSetEnvDefault("MW05_TRACE_KERNEL",                 "1");
+    MwSetEnvDefault("MW05_STREAM_BRIDGE",                "1");
+    MwSetEnvDefault("MW05_STREAM_ANY_LR",                "1");
+    MwSetEnvDefault("MW05_STREAM_ACK_NO_PATH",           "0");
+    MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
+    MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
+    MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");
+    MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");
+    MwSetEnvDefault("MW05_PM4_SCAN_SYSBUF",              "1");
+    MwSetEnvDefault("MW05_PM4_SYSBUF_DUMP_ON_GET",       "1");
+    MwSetEnvDefault("MW05_ALLOW_FLAG_CLEAR_AFTER_MS",    "300000");
+    MwSetEnvDefault("MW05_UNBLOCK_LOG_MS",               "2000");
+    MwSetEnvDefault("MW05_UNBLOCK_LOG_MAX",              "12");
+}
+
 PPC_EXTERN_FUNC(sub_82621640);
 PPC_EXTERN_FUNC(sub_8284E658);
 PPC_EXTERN_FUNC(sub_826346A8);
@@ -77,6 +112,9 @@ Heap g_userHeap;
 XDBFWrapper g_xdbfWrapper;
 std::unordered_map<uint16_t, GuestTexture*> g_xdbfTextureCache;
 
+// Ensure early kernel variable exports (ExLoadedImageName/CommandLine) are initialized
+extern void Mw05InitKernelVarExportsOnce();
+
 void HostStartup()
 {
 #ifdef _WIN32
@@ -89,6 +127,8 @@ void HostStartup()
 // Name inspired from nt's entry point
 void KiSystemStartup()
 {
+    KernelTraceHostOpF("HOST.KiSystemStartup ENTER");
+
     if (g_memory.base == nullptr)
     {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), Localise("System_MemoryAllocationFailed").c_str(), GameWindow::s_pWindow);
@@ -97,8 +137,12 @@ void KiSystemStartup()
 
     g_userHeap.Init();
 
+    // Publish ExLoadedImageName/ExLoadedCommandLine guest pointers (needs heap)
+    Mw05InitKernelVarExportsOnce();
+
     // Install any generated indirect redirects after memory init
     #if MW05_GEN_INDIRECT_REDIRECTS
+
         #if !defined(_MSC_VER)
             if (&MwInstallGeneratedIndirectRedirects)
                 MwInstallGeneratedIndirectRedirects();
@@ -137,10 +181,13 @@ void KiSystemStartup()
     }
 
     // Mount game
+    KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'game'");
     XamContentCreateEx(0, "game", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+    KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'update'");
     XamContentCreateEx(0, "update", &updateContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
 
     // OS mounts game data to D:
+    KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'D'");
     XamContentCreateEx(0, "D", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
 
     std::error_code ec;
@@ -236,9 +283,17 @@ int main(int argc, char *argv[])
 {
     // Attach a console when --verbose is passed, even for Windows GUI builds.
     bool verbose = false;
+    bool mwdebug = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--verbose") { verbose = true; break; }
+        if (std::string_view(argv[i]) == "--verbose") { verbose = true; }
+        if (std::string_view(argv[i]) == "--mwdebug") { mwdebug = true; }
     }
+
+    // Apply in-app debug profile if requested via CLI or env.
+    if (mwdebug || std::getenv("MW05_DEBUG_PROFILE")) {
+        MwApplyDebugProfile();
+    }
+
 #if defined(_WIN32)
     if (verbose) {
         AllocConsole();
@@ -289,6 +344,49 @@ int main(int argc, char *argv[])
                 LOGFN_ERROR("[crash]   frame[{}] = {}", (int)i, frames[i]);
             }
         }
+
+        // Attempt to write a minidump next to the executable for offline analysis.
+        __try {
+            HMODULE dbg = LoadLibraryA("DbgHelp.dll");
+            if (dbg) {
+                using MiniDumpWriteDump_t = BOOL (WINAPI*)(HANDLE, DWORD, HANDLE, ULONG, void*, void*, void*);
+                auto MiniDumpWriteDumpDyn = reinterpret_cast<MiniDumpWriteDump_t>(GetProcAddress(dbg, "MiniDumpWriteDump"));
+                if (MiniDumpWriteDumpDyn) {
+                    char dumpPath[MAX_PATH] = {};
+                    // Place in working dir as mw05_crash.dmp
+                    snprintf(dumpPath, sizeof(dumpPath), "mw05_crash.dmp");
+                    HANDLE hFile = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (hFile != INVALID_HANDLE_VALUE) {
+                        struct MinidumpExceptionInfo { DWORD ThreadId; void* ExceptionPointers; BOOL ClientPointers; } mei;
+                        mei.ThreadId = GetCurrentThreadId();
+                        mei.ExceptionPointers = ep;
+                        mei.ClientPointers = FALSE;
+                        // Request a richer dump to avoid zero-byte results
+                        // MINIDUMP_TYPE bits (copied from DbgHelp.h to avoid including it here):
+                        //   WithDataSegs=0x00000001, WithFullMemory=0x00000002, WithHandleData=0x00000004, WithThreadInfo=0x00001000
+                        const ULONG dumpType = (ULONG)(0x00000002u | 0x00000004u | 0x00001000u | 0x00000001u);
+                        BOOL ok = MiniDumpWriteDumpDyn(GetCurrentProcess(), GetCurrentProcessId(), hFile, dumpType, &mei, nullptr, nullptr);
+                        FlushFileBuffers(hFile);
+                        CloseHandle(hFile);
+                        if (!ok) {
+                            LOGFN_ERROR("[crash] minidump write failed (GetLastError={})", (unsigned)GetLastError());
+                        } else {
+                            LOGFN_ERROR("[crash] minidump written to mw05_crash.dmp");
+                        }
+                    } else {
+                        LOGFN_ERROR("[crash] failed to create mw05_crash.dmp (GetLastError={} )", (unsigned)GetLastError());
+                    }
+                } else {
+                    LOGFN_ERROR("[crash] MiniDumpWriteDump not available in DbgHelp.dll");
+                }
+                FreeLibrary(dbg);
+            } else {
+                LOGFN_ERROR("[crash] DbgHelp.dll not found; skipping dump");
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            LOGFN_ERROR("[crash] exception during dump creation; skipping");
+        }
+
         return EXCEPTION_EXECUTE_HANDLER;
     };
     SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep)->LONG { return MwUnhandledException(ep); });

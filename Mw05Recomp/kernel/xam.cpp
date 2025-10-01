@@ -11,6 +11,12 @@
 #include <SDL3/SDL.h>
 #include <os/logger.h>
 
+#include <cstdlib>
+
+// Forward decl from kernel/imports.cpp
+extern "C" bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait);
+
+
 struct XamListener : KernelObject
 {
     uint32_t id{};
@@ -100,6 +106,9 @@ std::string_view XamGetRootPath(const std::string_view& root)
 
 void XamRootCreate(const std::string_view& root, const std::string_view& path)
 {
+    LOGFN("XamRootCreate: '{}' -> '{}'", root, path);
+    KernelTraceHostOpF("HOST.XamRootCreate root='%.*s' path='%.*s'",
+                       (int)root.size(), root.data(), (int)path.size(), path.data());
     gRootMap.emplace(StringHash(root), path);
 }
 
@@ -148,6 +157,23 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     auto* listener = CreateKernelObject<XamListener>();
 
     listener->areas = qwAreas;
+
+    // Trace and optionally enqueue a benign boot notification to kick title state machines
+    KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX", (unsigned long long)qwAreas);
+
+    const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
+    const char* listShims = std::getenv("MW05_LIST_SHIMS");
+    if ((fakeNotify && fakeNotify[0] && fakeNotify[0] != '0') || (listShims && listShims[0] && listShims[0] != '0')) {
+        // For each requested area bit, enqueue a simple message id (number=1) with param=0.
+        // This is dev-only to test whether the title is gating on an initial XAM notification.
+        for (uint32_t area = 0; area < 64; ++area) {
+            if (qwAreas & (1ull << area)) {
+                const uint32_t msg = MSGID(area, 1);
+                XamNotifyEnqueueEvent(msg, 0);
+                KernelTraceHostOpF("HOST.XamNotifyCreateListener.fake.enqueue area=%u msg=%08X", area, msg);
+            }
+        }
+    }
 
     return GetKernelHandle(listener);
 }
@@ -255,10 +281,20 @@ uint32_t XamShowMessageBoxUI(uint32_t dwUserIndex, be<uint16_t>* wszTitle, be<ui
         pOverlapped->dwCompletionContext = GuestThread::GetCurrentThreadId();
         pOverlapped->Error = 0;
         pOverlapped->Length = -1;
+        // If caller provided an event, signal it to emulate immediate completion.
+        if (pOverlapped->hEvent)
+        {
+            if (auto* ev = reinterpret_cast<XKEVENT*>(g_memory.Translate(pOverlapped->hEvent)))
+            {
+                KeSetEvent(ev, 0, false);
+                KernelTraceHostOpF("HOST.XamShowMessageBoxUI.signal hEvent=%08X", (uint32_t)pOverlapped->hEvent);
+            }
+        }
     }
 
     XamNotifyEnqueueEvent(9, 0);
 
+    KernelTraceHostOpF("HOST.XamShowMessageBoxUI.complete cButtons=%u", cButtons);
     return 0;
 }
 
@@ -307,6 +343,11 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
     uint32_t dwContentFlags, be<uint32_t>* pdwDisposition, be<uint32_t>* pdwLicenseMask,
     uint32_t dwFileCacheSize, uint64_t uliContentSize, PXXOVERLAPPED pOverlapped)
 {
+    LOGFN("XamContentCreateEx: root='{}' content='{}' type={} flags={:X}",
+          szRootName, pContentData->szFileName, (uint32_t)pContentData->dwContentType, dwContentFlags);
+    KernelTraceHostOpF("HOST.XamContentCreateEx root='%s' content='%s' type=%u flags=%08X",
+                       szRootName, pContentData->szFileName, (uint32_t)pContentData->dwContentType, dwContentFlags);
+
     uint32_t contentType = static_cast<uint32_t>(pContentData->dwContentType);
     if (contentType < 1 || contentType > gContentRegistry.size())
     {
@@ -422,6 +463,9 @@ uint32_t XamInputGetCapabilities(uint32_t unk, uint32_t userIndex, uint32_t flag
 
 uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* state)
 {
+    static bool s_loggedOnce = false;
+    if (!s_loggedOnce) { s_loggedOnce = true; KernelTraceHostOpF("HOST.XamInputGetState.first_call"); }
+
     memset(state, 0, sizeof(*state));
 
     if (hid::IsInputAllowed())

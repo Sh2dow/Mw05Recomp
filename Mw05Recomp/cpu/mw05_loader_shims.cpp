@@ -21,7 +21,18 @@
     do { if (!IsTraceLoaderArgsEnabled()) { \
         KernelTraceHostOpF("HOST.Loader.args r3=%08X r4=%08X r5=%08X r6=%08X", \
                            (CTX).r3.u32, (CTX).r4.u32, (CTX).r5.u32, (CTX).r6.u32); \
-        /* keep DumpWordWindow / ProbeForPath / DeepProbeObjectPaths here if you want */ \
+        DumpWordWindow("HOST.Loader.r3", (CTX).r3.u32, 8); \
+        DumpWordWindow("HOST.Loader.r4", (CTX).r4.u32, 8); \
+        DumpWordWindow("HOST.Loader.r5", (CTX).r5.u32, 8); \
+        DumpWordWindow("HOST.Loader.r6", (CTX).r6.u32, 8); \
+        ProbeForPath("r3", (CTX).r3.u32); \
+        ProbeForPath("r4", (CTX).r4.u32); \
+        ProbeForPath("r5", (CTX).r5.u32); \
+        ProbeForPath("r6", (CTX).r6.u32); \
+        DeepProbeObjectPaths("r3", (CTX).r3.u32); \
+        DeepProbeObjectPaths("r4", (CTX).r4.u32); \
+        DeepProbeObjectPaths("r5", (CTX).r5.u32); \
+        DeepProbeObjectPaths("r6", (CTX).r6.u32); \
     }} while (0)
 
 extern "C" {

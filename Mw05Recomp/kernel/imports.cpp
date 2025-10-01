@@ -46,6 +46,8 @@ static std::atomic<bool> g_vdInterruptPending{false};
 static std::atomic<uint32_t> g_lastWaitEventEA{0};
 static std::atomic<uint32_t> g_lastWaitEventType{0};
 
+static std::atomic<uint32_t> g_lastWaitKernelHandle{0};
+
 static std::atomic<bool> g_vblankPumpRun{false};
 static std::atomic<bool> g_sawRealVdSwap{false};
 
@@ -637,6 +639,8 @@ static inline void NudgeEventWaiters() {
     g_keSetEventGeneration.fetch_add(1, std::memory_order_acq_rel);
     g_keSetEventGeneration.notify_all();
 }
+static void Mw05HostIsrSignalLastWaitHandleIfAny();
+
 static bool Mw05SignalVdInterruptEvent();
 static void Mw05DispatchVdInterruptIfPending();
 
@@ -760,6 +764,21 @@ extern "C" {
             }
         }
 
+
+        // Optional: aggressively pulse the suspected scheduler event at EA=0x000E0DD0 (diagnostic)
+        // Guarded by MW05_PULSE_E0DD0=1. This is a temporary nudge to test whether that wait gate blocks progress.
+        if (const char* pe = std::getenv("MW05_PULSE_E0DD0")) {
+            if (!(pe[0]=='0' && pe[1]=='\0')) {
+                constexpr uint32_t kPulseEA = 0x000E0DD0u;
+                if (GuestOffsetInRange(kPulseEA, sizeof(XDISPATCHER_HEADER))) {
+                    if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(kPulseEA))) {
+                        KeSetEvent(evt, 0, false);
+                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.pulse.e0dd0 ea=%08X", kPulseEA);
+                    }
+                }
+            }
+        }
+
         // Optionally signal the last waited-on event (if different from the VD event)
         if (const char* slw = std::getenv("MW05_HOST_ISR_FORCE_SIGNAL_LAST_WAIT")) {
             if (!(slw[0]=='0' && slw[1]=='\0')) {
@@ -782,8 +801,58 @@ extern "C" {
                 }
 
                         KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal.last_wait ea=%08X", lastEA);
+
                     }
                 }
+
+	                // If we didn't have a valid last-wait EA, try the last kernel handle waited on (implemented later)
+	                if (!(lastEA && GuestOffsetInRange(lastEA, sizeof(XDISPATCHER_HEADER)))) {
+	                    Mw05HostIsrSignalLastWaitHandleIfAny();
+	                }
+
+            }
+        }
+
+
+        // Optional: one-time nudge after N ISR ticks if still stuck (env-guarded)
+        {
+            static bool  s_nudgeOnceEnabled = [](){
+                if (const char* v = std::getenv("MW05_HOST_ISR_NUDGE_ONCE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static uint32_t s_afterTicks = [](){
+                if (const char* v = std::getenv("MW05_HOST_ISR_NUDGE_AFTER"))
+                    return (uint32_t)std::strtoul(v, nullptr, 10);
+                return 240u; // ~4 seconds at 60Hz
+            }();
+            static uint32_t s_ticks = 0;
+            static bool     s_done  = false;
+            static bool     s_loggedCfg = false;
+
+            if (!s_loggedCfg) {
+                KernelTraceHostOpF("HOST.HostDefaultVdIsr.nudge_once.config enabled=%u after=%u", (unsigned)s_nudgeOnceEnabled, s_afterTicks);
+                s_loggedCfg = true;
+            }
+
+            if (!s_done) ++s_ticks;
+            if (s_nudgeOnceEnabled && !s_done && s_ticks >= s_afterTicks) {
+                const uint32_t lastEA = g_lastWaitEventEA.load(std::memory_order_acquire);
+                const uint32_t vdEA   = g_vdInterruptEventEA.load(std::memory_order_acquire);
+                bool did = false;
+                if (lastEA && lastEA != vdEA && GuestOffsetInRange(lastEA, sizeof(XDISPATCHER_HEADER))) {
+                    if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(lastEA))) {
+                        KeSetEvent(evt, 0, false);
+                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.nudge_once.last_wait ea=%08X ticks=%u", lastEA, s_ticks);
+                        did = true;
+                    }
+                }
+                if (!did) {
+                    Mw05HostIsrSignalLastWaitHandleIfAny();
+                    KernelTraceHostOpF("HOST.HostDefaultVdIsr.nudge_once.handle_or_none handle=%08X ticks=%u",
+                                       (unsigned)g_lastWaitKernelHandle.load(std::memory_order_relaxed), s_ticks);
+                }
+                s_done = true;
             }
         }
 
@@ -810,6 +879,8 @@ extern "C" {
         if (!s_inIsrNudge) {
             s_inIsrNudge = true;
             VdCallGraphicsNotificationRoutines(0u);
+
+
             s_inIsrNudge = false;
         }
 
@@ -1121,6 +1192,9 @@ static inline bool Mw05VblankPumpEnabled() {
 void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 {
     KernelTraceHostOp("HOST.VdSwap");
+    if (auto* ctx = GetPPCContext()) {
+        KernelTraceHostOpF("HOST.VdSwap.caller lr=%08X", (uint32_t)ctx->lr);
+    }
     // Terse arg trace to correlate with vdswap.txt disassembly
     KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X", pWriteCur, pParams, pRingBase);
     // Mark that the guest performed a swap at least once (real)
@@ -1131,6 +1205,20 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
         printf("[boot] VdSwap()\n"); fflush(stdout);
     }
     Video::Present();
+
+    // Optional: stimulate guest render scheduler by issuing a notify after swap.
+    // Titles often rely on graphics notifications to progress their render loop.
+    // Opt-in via MW05_VDSWAP_NOTIFY=1 (default: off).
+    static const bool s_notify_after_swap = [](){
+        if (const char* v = std::getenv("MW05_VDSWAP_NOTIFY"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_notify_after_swap) {
+        // Emit a vblank-like source=0 and an auxiliary source=1 (common pattern)
+        VdCallGraphicsNotificationRoutines(0u);
+        VdCallGraphicsNotificationRoutines(1u);
+    }
 
     // Advance ring-buffer RPtr write-back to the guest's current write position
     // when possible, so polling logic sees precise progress; otherwise, nudge.
@@ -1158,6 +1246,39 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 
                         // Scan ring buffer for PM4 draw commands
                         PM4_OnRingBufferWrite(offs);
+
+                        // Optional: perform a broader scan after swap to catch early setups
+                        static const bool s_scan_all_on_swap = [](){
+                            if (const char* v = std::getenv("MW05_PM4_SCAN_ALL_ON_SWAP"))
+                                return !(v[0]=='0' && v[1]=='\0');
+                            return false;
+                        }();
+                        // If explicitly requested, or auto after a few frames with no draws, scan whole ring
+                        static int s_autoScanTicker = 0;
+                        extern uint64_t PM4_GetDrawCount();
+                        const bool auto_scan = (PM4_GetDrawCount() == 0 && (++s_autoScanTicker & 0x03) == 0); // ~every 4th swap until we see a draw
+                        if (s_scan_all_on_swap) {
+                            PM4_DebugScanAll();
+                        } else if (auto_scan) {
+                            extern void PM4_DebugScanAll_Force();
+                            PM4_DebugScanAll_Force();
+                        }
+
+                            // Optional: also scan the System Command Buffer directly in case the title
+                            // is writing PM4 there and relying on the kernel to push to the ring.
+                            static const bool s_scan_sysbuf = [](){
+                                if (const char* v = std::getenv("MW05_PM4_SCAN_SYSBUF"))
+                                    return !(v[0]=='0' && v[1]=='\0');
+                                return false;
+                            }();
+                            if (s_scan_sysbuf || auto_scan) {
+                                uint32_t sysbuf = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+                                if (sysbuf) {
+                                    // Scan a reasonable window; MW05 typically uses <= 64 KiB
+                                    PM4_ScanLinear(sysbuf, 64u * 1024u);
+                                }
+                            }
+
                     }
                 }
             }
@@ -1169,6 +1290,29 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
                 const uint32_t step = 0x80u;
                 uint32_t next = (cur + step) & mask;
                 *rptr = next ? next : 0x40u;
+                // Also feed the PM4 parser with the new write pointer so it can scan
+                // any commands that the guest may have queued even if we couldn't
+                // read the precise write_cur.
+                PM4_OnRingBufferWrite(next);
+
+	                // Fallback: if we still haven't seen draws, periodically force a full scan
+	                // of the ring and the system command buffer to catch very early setup.
+	                {
+	                    static int s_autoScanTicker2 = 0;
+	                    if (((++s_autoScanTicker2) & 0x03) == 0) { // ~every 4th swap
+	                        extern uint64_t PM4_GetDrawCount();
+	                        if (PM4_GetDrawCount() == 0) {
+	                            extern void PM4_DebugScanAll_Force();
+	                            PM4_DebugScanAll_Force();
+	                            // Also scan system buffer directly
+	                            uint32_t sysbuf = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+	                            if (sysbuf) {
+	                                PM4_ScanLinear(sysbuf, 64u * 1024u);
+	                            }
+	                        }
+	                    }
+	                }
+
             }
         }
     }
@@ -1645,6 +1789,14 @@ static void Mw05StartVblankPumpOnce() {
                         KernelTraceHostOp("HOST.PM4.swap.present");
                         Mw05MarkGuestSwappedOnce();
                         Video::RequestPresentFromBackground();
+                    }
+                }
+                // Optional: proactively scan entire ring for PM4 commands if enabled
+                {
+                    static int s_scanTicker = 0;
+                    extern void PM4_DebugScanAll();
+                    if (((++s_scanTicker) & 0x0F) == 0) { // ~every 16 ticks
+                        PM4_DebugScanAll();
                     }
                 }
                 if (e68 != s_prev_e68) {
@@ -2442,34 +2594,90 @@ void KeCertMonitorData()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void XexExecutableModuleHandle()
+// xboxkrnl variable export: XexExecutableModuleHandle (ordinal 0x193)
+// Titles may read this directly to get a module handle for the main XEX.
+// Provide a stable pseudo-handle that also matches XexGetModuleHandle(null).
+be<uint32_t> XexExecutableModuleHandle = be<uint32_t>(0x80000001u);
+
+
+// Exported variable: ExLoadedImageName (guest pointer to the loaded image name)
+be<uint32_t> ExLoadedImageName = be<uint32_t>(0);
+
+// Implemented after Event/Semaphore definitions so we can safely inspect types.
+static void Mw05HostIsrSignalLastWaitHandleIfAny()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    const uint32_t h = g_lastWaitKernelHandle.load(std::memory_order_acquire);
+    if (!h || !IsKernelObject(h)) return;
+
+    if (const char* tlw_h = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+        if (!(tlw_h[0]=='0' && tlw_h[1]=='\0')) {
+            KernelTraceHostOpF("HOST.Wait.last.handle current=%08X", h);
+        }
+    }
+
+    KernelObject* ko = GetKernelObject(h);
+    if (!ko || !IsKernelObjectAlive(ko)) return;
+
+    if (auto* ev = dynamic_cast<Event*>(ko)) {
+        ev->Set();
+        KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal.last_wait.handle event handle=%08X", h);
+        return;
+    }
+    if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
+        sem->Release(1, nullptr);
+        KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal.last_wait.handle semaphore handle=%08X", h);
+        return;
+    }
+
+    KernelTraceHostOpF("HOST.HostDefaultVdIsr.last_wait.handle.unsupported handle=%08X", h);
 }
 
-void ExLoadedCommandLine()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
+// xboxkrnl variable exports expected as pointers to data structures/strings
+// Provide minimal definitions so titles can read them without crashing.
+be<uint32_t> ExLoadedCommandLine = be<uint32_t>(0);     // guest ptr to UTF-8/ANSI string
+be<uint32_t> KeDebugMonitorData  = be<uint32_t>(0);     // guest ptr to struct (unused)
+be<uint32_t> ExThreadObjectType  = be<uint32_t>(0);     // guest ptr to object type (unused)
+be<uint32_t> KeTimeStampBundle   = be<uint32_t>(0);     // guest ptr to timestamp bundle (unused)
+be<uint32_t> XboxHardwareInfo    = be<uint32_t>(0);     // guest ptr to hw info struct (unused)
 
-void KeDebugMonitorData()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
+// Video device globals expected as variables by some titles
+be<uint32_t> VdGlobalDevice    = be<uint32_t>(0);    // pointer to vd device struct (unused)
+be<uint32_t> VdGlobalXamDevice = be<uint32_t>(0);    // pointer to xam device struct (unused)
+be<uint32_t> VdGpuClockInMHz   = be<uint32_t>(500);  // nominal Xenos GPU clock
 
-void ExThreadObjectType()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
 
-void KeTimeStampBundle()
+// One-time initializer to allocate and publish basic kernel variables.
+void Mw05InitKernelVarExportsOnce()
 {
-    LOG_UTILITY("!!! STUB !!!");
-}
+    static std::atomic<int> s_inited{0};
+    int expected = 0;
+    if (!s_inited.compare_exchange_strong(expected, 1, std::memory_order_acq_rel))
+        return;
 
-void XboxHardwareInfo()
-{
-    LOG_UTILITY("!!! STUB !!!");
+    // Allocate guest strings for image name and command line.
+    const char* image = "default_patched.xex";
+    const char* cmdln = "";
+
+    auto publish_string = [&](const char* s) -> uint32_t {
+        size_t n = std::strlen(s);
+        void* host = g_userHeap.Alloc(n + 1);
+        if (!host) return 0;
+        std::memcpy(host, s, n + 1);
+        return g_memory.MapVirtual(host);
+    };
+
+    uint32_t img_ea = publish_string(image);
+    uint32_t cmd_ea = publish_string(cmdln);
+
+    // ExLoadedImageName is an export too; ensure it exists and set if present.
+    // Some games only read ExLoadedCommandLine. We set both consistently.
+    extern be<uint32_t> ExLoadedImageName; // declared below (or by export table)
+
+    if (img_ea) ExLoadedImageName = img_ea;
+    if (cmd_ea) ExLoadedCommandLine = cmd_ea;
+
+    KernelTraceHostOpF("HOST.KernelVar.init ExLoadedImageName=%08X ExLoadedCommandLine=%08X",
+                       img_ea, cmd_ea);
 }
 
 uint32_t XGetGameRegion()
@@ -2482,6 +2690,57 @@ uint32_t XGetGameRegion()
 
 uint32_t XMsgStartIORequest(uint32_t App, uint32_t Message, XXOVERLAPPED* lpOverlapped, void* Buffer, uint32_t szBuffer)
 {
+    KernelTraceHostOpF("HOST.XMsgStartIORequest app=%u msg=%08X buf=%08X size=%u ovl=%08X",
+                       App, Message, (uint32_t)g_memory.MapVirtual(Buffer), szBuffer,
+                       (uint32_t)g_memory.MapVirtual(lpOverlapped));
+
+    // For known messages, dump a small hex preview of the payload to help discovery.
+    if (Buffer && szBuffer) {
+        const uint32_t bufEA = g_memory.MapVirtual(Buffer);
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
+        if (b) {
+            char hex[64 * 3 + 1] = {};
+            const uint32_t to_dump = std::min<uint32_t>(szBuffer, 64);
+            for (uint32_t i = 0; i < to_dump; ++i) {
+                std::snprintf(hex + i * 3, 4, "%02X ", b[i]);
+            }
+            KernelTraceHostOpF("HOST.XMsgStartIORequest.dump msg=%08X first=%u: %s", Message, to_dump, hex);
+        }
+    }
+
+    // Opportunistic decode for msg 0x7001B observed in MW05: buffer layout appears as:
+    //   u32 opcode(=2), u32 outEA0, u32 outEA1. Titles likely expect us to populate these outputs.
+    if (Message == 0x7001B && Buffer && szBuffer >= 12) {
+        const uint32_t bufEA = g_memory.MapVirtual(Buffer);
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
+        if (b) {
+            auto ld32 = [](const uint8_t* p) -> uint32_t {
+                return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+            };
+            const uint32_t opcode = ld32(b + 0);
+            const uint32_t out0EA = ld32(b + 4);
+            const uint32_t out1EA = ld32(b + 8);
+            if (opcode == 2 && GuestOffsetInRange(out0EA, 4) && GuestOffsetInRange(out1EA, 4)) {
+                *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out0EA)) = 0u;
+                *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out1EA)) = 0u;
+                KernelTraceHostOpF("HOST.XMsgStartIORequest(7001B).write out0=%08X out1=%08X => 0,0", out0EA, out1EA);
+            }
+        }
+    }
+
+    // Minimal immediate-complete behavior: mark overlapped as success and signal its event.
+    if (lpOverlapped && GuestOffsetInRange((uint32_t)g_memory.MapVirtual(lpOverlapped), sizeof(XXOVERLAPPED))) {
+        lpOverlapped->Error = 0;    // STATUS_SUCCESS
+        lpOverlapped->Length = 0;
+        lpOverlapped->dwExtendedError = 0;
+        const uint32_t evEA = lpOverlapped->hEvent;
+        if (evEA && GuestOffsetInRange(evEA, sizeof(XDISPATCHER_HEADER))) {
+            if (auto* ev = reinterpret_cast<XKEVENT*>(g_memory.Translate(evEA))) {
+                KeSetEvent(ev, 0, false);
+                KernelTraceHostOpF("HOST.XMsgStartIORequest.signal hEvent=%08X", evEA);
+            }
+        }
+    }
     return STATUS_SUCCESS;
 }
 
@@ -2492,12 +2751,45 @@ uint32_t XamUserGetSigninState(uint32_t userIndex)
 
 uint32_t XamGetSystemVersion()
 {
-    return 0;
+    // Pack as (Major << 24) | (Minor << 16) | Build; QFE ignored.
+    // Match/meet the import library requirement (>= 2.0.1861; prefer 2.0.2135).
+    constexpr uint32_t kMajor = 2;
+    constexpr uint32_t kMinor = 0;
+    constexpr uint32_t kBuild = 2135; // 0x0857
+    const uint32_t version = (kMajor << 24) | (kMinor << 16) | kBuild;
+    KernelTraceHostOpF("HOST.XamGetSystemVersion -> %08X (major=%u minor=%u build=%u)", version, kMajor, kMinor, kBuild);
+    return version;
 }
 
 void XamContentDelete()
 {
     LOG_UTILITY("!!! STUB !!!");
+}
+
+// -------- XamLoader launch data helpers --------
+// Minimal implementation: no launch data present.
+uint32_t XamLoaderGetLaunchDataSize(be<uint32_t>* pcbData)
+{
+    if (pcbData) *pcbData = 0u;
+    KernelTraceHostOp("HOST.XamLoaderGetLaunchDataSize size=0");
+    return 0; // STATUS_SUCCESS
+}
+
+uint32_t XamLoaderGetLaunchData(void* pBuffer, uint32_t cbBuffer, be<uint32_t>* pcbData)
+{
+    if (pcbData) *pcbData = 0u;
+    // No data to copy; succeed with zero bytes to avoid gating title init paths.
+    KernelTraceHostOpF("HOST.XamLoaderGetLaunchData buf=%08X len=%u -> 0 bytes",
+                       (uint32_t)g_memory.MapVirtual(pBuffer), cbBuffer);
+    return 0; // STATUS_SUCCESS
+}
+
+uint32_t XamLoaderSetLaunchData(const void* pBuffer, uint32_t cbBuffer)
+{
+    // Accept and ignore; titles may use this to pass control info between phases.
+    KernelTraceHostOpF("HOST.XamLoaderSetLaunchData buf=%08X len=%u",
+                       (uint32_t)g_memory.MapVirtual(pBuffer), cbBuffer);
+    return 0; // STATUS_SUCCESS
 }
 
 uint32_t XamContentGetCreator(uint32_t userIndex, const XCONTENT_DATA* contentData, be<uint32_t>* isCreator, be<uint64_t>* xuid, XXOVERLAPPED* overlapped)
@@ -2586,9 +2878,57 @@ void XamLoaderTerminateTitle()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void XamGetExecutionId()
+// Return a pointer (in guest EA) to a static XEX_EXECUTION_ID-like struct.
+// Prototype (per IDA): NTSTATUS XamGetExecutionId(PXEX_EXECUTION_ID* xid)
+// We only populate the common fields titles typically read: MediaId, TitleId,
+// SavegameId, DiscNumber, DiscCount, Version, BaseVersion.
+struct XamExecutionIdStruct {
+    be<uint32_t> MediaId;      // e.g., 0x36775B18
+    be<uint32_t> TitleId;      // e.g., 0x454107D9
+    be<uint32_t> SavegameId;   // often TitleId
+    uint8_t      DiscNumber;   // 0 for single-disc titles
+    uint8_t      DiscCount;    // 0 or 1 for single-disc titles
+    be<uint16_t> Version;      // optional; 0 if unknown
+    be<uint16_t> BaseVersion;  // optional; 0 if unknown
+    uint8_t      Platform;     // 2 = Xenon/Xbox 360 (best effort)
+    uint8_t      ReservedA;    // pad
+    be<uint16_t> ReservedB;    // pad
+};
+
+static std::atomic<uint32_t> s_execIdEA{0};
+
+uint32_t XamGetExecutionId(be<uint32_t>* outExecIdEA)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Allocate and publish once
+    uint32_t expect = 0;
+    if (s_execIdEA.load(std::memory_order_acquire) == 0) {
+        void* host = g_userHeap.Alloc(sizeof(XamExecutionIdStruct));
+        if (host) {
+            auto* xid = reinterpret_cast<XamExecutionIdStruct*>(host);
+            xid->MediaId     = 0x36775B18u;  // from tools/xenia_headers.txt
+            xid->TitleId     = 0x454107D9u;  // NFS:MW (EU)
+            xid->SavegameId  = 0x454107D9u;
+            xid->DiscNumber  = 0;
+            xid->DiscCount   = 0;
+            xid->Version     = 0;           // unknown; not required by most titles
+            xid->BaseVersion = 0;
+            xid->Platform    = 2;           // Xbox 360
+            xid->ReservedA   = 0;
+            xid->ReservedB   = 0;
+            s_execIdEA.store(g_memory.MapVirtual(host), std::memory_order_release);
+            KernelTraceHostOpF("HOST.XamGetExecutionId.init xid_ea=%08X", s_execIdEA.load());
+        }
+    }
+
+    const uint32_t ea = s_execIdEA.load(std::memory_order_acquire);
+    if (outExecIdEA && ea) {
+        *outExecIdEA = ea;
+        KernelTraceHostOpF("HOST.XamGetExecutionId -> %08X", ea);
+        return 0; // STATUS_SUCCESS
+    }
+
+    KernelTraceHostOp("HOST.XamGetExecutionId -> STATUS_UNSUCCESSFUL");
+    return 0xC0000001; // STATUS_UNSUCCESSFUL
 }
 
 void XamLoaderLaunchTitle()
@@ -2603,6 +2943,7 @@ void RtlInitAnsiString(XANSI_STRING* destination, char* source)
     destination->MaximumLength = length + 1;
     destination->Buffer = source;
 }
+
 
 uint32_t NtCreateFile(
     be<uint32_t>* FileHandle,
@@ -2630,7 +2971,10 @@ uint32_t NtCreateFile(
 
     std::string guestPath = ExtractGuestPath(Attributes);
     guestPath = NormalizeGuestPath(std::move(guestPath));
+    KernelTraceHostOpF("HOST.File.NtCreateFile.open path=%s", guestPath.c_str());
+
     if (guestPath.empty()) {
+
         *FileHandle = GUEST_INVALID_HANDLE_VALUE;
         IoStatusBlock->Status = STATUS_OBJECT_NAME_INVALID;
         IoStatusBlock->Information = 0;
@@ -2818,8 +3162,15 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             return STATUS_INVALID_HANDLE;
         }
         if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-            if (!(tlw[0]=='0' && tlw[1]=='\0')) {
+            if (!(tlw[0]=='0' && tlw[1]==0)) {
                 KernelTraceHostOpF("HOST.Wait.path.NtWaitForSingleObjectEx.kernel_handle handle=%08X", Handle);
+            }
+        }
+        // Record last-wait kernel handle for ISR fallback
+        g_lastWaitKernelHandle.store(Handle, std::memory_order_release);
+        if (const char* tlw_h = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+            if (!(tlw_h[0]=='0' && tlw_h[1]=='\0')) {
+                KernelTraceHostOpF("HOST.Wait.last.handle NtWaitForSingleObjectEx handle=%08X", Handle);
             }
         }
         // Record last-wait EA/type if this handle maps to a known guest-backed object
@@ -2987,6 +3338,8 @@ void vsprintf_x()
 
 uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, uint16_t SizeOfBuffer, be<uint32_t>* RequiredSize)
 {
+    KernelTraceHostOpF("HOST.ExGetXConfigSetting cat=%04X setting=%04X size=%u", Category, Setting, SizeOfBuffer);
+
     uint32_t data[4]{};
 
     switch (Category)
@@ -3005,7 +3358,9 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
                     return 1;
             }
         }
+        break;
 
+        // XCONFIG_USER_CATEGORY
         case 0x0003:
         {
             switch (Setting)
@@ -3044,11 +3399,18 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
                     return 1;
             }
         }
+        break;
+
+        default:
+            return 1;
     }
 
-    *RequiredSize = 4;
-    memcpy(Buffer, data, std::min((size_t)SizeOfBuffer, sizeof(data)));
+    if (RequiredSize) *RequiredSize = 4;
+    if (Buffer && SizeOfBuffer) {
+        memcpy(Buffer, data, std::min((size_t)SizeOfBuffer, sizeof(uint32_t)));
+    }
 
+    KernelTraceHostOpF("HOST.ExGetXConfigSetting -> ok val=%08X", ByteSwap(data[0]));
     return 0;
 }
 
@@ -3161,14 +3523,60 @@ uint32_t RtlNtStatusToDosError(uint32_t Status)
     return 31u;
 }
 
-void XexGetProcedureAddress()
+// Minimal implementation: return not found and null out pointer.
+// NTSTATUS XexGetProcedureAddress(HMODULE hModule, uint32_t ordinal, void** out_fn, uint32_t flags)
+uint32_t XexGetProcedureAddress(uint32_t hModule, uint32_t Ordinal, be<uint32_t>* OutFnEA, uint32_t /*Flags*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    KernelTraceHostOpF("HOST.XexGetProcedureAddress hModule=%08X ord=%u", hModule, Ordinal);
+    if (OutFnEA) *OutFnEA = 0u;
+    return 0xC0000139; // STATUS_ENTRYPOINT_NOT_FOUND
 }
 
-void XexGetModuleSection()
+// XexGetModuleSection with section bounds matched to MW05 XEX (from xenia.log)
+// NTSTATUS XexGetModuleSection(HANDLE module, const char* name, void** base, uint32_t* size)
+uint32_t XexGetModuleSection(uint32_t /*hModule*/, const char* name, be<uint32_t>* outBase, be<uint32_t>* outSize)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    auto ret = [&](uint32_t base, uint32_t size, const char* sec) -> uint32_t {
+        if (outBase) *outBase = base;
+        if (outSize) *outSize = size;
+        KernelTraceHostOpF("HOST.XexGetModuleSection %s base=%08X size=%08X", sec, base, size);
+        return 0; // STATUS_SUCCESS
+    };
+
+    // MW05 layout (per Mw05RecompLib/config/xenia.log):
+    //   RODATA: 0x82000000..0x820E0000  (size 0x00E0000)
+    //   CODE:   0x820E0000..0x828C0000  (size 0x07E0000)
+    //   RWDATA: 0x828D0000..0x82C90000  (size 0x03C0000)
+    //   RODATA2:0x82C90000..0x82CD0000  (size 0x0040000)
+    if (name) {
+        const uint32_t kRdataBase  = 0x82000000u;
+        const uint32_t kRdataSize  = 0x000E0000u;
+        const uint32_t kTextBase   = 0x820E0000u;
+        const uint32_t kTextSize   = 0x007E0000u;
+        const uint32_t kDataBase   = 0x828D0000u;
+        const uint32_t kDataSize   = 0x003C0000u;
+        const uint32_t kRdata2Base = 0x82C90000u;
+        const uint32_t kRdata2Size = 0x00040000u;
+
+        if (std::strcmp(name, ".text") == 0 || std::strcmp(name, "text") == 0) {
+            return ret(kTextBase, kTextSize, ".text");
+        }
+        if (std::strcmp(name, ".rdata") == 0 || std::strcmp(name, "rdata") == 0) {
+            return ret(kRdataBase, kRdataSize, ".rdata");
+        }
+        if (std::strcmp(name, ".data") == 0 || std::strcmp(name, "data") == 0) {
+            return ret(kDataBase, kDataSize, ".data");
+        }
+        // Some games look for a trailing rodata-like chunk with different spellings
+        if (std::strcmp(name, ".rdata2") == 0 || std::strcmp(name, "rdata2") == 0 || std::strcmp(name, ".rconst") == 0) {
+            return ret(kRdata2Base, kRdata2Size, ".rdata2");
+        }
+    }
+
+    if (outBase) *outBase = 0;
+    if (outSize) *outSize = 0;
+    KernelTraceHostOpF("HOST.XexGetModuleSection name=\"%s\" -> STATUS_OBJECT_NAME_NOT_FOUND", name ? name : "<null>");
+    return 0xC0000034; // STATUS_OBJECT_NAME_NOT_FOUND
 }
 
 uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiByteString, be<uint32_t>* BytesInMultiByteString, const be<uint16_t>* UnicodeString, uint32_t BytesInUnicodeString)
@@ -3308,13 +3716,37 @@ void NtQueryVolumeInformationFile()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void NtQueryDirectoryFile()
+extern "C" uint32_t NtQueryDirectoryFile(
+    uint32_t FileHandle,
+    uint32_t Event,
+    uint32_t ApcRoutine,
+    uint32_t ApcContext,
+    XIO_STATUS_BLOCK* IoStatusBlock,
+    void* FileInformation,
+    uint32_t Length,
+    uint32_t FileInformationClass,
+    uint8_t ReturnSingleEntry,
+    void* FileName,
+    uint8_t RestartScan)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    (void)FileHandle; (void)Event; (void)ApcRoutine; (void)ApcContext; (void)FileInformation;
+    (void)Length; (void)FileInformationClass; (void)ReturnSingleEntry; (void)FileName; (void)RestartScan;
+
+    // Minimal, safe-by-default implementation: report no entries.
+    // This unblocks callers expecting a concrete NTSTATUS and IoStatusBlock update,
+    // instead of our previous stub that returned nothing.
+    if (IoStatusBlock) {
+        IoStatusBlock->Status = STATUS_NO_MORE_FILES; // 0x80000006
+        IoStatusBlock->Information = 0;
+    }
+
+    KernelTraceHostOp("HOST.File.NtQueryDirectoryFile.empty");
+    return STATUS_NO_MORE_FILES;
 }
 
 void NtReadFileScatter()
 {
+
     LOG_UTILITY("!!! STUB !!!");
 }
 
@@ -3359,10 +3791,17 @@ uint32_t NtReadFile(
         return STATUS_INVALID_HANDLE;
     }
 
+    static std::atomic<int> s_loggedReadOnce{0};
+    int expected_once = 0;
+    if (s_loggedReadOnce.compare_exchange_strong(expected_once, 1)) {
+        KernelTraceHostOpF("HOST.File.NtReadFile.called handle=%08X len=%u", handleId, Length);
+    }
+
     LARGE_INTEGER originalPos{};
     bool hasOriginal = false;
 
     if (ByteOffset) {
+
         const int64_t offset = static_cast<int64_t>(*ByteOffset);
         if (!ApplyAbsoluteOffset(file, offset, originalPos, hasOriginal)) {
             RestoreFileOffset(file, originalPos, hasOriginal);
@@ -3849,9 +4288,28 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     // Give up acquiring in non-blocking mode; caller will likely retry later.
 }
 
-void RtlImageXexHeaderField()
+// NTSTATUS RtlImageXexHeaderField(void* HeaderBase, uint32_t Field, void** OutPtr)
+// Minimal: if Field looks like EXECUTION_INFO, return pointer to our execution id.
+uint32_t RtlImageXexHeaderField(uint32_t /*HeaderBaseEA*/, uint32_t Field, be<uint32_t>* OutPtrEA)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    KernelTraceHostOpF("HOST.RtlImageXexHeaderField field=%08X", Field);
+
+    // Commonly used IDs for XEX_HEADER_EXECUTION_INFO observed in docs/emulators.
+    constexpr uint32_t kExecInfo1 = 0x000002FFu;
+    constexpr uint32_t kExecInfo2 = 0x000003FFu;
+
+    if (Field == kExecInfo1 || Field == kExecInfo2)
+    {
+        be<uint32_t> xidEA = 0u;
+        // Ensure we have a published execution id and return its guest EA.
+        (void)XamGetExecutionId(&xidEA);
+        if (OutPtrEA) *OutPtrEA = xidEA;
+        KernelTraceHostOpF("HOST.RtlImageXexHeaderField EXECUTION_INFO -> %08X", (uint32_t)xidEA);
+        return 0; // STATUS_SUCCESS
+    }
+
+    if (OutPtrEA) *OutPtrEA = 0u;
+    return 0xC0000225; // STATUS_NOT_FOUND
 }
 
 void HalReturnToFirmware()
@@ -3989,12 +4447,19 @@ static void EnsureSystemCommandBuffer()
         g_SysCmdBufHost = g_userHeap.Alloc(kSysCmdBufSize, 0x100);
         g_SysCmdBufGuest = g_memory.MapVirtual(g_SysCmdBufHost);
         g_VdSystemCommandBuffer.store(g_SysCmdBufGuest);
+        // Immediate visibility: scan once upon allocation to detect early PM4 usage.
+        KernelTraceHostOpF("HOST.PM4.SysBufScan.ensure buf=%08X bytes=%u", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
+        extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+        PM4_ScanLinear(g_SysCmdBufGuest, kSysCmdBufSize);
     }
 }
 
 uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
     KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.enter outPtr=%p outVal=%p", (void*)outCmdBufPtr, (void*)outValue);
+    if (auto* ctx = GetPPCContext()) {
+        KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.caller lr=%08X", (uint32_t)ctx->lr);
+    }
     EnsureSystemCommandBuffer();
 
     // Seed a non-zero value on first query to match titles that expect a ticking
@@ -4019,6 +4484,43 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
     }
 
     KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.res buf=%08X val=%08X", g_SysCmdBufGuest, g_SysCmdBufValue.load(std::memory_order_acquire));
+    // Optional: dump a small window of the system command buffer on each query
+    static const bool s_sysbuf_dump_on_get = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_DUMP_ON_GET"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_sysbuf_dump_on_get && g_SysCmdBufGuest != 0) {
+        const uint32_t base = g_SysCmdBufGuest;
+        uint32_t* p = reinterpret_cast<uint32_t*>(g_memory.Translate(base));
+        if (p) {
+            for (int i = 0; i < 8; ++i) { // dump first 8 dwords (32 bytes)
+            #if defined(_MSC_VER)
+                uint32_t le = _byteswap_ulong(p[i]);
+            #else
+                uint32_t le = __builtin_bswap32(p[i]);
+            #endif
+                if (i == 0) {
+                    KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X (first)", base + i * 4, le);
+                } else {
+                    KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X", base + i * 4, le);
+                }
+            }
+        }
+    }
+
+    // One-time opportunistic scan of the system command buffer so we can see if the
+    // title pushes PM4 here before the ring is initialized. This only logs and is safe.
+    {
+        static bool s_scannedOnce = false;
+        if (!s_scannedOnce && g_SysCmdBufGuest != 0) {
+            KernelTraceHostOpF("HOST.PM4.SysBufScan.trigger buf=%08X bytes=%u", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
+            extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+            PM4_ScanLinear(g_SysCmdBufGuest, kSysCmdBufSize);
+            KernelTraceHostOpF("HOST.PM4.SysBufScan.done");
+            s_scannedOnce = true;
+        }
+    }
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[vd] GetSystemCommandBuffer -> 0x%08X\n", g_SysCmdBufGuest);
         fflush(stdout);
@@ -4086,6 +4588,9 @@ void VdEnableRingBufferRPtrWriteBack(uint32_t base)
 void VdInitializeRingBuffer(uint32_t base, uint32_t len)
 {
     KernelTraceHostOpF("HOST.VdInitializeRingBuffer base=%08X len_log2=%u", base, len);
+    if (auto* ctx = GetPPCContext()) {
+        KernelTraceHostOpF("HOST.VdInitializeRingBuffer.caller lr=%08X", (uint32_t)ctx->lr);
+    }
     // MW05 (and Xenia logs) pass the ring buffer size as log2(len).
     // Convert to bytes to ensure we zero the correct range so readers see a clean buffer.
     g_RbBase = base;
@@ -4103,11 +4608,12 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
         if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(wb)))
             *rptr = 0x20; // small non-zero value
     }
-    g_vdInterruptPending.store(true, std::memory_order_release);
-    Mw05DispatchVdInterruptIfPending();
 
     // Initialize PM4 parser with ring buffer info
     PM4_SetRingBuffer(base, len);
+
+    g_vdInterruptPending.store(true, std::memory_order_release);
+    Mw05DispatchVdInterruptIfPending();
 }
 
 
@@ -4259,13 +4765,19 @@ void VdSetSystemCommandBuffer(uint32_t base, uint32_t len)
         g_VdSystemCommandBuffer.store(base);
         g_SysCmdBufGuest = base;
         g_SysCmdBufHost = g_memory.Translate(base);
+        // Opportunistic scan when the guest sets the system buffer explicitly.
+        const uint32_t scanBytes = (len != 0) ? len : kSysCmdBufSize;
+        KernelTraceHostOpF("HOST.PM4.SysBufScan.set base=%08X bytes=%u", base, (unsigned)scanBytes);
+        extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+        PM4_ScanLinear(base, scanBytes);
     }
     (void)len;
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
-        printf("[vd] SetSystemCommandBuffer base=0x%08X len=%u\n", base, len);
+        printf("[vd] SetSystemCommandBuffer -> 0x%08X\n", base);
         fflush(stdout);
     }
 }
+
 
 void _vsnprintf_x()
 {
@@ -4714,14 +5226,30 @@ void NetDll___WSAFDIsSet()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void XMsgStartIORequestEx()
+uint32_t XMsgStartIORequestEx(uint32_t App, uint32_t Message, XXOVERLAPPED* lpOverlapped, void* Buffer, uint32_t szBuffer)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Alias to base implementation; some titles call Ex variant.
+    return XMsgStartIORequest(App, Message, lpOverlapped, Buffer, szBuffer);
 }
 
-void XexGetModuleHandle()
+// Minimal XexGetModuleHandle implementation
+// Prototype (Xbox360): NTSTATUS XexGetModuleHandle(const char* name, uint32_t* handle)
+// Behavior: if name is null, return the current executable module handle; otherwise, return the same handle for any name to keep titles happy.
+uint32_t XexGetModuleHandle(const char* name, be<uint32_t>* outHandle)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // Our loader maps a single executable; use a fixed pseudo-handle for now.
+    constexpr uint32_t kCurrentModuleHandle = 0x80000001u; // guest-style tagged handle
+
+    if (!name || name[0] == '\0') {
+        if (outHandle) *outHandle = kCurrentModuleHandle;
+        KernelTraceHostOp("HOST.XexGetModuleHandle current -> SUCCESS");
+        return 0; // STATUS_SUCCESS
+    }
+
+    // Accept any name and return the current module's handle (some titles pass the image name)
+    if (outHandle) *outHandle = kCurrentModuleHandle;
+    KernelTraceHostOpF("HOST.XexGetModuleHandle name=\"%s\" -> SUCCESS (alias current)", name);
+    return 0; // STATUS_SUCCESS
 }
 
 bool RtlTryEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
@@ -5087,13 +5615,17 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
 
     // Guards
     if (!HandlesOrDispatchers) return STATUS_INVALID_PARAMETER;
-    // NT has a limit (64). Use your projectвЂ™s constant if it exists.
-    if (Count == 0 || Count > 64) return STATUS_INVALID_PARAMETER;
+    if (Count == 0 || Count > 64) return STATUS_INVALID_PARAMETER; // sane cap
 
     const bool fastBoot  = Mw05FastBootEnabled();
     const bool listShims = Mw05ListShimsEnabled();
     static const auto t0 = std::chrono::steady_clock::now();
     const auto elapsed   = std::chrono::steady_clock::now() - t0;
+
+    // LIST_SHIMS: trace only (no bypass)
+    if (listShims && elapsed < std::chrono::seconds(30)) {
+        KernelTraceHostOp("HOST.MW05_LIST_SHIMS.NtWaitForMultipleObjectsEx");
+    }
 
     // Early-boot short-circuit ONLY for fast-boot
     if (fastBoot && elapsed < std::chrono::seconds(30)) {
@@ -5103,85 +5635,63 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
             const uint32_t v = HandlesOrDispatchers[i];
             if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
                 auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
-
-
-                hdr->SignalState = be<int32_t>(1);
+                if (hdr) hdr->SignalState = be<int32_t>(1);
             }
         }
         Mw05NudgeEventWaiters();
-        // For wait-any, pretend index 0 fired; for wait-all, success.
-
-    // Record last-waited dispatcher EA for ISR nudge (prefer last element if EAs present)
-    if (Count) {
-        for (int i = int(Count) - 1; i >= 0; --i) {
-            const uint32_t v = HandlesOrDispatchers[i];
-            if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
-                g_lastWaitEventEA.store(v, std::memory_order_release);
-                if (auto* hdr2 = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v))) {
-                    g_lastWaitEventType.store(hdr2->Type, std::memory_order_release);
-                }
-                break;
-            }
-        }
-    }
-    if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-        if (!(tlw[0]=='0' && tlw[1]=='\0')) {
-            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", g_lastWaitEventEA.load(std::memory_order_relaxed), (unsigned)g_lastWaitEventType.load(std::memory_order_relaxed));
-        }
-    }
-
-
+        // Pretend index 0 fired for wait-any; success for wait-all
         return (WaitType == 0) ? (STATUS_WAIT_0 + 0) : STATUS_SUCCESS;
-    }
-
-    // LIST_SHIMS: trace only (no bypass)
-    if (listShims && elapsed < std::chrono::seconds(30)) {
-        KernelTraceHostOp("HOST.MW05_LIST_SHIMS.NtWaitForMultipleObjectsEx");
     }
 
     const uint32_t timeout_ms = GuestTimeoutToMilliseconds(Timeout);
     const bool wait_all = (WaitType != 0);
-    // Record last-waited dispatcher EA for ISR nudge (prefer last element if EAs present)
-    if (Count) {
-        for (int i = int(Count) - 1; i >= 0; --i) {
-            const uint32_t v = HandlesOrDispatchers[i];
-            if (GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER))) {
-                g_lastWaitEventEA.store(v, std::memory_order_release);
-                if (auto* hdr2 = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v))) {
-                    g_lastWaitEventType.store(hdr2->Type, std::memory_order_release);
-                }
-                break;
-            }
-        }
-    }
 
-    // Build a vector of KernelObject* from mixed inputs
+    // Build a vector of KernelObject* from mixed inputs and record last-wait info
     std::vector<KernelObject*> objs;
     objs.reserve(Count);
+
+    auto record_last_ea = [](uint32_t ea, uint32_t type){
+        if (!ea || !GuestOffsetInRange(ea, sizeof(XDISPATCHER_HEADER))) return;
+        g_lastWaitEventEA.store(ea, std::memory_order_release);
+        g_lastWaitEventType.store(type, std::memory_order_release);
+        if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+            if (!(tlw[0]=='0' && tlw[1]=='\0'))
+                KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u", ea, (unsigned)type);
+        }
+    };
 
     for (uint32_t i = 0; i < Count; ++i) {
         const uint32_t v = HandlesOrDispatchers[i];
 
         if (IsKernelObject(v)) {
+            // Record last-wait kernel handle for ISR fallback (prefer later entries)
+            g_lastWaitKernelHandle.store(v, std::memory_order_release);
+            if (const char* tlw_h = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                if (!(tlw_h[0]=='0' && tlw_h[1]=='\0'))
+                    KernelTraceHostOpF("HOST.Wait.last.handle NtWaitForMultipleObjectsEx handle=%08X", v);
+            }
+
             KernelObject* ko = GetKernelObject(v);
             if (!IsKernelObjectAlive(ko)) return STATUS_INVALID_HANDLE;
 
-            objs.push_back(ko);
-            if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                if (!(tlw[0]=='0' && tlw[1]=='\0')) {
-                    KernelTraceHostOpF("HOST.Wait.path.NtWaitForMultipleObjectsEx.kernel_handle handle=%08X", v);
-                }
+            // If this kernel object mirrors a guest dispatcher header, record its EA/type
+            if (auto* ev = dynamic_cast<Event*>(ko)) {
+                record_last_ea(ev->guestHeaderEA, ev->manualReset ? 0u : 1u);
+            } else if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
+                record_last_ea(sem->guestHeaderEA, 5u);
             }
 
+            objs.push_back(ko);
             continue;
-
         }
 
-        // Treat as guest dispatcher pointer (EA)
+        // Treat non-handle as guest dispatcher pointer (EA)
         if (!GuestOffsetInRange(v, sizeof(XDISPATCHER_HEADER)))
             return STATUS_INVALID_HANDLE;
 
         auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(g_memory.Translate(v));
+        if (!hdr) return STATUS_INVALID_HANDLE;
+
         KernelObject* ko = nullptr;
         switch (hdr->Type) {
             case 0: // NotificationEvent
@@ -5193,60 +5703,14 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
                 break;
             default:
                 return STATUS_INVALID_HANDLE;
-            // Record last EA/type if this handle maps to a known guest-backed object
-            if (auto* ev = dynamic_cast<Event*>(ko)) {
-                if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                    g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
-                    const uint32_t typ = ev->manualReset ? 0u : 1u;
-                    g_lastWaitEventType.store(typ, std::memory_order_release);
-                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForMultipleObjectsEx.kernel_handle->event)", ev->guestHeaderEA, typ);
-                        }
-                    }
-                }
-            } else if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
-                if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                    g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
-                    g_lastWaitEventType.store(5u, std::memory_order_release);
-                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForMultipleObjectsEx.kernel_handle->semaphore)", sem->guestHeaderEA);
-                        }
-                    }
-                }
-            }
-
-            // Record last EA/type if this handle maps to a known guest-backed object
-            if (auto* ev = dynamic_cast<Event*>(ko)) {
-                if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                    g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
-                    const uint32_t typ = ev->manualReset ? 0u : 1u;
-                    g_lastWaitEventType.store(typ, std::memory_order_release);
-                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForMultipleObjectsEx.handle->event)", ev->guestHeaderEA, typ);
-                        }
-                    }
-                }
-            } else if (auto* sem = dynamic_cast<Semaphore*>(ko)) {
-                if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                    g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
-                    g_lastWaitEventType.store(5u, std::memory_order_release);
-                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForMultipleObjectsEx.handle->semaphore)", sem->guestHeaderEA);
-                        }
-                    }
-                }
-            }
-
         }
-        if (!ko) return STATUS_INVALID_HANDLE;
+
+        // Record this dispatcher EA/type (prefer later entries)
+        record_last_ea(v, hdr->Type);
         objs.push_back(ko);
     }
 
-    // Portable polling loop (you can swap in your generation-wait fast path later)
+    // Portable polling loop
     const auto start = std::chrono::steady_clock::now();
     auto expired = [&]{
         if (timeout_ms == INFINITE) return false;
@@ -5272,11 +5736,11 @@ extern "C" uint32_t NtWaitForMultipleObjectsEx(
         }
 
         if (Alertable) {
-            // TODO: if you wire APCs, return STATUS_USER_APC where appropriate
+            // TODO: APC support
         }
         if (expired()) return STATUS_TIMEOUT;
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // light backoff
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
@@ -5511,9 +5975,9 @@ GUEST_FUNCTION_HOOK(__imp__XamShowMessageBoxUIEx, XamShowMessageBoxUIEx);
 GUEST_FUNCTION_HOOK(__imp__XGetLanguage, XGetLanguage);
 
 // Minimal stubs for XAM imports referenced by the recompiled mapping but not yet implemented.
-GUEST_FUNCTION_STUB(__imp__XamLoaderGetLaunchDataSize);
-GUEST_FUNCTION_STUB(__imp__XamLoaderGetLaunchData);
-GUEST_FUNCTION_STUB(__imp__XamLoaderSetLaunchData);
+GUEST_FUNCTION_HOOK(__imp__XamLoaderGetLaunchDataSize, XamLoaderGetLaunchDataSize);
+GUEST_FUNCTION_HOOK(__imp__XamLoaderGetLaunchData,     XamLoaderGetLaunchData);
+GUEST_FUNCTION_HOOK(__imp__XamLoaderSetLaunchData,     XamLoaderSetLaunchData);
 GUEST_FUNCTION_STUB(__imp__XamUserGetName);
 GUEST_FUNCTION_STUB(__imp__XamUserAreUsersFriends);
 GUEST_FUNCTION_STUB(__imp__XamUserCheckPrivilege);

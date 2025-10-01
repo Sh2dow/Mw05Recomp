@@ -30,11 +30,13 @@
 #include <ui/options_menu.h>
 #include <ui/game_window.h>
 #include <ui/black_bar.h>
+#include <ui/tv_static.h>
 #include <patches/aspect_ratio_patches.h>
 #include <user/config.h>
 #include <sdl_listener.h>
 #include <xxHashMap.h>
 #include <os/process.h>
+#include "pm4_parser.h"
 
 #if defined(ASYNC_PSO_DEBUG) || defined(PSO_CACHING)
 #include <magic_enum/magic_enum.hpp>
@@ -2777,6 +2779,34 @@ static void DrawImGui()
 
     ResetImGuiCallbacks();
 
+    // Fallback TV static overlay if the guest hasn't issued any draw calls yet
+    {
+        static bool s_tvInit = false;
+        static uint64_t s_lastPm4Draws = 0;
+        static auto s_blankSince = std::chrono::steady_clock::time_point{};
+        const char* tvEnv = std::getenv("MW05_TV_STATIC");
+        const bool tvEnabled = !tvEnv || !(tvEnv[0]=='0' && tvEnv[1]=='\0');
+        if (tvEnabled) {
+            uint64_t pm4Draws = PM4_GetDrawCount();
+            auto now = std::chrono::steady_clock::now();
+            if (pm4Draws == s_lastPm4Draws) {
+                if (s_blankSince.time_since_epoch().count() == 0) s_blankSince = now;
+            } else {
+                s_blankSince = {};
+            }
+            s_lastPm4Draws = pm4Draws;
+            // After 1000 ms with no new PM4 draws, show the noise overlay
+            if (s_blankSince.time_since_epoch().count() != 0 &&
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - s_blankSince).count() >= 1000) {
+                if (!s_tvInit) { TVStatic::Init(); s_tvInit = true; }
+                ImVec2 center{ float(Video::s_viewportWidth) * 0.5f, float(Video::s_viewportHeight) * 0.5f };
+                ImVec2 res{ float(Video::s_viewportWidth), float(Video::s_viewportHeight) };
+                double t = double(SDL_GetTicks64()) / 1000.0;
+                TVStatic::Draw(center, res, t);
+            }
+        }
+    }
+
 #ifdef ASYNC_PSO_DEBUG
     if (ImGui::Begin("Async PSO Stats"))
     {
@@ -3051,6 +3081,16 @@ void Video::Present()
     // Mark that at least one Present occurred so the boot banner can clear
     g_anyPresentSeen.store(true, std::memory_order_release);
     g_readyForCommands = false;
+
+    // Optional: aggressively scan PM4 ring during early presents to discover draws even if VdSwap path isn't hit
+    static int s_pm4_probe_presents = 180; // ~3 seconds at 60 FPS
+    if (s_pm4_probe_presents > 0 && PM4_GetDrawCount() == 0) {
+        --s_pm4_probe_presents;
+        PM4_DebugScanAll_Force();
+        PM4_DumpOpcodeHistogram();
+        KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu",
+            (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+    }
 
     RenderCommand cmd;
     cmd.type = RenderCommandType::ExecutePendingStretchRectCommands;
@@ -3426,6 +3466,7 @@ static RenderFormat ConvertFormat(uint32_t format)
 
 static GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, uint32_t usage, uint32_t format, uint32_t pool, uint32_t type)
 {
+    KernelTraceHostOpF("HOST.GPU.CreateTexture %ux%u depth=%u levels=%u fmt=%u type=%u", width, height, depth, levels, format, type);
     const auto texture = g_userHeap.AllocPhysical<GuestTexture>(type == 17 ? ResourceType::VolumeTexture : ResourceType::Texture);
 
     RenderTextureDesc desc;
@@ -3491,6 +3532,7 @@ static RenderHeapType GetBufferHeapType()
 
 static GuestBuffer* CreateVertexBuffer(uint32_t length)
 {
+    KernelTraceHostOpF("HOST.GPU.CreateVertexBuffer len=%u", length);
     auto buffer = g_userHeap.AllocPhysical<GuestBuffer>(ResourceType::VertexBuffer);
     buffer->buffer = g_device->createBuffer(RenderBufferDesc::VertexBuffer(length, GetBufferHeapType(), RenderBufferFlag::INDEX));
     buffer->dataSize = length;
@@ -3502,6 +3544,7 @@ static GuestBuffer* CreateVertexBuffer(uint32_t length)
 
 static GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t, uint32_t format)
 {
+    KernelTraceHostOpF("HOST.GPU.CreateIndexBuffer len=%u fmt=%u", length, format);
     auto buffer = g_userHeap.AllocPhysical<GuestBuffer>(ResourceType::IndexBuffer);
     buffer->buffer = g_device->createBuffer(RenderBufferDesc::IndexBuffer(length, GetBufferHeapType()));
     buffer->dataSize = length;
@@ -3515,6 +3558,7 @@ static GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t, uint32_t format
 
 static GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample)
 {
+    KernelTraceHostOpF("HOST.GPU.CreateSurface %ux%u fmt=%u msaa=%u", width, height, format, multiSample);
     RenderTextureDesc desc;
     desc.dimension = RenderTextureDimension::TEXTURE_2D;
     desc.width = width;
@@ -8012,13 +8056,71 @@ GUEST_FUNCTION_HOOK(sub_82E9EE38, SetResolution);
 
 GUEST_FUNCTION_HOOK(sub_82AE2BF8, ScreenShaderInit);
 #else
+
+// Generic pass-through probes for MW05 to locate real video entry points in this XEX build
+// These log when hit and then tail-call the original guest bodies.
+// Once identified, we will swap them to proper CreateDevice/SetResolution/Present hooks.
+struct PPCContext; extern "C" void __imp__sub_825E4300(PPCContext&, uint8_t*);
+static void MW05_Probe_sub_825E4300(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOp("HOST.VideoProbe.sub_825E4300");
+    __imp__sub_825E4300(ctx, base);
+}
+struct PPCContext; extern "C" void sub_8258B558(PPCContext&, uint8_t*);
+static void MW05_Probe_sub_8258B558(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOp("HOST.VideoProbe.sub_8258B558");
+    sub_8258B558(ctx, base);
+}
+
+struct PPCContext; extern "C" void sub_8250FC70(PPCContext&, uint8_t*);
+static void MW05_Probe_sub_8250FC70(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOp("HOST.VideoProbe.sub_8250FC70");
+    sub_8250FC70(ctx, base);
+}
+
+
+
+
+
 // MW05 hooks (identified from MW05 recompiled mapping / IDA HTML)
 // - Present path pass-through: let original guest body run so it can call VdSwap and pre-swap helpers
 GUEST_FUNCTION_HOOK(sub_82598A20, MW05_PresentPass);
+// Register probes for addresses that exist in this build's override table
+// Register probes for addresses that exist in this build's override table
+GUEST_FUNCTION_HOOK(sub_8258B558, MW05_Probe_sub_8258B558);
+GUEST_FUNCTION_HOOK(sub_8250FC70, MW05_Probe_sub_8250FC70);
+
 // - Initial video bring-up: initialize engines + set graphics interrupt callback
-GUEST_FUNCTION_HOOK(sub_825A85E0, CreateDevice);
+//   Note: MW05 CreateDevice entrypoint for this XEX build is sub_82598230 (not 825A85E0 from earlier heuristics)
+GUEST_FUNCTION_HOOK(sub_82598230, CreateDevice);
 // - Apply/set display mode and update cached display info
 GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
+
+// Ensure MW05 probe/video hooks are registered even if not present in PPCFuncMappings
+static void RegisterMw05VideoManualHooks() {
+    KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
+                       0x82598230, 0x82598A20, 0x825A8460);
+    // Probes used for discovery; these addresses might not be emitted by this XEX's recompiler table
+    g_memory.InsertFunction(0x825E4300, sub_825E4300);
+    g_memory.InsertFunction(0x8258B558, sub_8258B558);
+    g_memory.InsertFunction(0x8250FC70, sub_8250FC70);
+    // Key video entry points (idempotent; will override to our hook implementations)
+    g_memory.InsertFunction(0x82598230, sub_82598230); // CreateDevice
+    g_memory.InsertFunction(0x82598A20, sub_82598A20); // Present pass-through
+    g_memory.InsertFunction(0x825A8460, sub_825A8460); // SetResolution (ensure)
+}
+#if defined(_MSC_VER)
+#  pragma section(".CRT$XCU",read)
+    extern "C" {
+        static void __cdecl mw05_video_manual_ctor();
+        __declspec(allocate(".CRT$XCU")) void (*mw05_video_manual_ctor_)(void) = mw05_video_manual_ctor;
+    }
+    // Force the linker to keep the constructor symbol so it runs at startup (clang-cl/MSVC, x64 has no leading underscore)
+    #  pragma comment(linker, "/include:mw05_video_manual_ctor_")
+    static void __cdecl mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
+#else
+    __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
+#endif
+
 // Forward decls for MW05 research shim handlers
 struct PPCContext;
 void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);

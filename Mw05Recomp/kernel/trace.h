@@ -2,6 +2,8 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
+
 #include <cpu/ppc_context.h>
 #include "memory.h"
 
@@ -128,6 +130,45 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
                                (unsigned long long)c->lr);
         else
             KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v);
+    }
+
+    // Prevent main thread flag at 0x82A2CF40 from being reset to 0
+    // This works in conjunction with LoadBE32_Watched forcing reads to return 1
+    const uint32_t FLAG_EA = 0x82A2CF40;
+    if (ea == FLAG_EA) {
+        static bool block_reset_enabled = []() {
+            const char* env = std::getenv("MW05_UNBLOCK_MAIN");
+            return env && *env && *env != '0';
+        }();
+
+        if (block_reset_enabled && v == 0) {
+            // Optional grace period: allow clearing after N ms (env MW05_ALLOW_FLAG_CLEAR_AFTER_MS)
+            static int allow_after_ms = [](){
+                if (const char* s = std::getenv("MW05_ALLOW_FLAG_CLEAR_AFTER_MS")) {
+                    int n = std::atoi(s); return n > 0 ? n : -1;
+                }
+                return -1; // disabled by default
+            }();
+            static auto t0 = std::chrono::steady_clock::now();
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+
+            const bool allow_now = (allow_after_ms >= 0) && (elapsed_ms >= allow_after_ms);
+            if (!allow_now) {
+                // Block the reset - log it and skip the write
+                static int block_count = 0;
+                if (block_count++ < 10) {
+                    if (auto* c = GetPPCContext()) {
+                        KernelTraceHostOpF("HOST.StoreBE32_Watched BLOCKING reset of flag ea=%08X val=%08X lr=%08llX",
+                                          ea, v, (unsigned long long)c->lr);
+                    } else {
+                        KernelTraceHostOpF("HOST.StoreBE32_Watched BLOCKING reset of flag ea=%08X val=%08X lr=0", ea, v);
+                    }
+                }
+                return; // Skip the write
+            } else {
+                KernelTraceHostOpF("HOST.StoreBE32_Watched ALLOWING reset of flag after %lld ms", (long long)elapsed_ms);
+            }
+        }
     }
 
     if (v == 0x0A000000u || v == 0x0000000Au) {
@@ -316,3 +357,37 @@ inline void StoreBE128_Watched_P(uint8_t* base, uint32_t ea, const void* src16)
 #endif
 // Expecting recompiler form: PPC_STORE_U128(ea, hi, lo)
 #define PPC_STORE_U128(ea, hi, lo) StoreBE128_Watched(base, (ea), (hi), (lo))
+
+// Override PPC_LOAD_U32 to intercept the flag read at dword_82A2CF40
+// This is a workaround to force the main thread to see the flag as 1
+inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
+    // Check if this is the flag address that the main thread is waiting on
+    const uint32_t FLAG_EA = 0x82A2CF40;
+    if (ea == FLAG_EA) {
+        // Check if MW05_UNBLOCK_MAIN is enabled
+        static bool unblock_enabled = []() {
+            const char* env = std::getenv("MW05_UNBLOCK_MAIN");
+            return env && *env && *env != '0';
+        }();
+
+        if (unblock_enabled) {
+            // Force return 1 to unblock the main thread
+            static int log_count = 0;
+            if (log_count++ < 10) {
+                KernelTraceHostOpF("HOST.LoadBE32_Watched FORCING flag ea=%08X to 1", ea);
+            }
+            return 1;
+        }
+    }
+
+    // Normal load with byte swap
+    if (uint32_t* p = (uint32_t*)g_memory.Translate(ea)) {
+        return __builtin_bswap32(*p);
+    }
+    return 0;
+}
+
+#ifdef PPC_LOAD_U32
+#  undef PPC_LOAD_U32
+#endif
+#define PPC_LOAD_U32(ea) LoadBE32_Watched(base, (ea))

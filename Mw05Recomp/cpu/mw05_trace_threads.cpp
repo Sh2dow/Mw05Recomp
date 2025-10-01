@@ -58,17 +58,48 @@ static void UnblockThreadFunc() {
 	const uint32_t flag_ea = 0x82A2CF40;
 	KernelTraceHostOpF("HOST.UnblockThread.start flag_ea=%08X", flag_ea);
 
+	// Throttle logging: env-configurable interval (ms) and max lines
+	auto read_env_u32 = [](const char* name, uint32_t defv) -> uint32_t {
+		if (const char* v = std::getenv(name)) {
+			char* end = nullptr;
+			unsigned long val = std::strtoul(v, &end, 10);
+			if (end && end != v) return (uint32_t)val;
+		}
+		return defv;
+	};
+	const uint32_t log_ms  = read_env_u32("MW05_UNBLOCK_LOG_MS", 2000);
+	const uint32_t log_max = read_env_u32("MW05_UNBLOCK_LOG_MAX", 20);
+
+	int iteration = 0;
+	uint32_t logged = 0;
+	auto last = std::chrono::steady_clock::now();
 	while (g_unblockThreadRunning.load(std::memory_order_acquire)) {
 		uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(flag_ea));
 		if (flag_ptr) {
-			// Set the flag to 1 (big-endian)
-			*flag_ptr = __builtin_bswap32(1);
+			// Read current value
+			uint32_t current = __builtin_bswap32(*flag_ptr);
+
+			// Set the flag to 1 (big-endian) using atomic store with release semantics
+			std::atomic<uint32_t>* atomic_ptr = reinterpret_cast<std::atomic<uint32_t>*>(flag_ptr);
+			atomic_ptr->store(__builtin_bswap32(1), std::memory_order_release);
+
+			// Log only if enough time passed and we haven't exceeded max lines
+			if (logged < log_max) {
+				auto now = std::chrono::steady_clock::now();
+				uint64_t elapsed = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+				if (elapsed >= log_ms) {
+					uint32_t readback = __builtin_bswap32(atomic_ptr->load(std::memory_order_acquire));
+					KernelTraceHostOpF("HOST.UnblockThread.set iter=%d current=%u readback=%u", iteration, current, readback);
+					last = now;
+					logged++;
+				}
+			}
+			iteration++;
 		}
-		// Sleep briefly to avoid spinning too hard
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		// NO SLEEP - keep the flag set continuously
 	}
 
-	KernelTraceHostOp("HOST.UnblockThread.exit");
+	KernelTraceHostOpF("HOST.UnblockThread.exit iterations=%d", iteration);
 }
 
 // Workaround: Start a background thread that continuously sets the flag.

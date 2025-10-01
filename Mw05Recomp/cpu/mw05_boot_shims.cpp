@@ -151,7 +151,6 @@ void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
     }
     __imp__sub_8262F3F0(ctx, base);
 }
-
 // sub_826346A8: wrapper around a NtWaitForSingleObjectEx loop
 void sub_826346A8(PPCContext& ctx, uint8_t* base) {
     SetPPCContext(ctx);

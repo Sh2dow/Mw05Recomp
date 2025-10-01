@@ -290,7 +290,7 @@ function Invoke-Configure {
     @zstdArgs `
     -D MW05_RECOMP_SKIP_CODEGEN=OFF `
     -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
-    -D MW05_GEN_INDIRECT_REDIRECTS=OFF `
+    -D MW05_GEN_INDIRECT_REDIRECTS=ON `
     @pchArg `
     @modArg
 

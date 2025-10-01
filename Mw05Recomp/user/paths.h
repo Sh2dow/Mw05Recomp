@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <cstdlib>
+
 #include <mod/mod_loader.h>
 
 #define USER_DIRECTORY "Mw05Recomp"
@@ -22,6 +25,10 @@ inline std::filesystem::path GetGamePath()
     // to install game files to the user directory instead of next to the app.
     return GetUserPath();
 #else
+    // Developer override: allow pointing to an external asset directory
+    if (const char* env = std::getenv("MW05_GAME_PATH")) {
+        if (env[0] != '\0') return std::filesystem::path(env);
+    }
     return GAME_INSTALL_DIRECTORY;
 #endif
 }

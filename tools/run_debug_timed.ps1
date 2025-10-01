@@ -10,7 +10,7 @@ $repoRoot = if ($repoRoot) { (Resolve-Path $repoRoot).Path } else { (Get-Locatio
 Write-Host "[TIMED] repoRoot=$repoRoot"
 $runScript = Join-Path $repoRoot 'run_debug.ps1'
 if (!(Test-Path $runScript)) { throw "run_debug.ps1 not found at $runScript" }
-$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runScript`""
+$psArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$runScript`" -WithCDB:`$false -TimeoutSeconds $Seconds"
 $ps = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WorkingDirectory $repoRoot -PassThru
 Write-Host "[TIMED] Spawned PowerShell PID=$($ps.Id), waiting $Seconds s before killing Mw05Recomp.exe"
 Start-Sleep -Seconds $Seconds

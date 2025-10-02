@@ -136,8 +136,8 @@ $envVars = @{
     # Logging rate limits for UnblockThread (can be overridden by caller)
     MW05_UNBLOCK_LOG_MS                 = $env:MW05_UNBLOCK_LOG_MS
     MW05_UNBLOCK_LOG_MAX                = $env:MW05_UNBLOCK_LOG_MAX
-    # Enable app-side debug profile self-configuration
-    MW05_DEBUG_PROFILE                   = '1'
+    # Enable app-side debug profile self-configuration (disabled by default to avoid DbgBreakPoint spam)
+    MW05_DEBUG_PROFILE                   = '0'
 
 }
 

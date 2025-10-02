@@ -211,13 +211,24 @@ namespace {
             }
             // Also allow relative forms like "GLOBAL\\..." (case-insensitive)
             for (const char* r : roots_ci) { size_t n=std::strlen(r); if (_strnicmp(s, r, n)==0 && (s[n]=='\\' || s[n]=='/')) return true; }
-            // Accept Xbox-style device roots: game:\, D:\, HDD:\, etc. Also accept bare "D:".
+            // Accept Xbox-style device roots: game:\\, D:\\, HDD:\\, etc. Also accept bare "D:".
             if (_strnicmp(s, "game:\\", 6)==0) return true;
             if (std::isalpha((unsigned char)s[0]) && s[1]==':') {
                 if (s[2]=='\\' || s[2]=='/' || s[2]==0) return true;
             }
             // Accept dvd-like aliases sometimes seen in logs
             if (_strnicmp(s, "dvd:\\", 5)==0 || _strnicmp(s, "cdrom:\\", 7)==0) return true;
+            // Finally, accept bare file-like tokens commonly used by MW when the folder is implicit
+            // (e.g., "GLOBALB.BIN", "ZDIR", "ZDIR.BIN", etc.).
+            // Be conservative: require at least one dot and an expected extension, or known names.
+            auto ends_with_ci = [](const char* str, const char* suf){
+                size_t ls = std::strlen(str), lr = std::strlen(suf); if (lr>ls) return false; return _strnicmp(str+ls-lr, suf, lr)==0; };
+            if (_stricmp(s, "ZDIR")==0 || _stricmp(s, "ZDIR.BIN")==0) return true;
+            if (std::strchr(s, '.') != nullptr) {
+                if (ends_with_ci(s, ".BIN") || ends_with_ci(s, ".BUN") || ends_with_ci(s, ".BND") || ends_with_ci(s, ".RWS") || ends_with_ci(s, ".FSH") || ends_with_ci(s, ".TPL")) {
+                    return true;
+                }
+            }
             return false;
         };
 
@@ -317,7 +328,94 @@ namespace {
         }
 
         if (!best.strEA) {
-            // Preview short ASCII/UTF16 candidates near w0/w1 base for debugging
+            // Try to deduce (bufEA,size) even without a clear path, then attempt
+            // a conservative fallback read of well-known boot bundles to push
+            // the dispatcher forward. This is gated by MW05_STREAM_FALLBACK_BOOT.
+            const bool allow_fallback = ReadEnvBool("MW05_STREAM_FALLBACK_BOOT", true);
+
+            auto looks_guest_addr = [&](uint32_t v){ return v >= 0x80000000u && (v & 0x3u) == 0; };
+            auto looks_size_be = [&](uint32_t v){ return v > 0 && v <= 0x2000000; };
+
+            uint32_t fbBufEA = 0, fbSize = 0;
+            auto scan_for_buf = [&](uint32_t baseEA, size_t bytes){
+                if (fbBufEA && fbSize) return; // already found
+                if (!GuestRangeValid(baseEA, (uint32_t)bytes)) return;
+                const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(baseEA)); if (!p) return;
+                for (size_t off=0; off+8<=bytes; off+=4) {
+                    uint32_t a=0,b=0; std::memcpy(&a,p+off,4); std::memcpy(&b,p+off+4,4);
+    #if defined(_MSC_VER)
+                    a=_byteswap_ulong(a); b=_byteswap_ulong(b);
+    #else
+                    a=__builtin_bswap32(a); b=__builtin_bswap32(b);
+    #endif
+                    if (!fbBufEA && looks_guest_addr(a) && GuestRangeValid(a, 16) && g_memory.Translate(a)) fbBufEA = a;
+                    if (!fbSize && looks_size_be(b)) fbSize = b;
+                    if (fbBufEA && fbSize) break;
+                }
+            };
+
+            // Follow immediate pointers around the block to locate (bufEA,size)
+            if (w0 && GuestRangeValid(w0, 0x80)) scan_for_buf(w0, 0x80);
+            if (!fbBufEA || !fbSize) {
+                if (w1 && GuestRangeValid(w1, 0x80)) scan_for_buf(w1, 0x80);
+                if (w2 && GuestRangeValid(w2, 4)) {
+                    uint32_t p2_0 = LoadU32_BE(w2 + 0);
+                    if (p2_0) scan_for_buf(p2_0, 0x200);
+                }
+            }
+
+            if (allow_fallback && fbBufEA) {
+                // If size unknown, use a conservative default (1 MiB), and shrink
+                // until it fits the mapped guest region.
+                if (!fbSize) fbSize = 0x100000;
+                while (fbSize >= 0x10000 && (!GuestRangeValid(fbBufEA, fbSize) || g_memory.Translate(fbBufEA) == nullptr)) {
+                    fbSize >>= 1;
+                }
+                if (fbSize >= 0x10000) {
+                    // Cap to 4 MiB to avoid long stalls if the size is large/unknown.
+                    fbSize = std::min<uint32_t>(fbSize, 0x400000);
+                    uint8_t* dst = static_cast<uint8_t*>(g_memory.Translate(fbBufEA));
+                    if (dst) {
+                        const char* boots[] = {
+                            // Prefer memory files first; these are consumed early to seed pools
+                            "game:\\GLOBAL\\GLOBALMEMORYFILE.BIN",
+                            "game:\\GLOBAL\\PERMANENTMEMORYFILE.BIN",
+                            "game:\\GLOBAL\\FRONTENDMEMORYFILE.BIN",
+                            // Then try known bundles if memory files aren’t referenced yet
+                            "game:\\GLOBAL\\GLOBALB.BUN",
+                            "game:\\GLOBAL\\GLOBALA.BUN",
+                            "game:\\GLOBAL\\INGAMEB.BUN",
+                            // Compressed variants (raw copy won’t help if decompression is expected)
+                            "game:\\GLOBAL\\GLOBALB.LZC",
+                            "game:\\GLOBAL\\INGAMEB.LZC",
+                            "game:\\GLOBAL\\WIDESCREEN_GLOBAL.BUN"
+                        };
+                        for (const char* cand : boots) {
+                            // If we can resolve to a host path, clamp by actual file size.
+                            std::filesystem::path resolved = FileSystem::ResolvePath(cand, /*mods=*/true);
+                            uint32_t toRead = fbSize;
+                            std::error_code ec{};
+                            auto fsz = std::filesystem::file_size(resolved, ec);
+                            if (!ec) {
+                                if (fsz == 0) continue;
+                                if (fsz < toRead) toRead = (uint32_t)std::min<uint64_t>(fsz, 0x400000ull);
+                            }
+                            KernelTraceHostOpF("HOST.StreamBridge.io.try.fallback cand='%s' buf=%08X size=%u", cand, fbBufEA, (unsigned)toRead);
+                            FileHandle* fh = XCreateFileA(cand, /*GENERIC_READ*/ 0x80000000u | 0x00000001u, /*share read*/ 0x1u, nullptr, /*OPEN_EXISTING*/ 3u, 0u);
+                            if (!fh) continue;
+                            be<uint32_t> bytesRead{0};
+                            uint32_t ok = XReadFile(fh, dst, toRead, &bytesRead, nullptr);
+                            KernelTraceHostOpF("HOST.StreamBridge.io.read.fallback ok=%u bytes=%u", (unsigned)ok, (unsigned)bytesRead.get());
+                            if (ok != 0 && bytesRead.get() > 0) {
+                                // Treat as handled; upstream will clear the block.
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // No reliable path and no fallback read; keep logging for diagnostics.
             auto preview_ascii = [&](uint32_t ea){
                 if (!PlausibleEA(ea)) return;
                 char buf[96]{}; int n=0; const char* s=(const char*)g_memory.Translate(ea);
@@ -333,7 +431,7 @@ namespace {
             preview_ascii(w0); preview_ascii(w1); preview_ascii(w2); preview_ascii(w3);
             preview_utf16(w0); preview_utf16(w1); preview_utf16(w2); preview_utf16(w3);
             KernelTraceHostOpF("HOST.StreamBridge.io.no_path w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X", w0, w1, w2, w3, w4);
-            return false; // No reliable path yet
+            return false; // No reliable path/fallback yet
         }
 
         // Heuristic: find buffer EA and size near the path pointer occurrence inside its container region

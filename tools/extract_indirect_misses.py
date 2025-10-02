@@ -63,8 +63,15 @@ def main():
             with open(args.out, "r", encoding="utf-8", errors="ignore") as f:
                 for l in f:
                     l = l.strip()
-                    if l.startswith("0x"):
-                        misses.add(l)
+                    if not l:
+                        continue
+                    # accept '0x....' or bare 8-hex
+                    if l.startswith("0x") or re.fullmatch(r"[0-9A-Fa-f]{8}", l):
+                        try:
+                            addr = int(l, 16)
+                            misses.add(f"0x{addr:08X}")
+                        except ValueError:
+                            pass
         except Exception:
             pass
     merged = sorted(misses)

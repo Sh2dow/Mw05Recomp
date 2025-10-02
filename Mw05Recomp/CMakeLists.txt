@@ -250,6 +250,11 @@ set(MW05_RECOMP_CXX_SOURCES
     "stdafx.cpp"
     "version.cpp"
     "ppc_indirect_hardfix.cpp"
+    # Manual override/patch units
+    "ppc_runtime_patch_hooks.cpp"
+    "ppc_manual_overrides_symbols.cpp"
+    "ppc_hook_overrides_manual.cpp"
+
 
     ${MW05_RECOMP_KERNEL_CXX_SOURCES}
     ${MW05_RECOMP_LOCALE_CXX_SOURCES}
@@ -347,7 +352,6 @@ if (MW05_GEN_INDIRECT_REDIRECTS)
         DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_indirect_redirects.py
                 ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
-                ${PPC_INDIRECT_MISSES_TXT}
         COMMENT "Generating indirect-call redirects using IDA HTML"
         VERBATIM)
     list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_REDIRECTS_CPP})

@@ -5364,7 +5364,12 @@ uint32_t RtlMultiByteToUnicodeN(be<uint16_t>* UnicodeString, uint32_t MaxBytesIn
 
 void DbgBreakPoint()
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // No-op: this import is hit frequently; logging here floods output.
+    // Enable logging only when explicitly requested via MW05_LOG_DBG_BREAK=1.
+    static bool sLog = [](){ const char* v = std::getenv("MW05_LOG_DBG_BREAK"); return v && v[0] && !(v[0]=='0' && v[1]==0); }();
+    if (sLog) {
+        LOG_UTILITY("DbgBreakPoint()");
+    }
 }
 
 void MmQueryAllocationSize()

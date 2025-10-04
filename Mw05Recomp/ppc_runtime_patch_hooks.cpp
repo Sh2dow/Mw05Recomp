@@ -7,9 +7,12 @@
 #include <kernel/trace.h>
 #include <cpu/ppc_context.h>
 
-extern "C" void __imp__sub_82625D60(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_8261E320(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_82855308(PPCContext& ctx, uint8_t* base);
+extern "C" 
+{
+    void __imp__sub_82625D60(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_8261E320(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_82855308(PPCContext& ctx, uint8_t* base);
+}
 
 static void LogBytes(const char* tag, const void* p, size_t n) {
     const uint8_t* b = reinterpret_cast<const uint8_t*>(p);

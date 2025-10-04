@@ -31,6 +31,8 @@ extern std::atomic<uint32_t> g_watchEA;
 // Accessors exposed by kernel/imports.cpp
 extern "C" uint32_t Mw05GetRingBaseEA();
 extern "C" uint32_t Mw05GetRingSizeBytes();
+extern "C" uint32_t Mw05GetSysBufBaseEA();
+extern "C" uint32_t Mw05GetSysBufSizeBytes();
 
 // Loader/streaming sentinel bridge (implemented in cpu/mw05_streaming_bridge.cpp)
 extern "C" bool Mw05HandleSchedulerSentinel(uint8_t* base, uint32_t slotEA, uint64_t lr);
@@ -108,6 +110,23 @@ inline void StoreBE8_Watched(uint8_t* /*base*/, uint32_t ea, uint8_t v8)
         }
     }
 
+    // Optional: log if a store hits the System Command Buffer region (first hit only)
+    static const bool s_sysbuf_watch = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_sysbuf_watch) {
+        const uint32_t base_ea = Mw05GetSysBufBaseEA();
+        const uint32_t size_ea = Mw05GetSysBufSizeBytes();
+        if (base_ea && ea >= base_ea && ea < base_ea + size_ea) {
+            static bool s_logged_once8 = false;
+            if (!s_logged_once8) {
+                KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=%08llX", ea, 1u, lr);
+                s_logged_once8 = true;
+            }
+        }
+    }
+
     TraceRbWrite(ea, 1);
 
     if (uint8_t* p = (uint8_t*)g_memory.Translate(ea)) {
@@ -130,6 +149,26 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
                                (unsigned long long)c->lr);
         else
             KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v);
+    }
+
+    // Optional: log if a store hits the System Command Buffer region (first hit only)
+    static const bool s_sysbuf_watch = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_sysbuf_watch) {
+        const uint32_t base_ea = Mw05GetSysBufBaseEA();
+        const uint32_t size_ea = Mw05GetSysBufSizeBytes();
+        if (base_ea && ea >= base_ea && ea < base_ea + size_ea) {
+            static bool s_logged_once32 = false;
+            if (!s_logged_once32) {
+                if (auto* c = GetPPCContext())
+                    KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=%08llX", ea, 4u, (unsigned long long)c->lr);
+                else
+                    KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=0", ea, 4u);
+                s_logged_once32 = true;
+            }
+        }
     }
 
     // Prevent main thread flag at 0x82A2CF40 from being reset to 0
@@ -183,11 +222,12 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             if (Mw05HandleSchedulerSentinel(base, ea, 0)) {
                 return;
             }
-    // Trace potential ring-buffer write (32-bit stores are the common PM4 path)
-    TraceRbWrite(ea, 4);
 
         }
     }
+
+    // Trace potential ring-buffer write (32-bit stores are the common PM4 path)
+    TraceRbWrite(ea, 4);
 
     if (auto* p = (uint8_t*)g_memory.Translate(ea)) {
         p[0] = uint8_t(v >> 24);
@@ -211,6 +251,23 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
     if (uint32_t watch = g_watchEA.load(std::memory_order_relaxed)) {
         if (Overlaps(ea, 8, watch)) {
             KernelTraceHostOpF("HOST.watch.hit64 ea=%08X val=%016llX lr=%08llX", ea, v64, lr);
+        }
+    }
+
+    // Optional: log if a store hits the System Command Buffer region (first hit only)
+    static const bool s_sysbuf_watch = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_sysbuf_watch) {
+        const uint32_t base_ea = Mw05GetSysBufBaseEA();
+        const uint32_t size_ea = Mw05GetSysBufSizeBytes();
+        if (base_ea && ea >= base_ea && ea < base_ea + size_ea) {
+            static bool s_logged_once64 = false;
+            if (!s_logged_once64) {
+                KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=%08llX", ea, 8u, lr);
+                s_logged_once64 = true;
+            }
         }
     }
 

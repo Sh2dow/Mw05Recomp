@@ -19,6 +19,14 @@
 #include <gpu/video.h>
 #include <gpu/pm4_parser.h>
 
+// Forward decl: original guest MW05 present-wrapper body
+extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
+
+// Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
+extern "C" uint32_t Mw05Trace_LastSchedR3();
+extern "C" uint32_t Mw05Trace_SchedR3SeenCount();
+
+
 #include "kernel/event.h"
 #include "kernel/semaphore.h"
 #include "kernel/handles.h"   // HandleTable, g_HandleTable, Handle type/Lookup
@@ -39,6 +47,15 @@
 #include <string_view>
 #include <kernel/xdm.h>
 
+// Ensure the current OS thread has a valid guest PPCContext before calling into guest code.
+static inline void EnsureGuestContextForThisThread(const char* tag = nullptr) {
+    if (!GetPPCContext()) {
+        static thread_local GuestThreadContext s_threadGuestCtx(0);
+        KernelTraceHostOpF("HOST.GuestCtx.install tag=%s", tag ? tag : "");
+    }
+}
+
+
 
 static std::atomic<uint32_t> g_keSetEventGeneration;
 static std::atomic<uint32_t> g_vdInterruptEventEA{0};
@@ -52,6 +69,8 @@ static std::atomic<bool> g_vblankPumpRun{false};
 static std::atomic<bool> g_sawRealVdSwap{false};
 
 static std::atomic<bool> g_guestHasSwapped{false};
+static std::atomic<uint32_t> g_vblankTicks{0};
+
 static std::atomic<uint64_t> g_lastPresentMs{0};
 
 extern "C" void Mw05NoteHostPresent(uint64_t ms)
@@ -105,6 +124,11 @@ extern "C"
     bool Mw05AnyPresentSeen();
 
 }
+
+
+// Forward declarations for VD bridge helpers used across this file
+void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
+void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 
 
 #ifdef _WIN32
@@ -574,7 +598,7 @@ static void Mw05AutoVideoInitIfNeeded() {
     // Ensure a system command buffer exists for callers that query it later.
     VdGetSystemCommandBuffer(nullptr, nullptr);
 
-    const uint32_t len_log2 = 12; // 4 KiB ring
+    const uint32_t len_log2 = 16; // 64 KiB ring (closer to MW05 expectations)
     const uint32_t size_bytes = 1u << len_log2;
     void* ring_host = g_userHeap.Alloc(size_bytes, 0x100);
     if (!ring_host) return;
@@ -646,7 +670,55 @@ static void Mw05DispatchVdInterruptIfPending();
 
 extern "C" {
 	uint32_t VdGetGraphicsInterruptCallback() { return g_VdGraphicsCallback.load(); }
-	uint32_t VdGetGraphicsInterruptContext() { return g_VdGraphicsCallbackCtx.load(); }
+	uint32_t VdGetGraphicsInterruptContext() {
+	    uint32_t ctx = g_VdGraphicsCallbackCtx.load();
+	    // Optional: override ISR context globally with the discovered scheduler pointer.
+	    // This centralizes the override instead of patching every callsite.
+	    static const bool s_force_ctx_sched = [](){
+	        if (const char* v = std::getenv("MW05_VD_ISR_CTX_SCHED")) return !(v[0]=='0' && v[1]=='\0');
+	        return false;
+	    }();
+	    if (!s_force_ctx_sched) return ctx;
+
+	    // Gating to avoid early-boot crashes: wait some vblank ticks and a few stable sightings
+	    static const uint32_t s_ctx_delay_ticks = [](){
+	        if (const char* v = std::getenv("MW05_VD_ISR_CTX_SCHED_DELAY_TICKS"))
+	            return (uint32_t)std::strtoul(v, nullptr, 0);
+	        return (uint32_t)120; // default ~2s at 60 Hz
+	    }();
+	    static const uint32_t s_seen_min = [](){
+	        if (const char* v = std::getenv("MW05_VD_ISR_CTX_SEEN_MIN"))
+	            return (uint32_t)std::strtoul(v, nullptr, 0);
+	        return (uint32_t)2; // need at least 2 stable sightings
+	    }();
+
+	    const uint32_t ticks = g_vblankTicks.load(std::memory_order_acquire);
+	    if (ticks < s_ctx_delay_ticks) return ctx;
+
+	    uint32_t sched = Mw05Trace_LastSchedR3();
+	    bool seeded_env = false;
+	    // Allow explicit seeding from env if trace hasn't seen a good pointer yet
+	    if (!GuestOffsetInRange(sched, 4)) {
+	        if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+	            uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+	            if (GuestOffsetInRange(env_r3, 4)) { sched = env_r3; seeded_env = true; }
+	        }
+	    }
+
+	    if (GuestOffsetInRange(sched, 4)) {
+	        const uint32_t seen = Mw05Trace_SchedR3SeenCount();
+	        // If seeded from env, allow immediate override; otherwise require stable sightings
+	        if (seeded_env || (seen >= s_seen_min)) {
+	            static bool s_logged = false;
+	            if (!s_logged) {
+	                KernelTraceHostOpF("HOST.VdGetGraphicsInterruptContext.override ctx=%08X->%08X ticks=%u seen=%u%s", ctx, sched, (unsigned)ticks, (unsigned)seen, seeded_env?" (env)":"");
+	                s_logged = true;
+	            }
+	            return sched;
+	        }
+	    }
+	    return ctx;
+	}
 	uint32_t Mw05GetHostDefaultVdIsrMagic() { return kHostDefaultVdIsrMagic; }
 
 	bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait);
@@ -1279,6 +1351,47 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
                                 }
                             }
 
+	                            // Experimental: if requested, push any non-zero bytes from the System Command Buffer
+	                            // into the ring buffer so the PM4 parser can see potential draws. This is purely a
+	                            // diagnostic bridge to validate whether the title is building PM4 in sysbuf.
+	                            static const bool s_sysbuf_to_ring = [](){
+	                                if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING"))
+	                                    return !(v[0]=='0' && v[1]=='\0');
+	                                return false;
+	                            }();
+	                            if (s_sysbuf_to_ring)
+	                            {
+	                                uint32_t sysbuf = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+	                                uint32_t rbBase = g_RbBase.load(std::memory_order_acquire);
+	                                uint32_t rbLenL2 = g_RbLen.load(std::memory_order_acquire);
+	                                const uint32_t rbSizeBytes = (rbLenL2 < 32) ? (1u << (rbLenL2 & 31)) : 0u;
+	                                if (sysbuf && rbBase && rbSizeBytes)
+	                                {
+	                                    uint8_t* sysHost = reinterpret_cast<uint8_t*>(g_memory.Translate(sysbuf));
+	                                    uint8_t* rbHost  = reinterpret_cast<uint8_t*>(g_memory.Translate(rbBase));
+	                                    auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(g_RbWriteBackPtr.load(std::memory_order_acquire)));
+	                                    if (sysHost && rbHost && rptr)
+	                                    {
+	                                        // Copy entire sysbuf PAYLOAD into ring (skip 16-byte header), capped by ring size
+	                                        const uint32_t headSkip  = 0x10u;
+	                                        const uint32_t payloadBytes = (rbSizeBytes > headSkip) ? (rbSizeBytes - headSkip) : 0u;
+	                                        bool any = false;
+	                                        for (uint32_t off = 0; off + 4 <= payloadBytes; off += 4) {
+	                                            if (*reinterpret_cast<uint32_t*>(sysHost + headSkip + off) != 0) { any = true; break; }
+	                                        }
+	                                        if (any && payloadBytes) {
+	                                            memcpy(rbHost, sysHost + headSkip, payloadBytes);
+	                                            // Advance write-back pointer so our PM4 parser scans the copied region
+	                                            const uint32_t offs = payloadBytes & (rbSizeBytes - 1u);
+	                                            *rptr = offs ? offs : 0x20u;
+	                                            KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X", payloadBytes, offs);
+	                                            PM4_OnRingBufferWrite(offs);
+	                                        }
+	                                    }
+	                                }
+	                            }
+
+
                     }
                 }
             }
@@ -1294,6 +1407,45 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
                 // any commands that the guest may have queued even if we couldn't
                 // read the precise write_cur.
                 PM4_OnRingBufferWrite(next);
+
+                // Also optionally bridge System Command Buffer -> ring even on fallback path
+                {
+                    static const bool s_sysbuf_to_ring = [](){
+                        if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING"))
+                            return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    if (s_sysbuf_to_ring)
+                    {
+                        uint32_t sysbuf = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+                        uint32_t rbBase = g_RbBase.load(std::memory_order_acquire);
+                        uint32_t rbLenL2 = g_RbLen.load(std::memory_order_acquire);
+                        const uint32_t rbSizeBytes = (rbLenL2 < 32) ? (1u << (rbLenL2 & 31)) : 0u;
+                        if (sysbuf && rbBase && rbSizeBytes)
+                        {
+                            uint8_t* sysHost = reinterpret_cast<uint8_t*>(g_memory.Translate(sysbuf));
+                            uint8_t* rbHost  = reinterpret_cast<uint8_t*>(g_memory.Translate(rbBase));
+                            auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(g_RbWriteBackPtr.load(std::memory_order_acquire)));
+                            if (sysHost && rbHost && rptr)
+                            {
+                                // Copy entire sysbuf PAYLOAD (skip 16-byte header), capped by ring size (fallback)
+                                const uint32_t headSkip  = 0x10u;
+                                const uint32_t payloadBytes = (rbSizeBytes > headSkip) ? (rbSizeBytes - headSkip) : 0u;
+                                bool any = false;
+                                for (uint32_t off = 0; off + 4 <= payloadBytes; off += 4) {
+                                    if (*reinterpret_cast<uint32_t*>(sysHost + headSkip + off) != 0) { any = true; break; }
+                                }
+                                if (any && payloadBytes) {
+                                    memcpy(rbHost, sysHost + headSkip, payloadBytes);
+                                    const uint32_t offs = payloadBytes & (rbSizeBytes - 1u);
+                                    *rptr = offs ? offs : 0x20u;
+                                    KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X (fallback)", payloadBytes, offs);
+                                    PM4_OnRingBufferWrite(offs);
+                                }
+                            }
+                        }
+                    }
+                }
 
 	                // Fallback: if we still haven't seen draws, periodically force a full scan
 	                // of the ring and the system command buffer to catch very early setup.
@@ -1315,6 +1467,36 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 
             }
         }
+        // Optional: inject a synthetic PM4 DRAW packet to validate parser end-to-end
+        // Controlled by MW05_PM4_INJECT_TEST=1. Writes a minimal TYPE3 header at ring base
+        // so the PM4 parser should report draws>0 if decoding/scanning is correct.
+        {
+            static const bool s_inject_test = [](){ if (const char* v = std::getenv("MW05_PM4_INJECT_TEST")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+            if (s_inject_test) {
+                uint32_t rbBase = g_RbBase.load(std::memory_order_acquire);
+                uint32_t rbLenL2 = g_RbLen.load(std::memory_order_acquire) & 31u;
+                const uint32_t rbSizeBytes = (rbLenL2 < 32u) ? (1u << rbLenL2) : 0u;
+                if (rbBase && rbSizeBytes) {
+                    uint32_t* rb = reinterpret_cast<uint32_t*>(g_memory.Translate(rbBase));
+                    if (rb) {
+                        uint32_t hdr = 0;
+                        hdr |= (3u << 30);        // TYPE3
+                        hdr |= (0x22u << 8);      // DRAW_INDX opcode
+                        hdr |= (0u << 16);        // count=0 -> size=(0+2)*4=8 bytes
+                    #if defined(_MSC_VER)
+                        uint32_t be_hdr = _byteswap_ulong(hdr);
+                    #else
+                        uint32_t be_hdr = __builtin_bswap32(hdr);
+                    #endif
+                        rb[0] = be_hdr;
+                        rb[1] = 0; // dummy payload dword
+                        KernelTraceHostOp("HOST.PM4.InjectTest.draw_hdr_written");
+                        PM4_OnRingBufferWrite(8);
+                    }
+                }
+            }
+        }
+
     }
 
     // Optional: ack swap via e68 OR if enabled
@@ -1384,6 +1566,9 @@ static void Mw05StartVblankPumpOnce() {
             return false; // default OFF: only pump events on main thread
         }();
         while (g_vblankPumpRun.load(std::memory_order_acquire)) {
+            // Global vblank tick counter for gating guest ISR dispatches
+            g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
+
             // Keep a pending interrupt flowing; if event not yet registered,
             // Mw05SignalVdInterruptEvent() will fail and we keep the pending flag.
             if (!Mw05SignalVdInterruptEvent()) {
@@ -1402,6 +1587,117 @@ static void Mw05StartVblankPumpOnce() {
                     *rptr = next ? next : 0x20u;
                 }
             }
+
+            // Grace check: if no graphics ISR registered after a while, log once
+            static int s_vblankTicks = 0;
+            static const int s_isr_grace_ticks = [](){
+                if (const char* v = std::getenv("MW05_ISR_GRACE_TICKS"))
+                    return (int)std::strtoul(v, nullptr, 10);
+                return 300; // ~5 seconds @60Hz
+            }();
+            static bool s_isr_missing_logged = false;
+            if (!s_isr_missing_logged && ++s_vblankTicks >= s_isr_grace_ticks) {
+                if (VdGetGraphicsInterruptCallback() == 0) {
+                    KernelTraceHostOp("HOST.VdISR.missing.after_grace");
+                }
+                s_isr_missing_logged = true;
+            }
+
+            // Optional: diff-based write-watch on the System Command Buffer to detect PM4 construction
+            static const bool s_sysbuf_watch = [](){
+                if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false; // default OFF
+            }();
+            static uint32_t s_watch_base_ea = 0;
+            static bool s_sysbuf_write_logged_once = false;
+            static int  s_sysbuf_write_log_budget = 32; // cap verbose logs
+            static const bool s_sysbuf_watch_verbose = [](){
+                if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH_VERBOSE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            constexpr uint32_t kWatchDwords = 16384; // 64 KiB window (full sysbuf)
+            static uint32_t s_snap[kWatchDwords] = {};
+            static bool s_snap_inited = false;
+            if (s_sysbuf_watch) {
+                uint32_t sysbuf = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+                if (sysbuf) {
+                    if (s_watch_base_ea != sysbuf) { s_watch_base_ea = sysbuf; s_snap_inited = false; s_sysbuf_write_logged_once = false; s_sysbuf_write_log_budget = 32; }
+                    if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(sysbuf))) {
+                        uint32_t cur[kWatchDwords];
+                        for (uint32_t i = 0; i < kWatchDwords; ++i) {
+                        #if defined(_MSC_VER)
+                            cur[i] = _byteswap_ulong(p[i]);
+                        #else
+                            cur[i] = __builtin_bswap32(p[i]);
+                        #endif
+                        }
+                        if (!s_snap_inited) {
+                            for (uint32_t i = 0; i < kWatchDwords; ++i) s_snap[i] = cur[i];
+                            s_snap_inited = true;
+                        } else {
+                            uint32_t off = kWatchDwords;
+                            for (uint32_t i = 0; i < kWatchDwords; ++i) { if (cur[i] != s_snap[i]) { off = i; break; } }
+                            if (off < kWatchDwords) {
+                                // Compute a rough span length until zeros or window end
+                                uint32_t span = 0;
+                                for (uint32_t j = off; j < kWatchDwords; ++j) { if (cur[j] == 0) break; ++span; }
+                                uint32_t d0 = (off < kWatchDwords) ? cur[off + 0] : 0;
+                                uint32_t d1 = (off + 1 < kWatchDwords) ? cur[off + 1] : 0;
+                                uint32_t d2 = (off + 2 < kWatchDwords) ? cur[off + 2] : 0;
+                                uint32_t d3 = (off + 3 < kWatchDwords) ? cur[off + 3] : 0;
+                                if (!s_sysbuf_write_logged_once || s_sysbuf_watch_verbose) {
+                                    if (!s_sysbuf_watch_verbose || s_sysbuf_write_log_budget > 0) {
+                                        KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit base=%08X off=%u bytes=%u d0=%08X d1=%08X d2=%08X d3=%08X",
+                                                           sysbuf, off * 4u, span * 4u, d0, d1, d2, d3);
+                                        if (s_sysbuf_watch_verbose) {
+                                            --s_sysbuf_write_log_budget;
+                                        } else {
+                                            s_sysbuf_write_logged_once = true;
+                                        }
+                                    }
+                                    // Optional: immediately bridge sysbuf -> ring on detected write
+                                    {
+                                        static const bool s_sysbuf_to_ring = [](){
+                                            if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING"))
+                                                return !(v[0]=='0' && v[1]=='\0');
+                                            return false;
+                                        }();
+                                        if (s_sysbuf_to_ring)
+                                        {
+                                            uint32_t sysbufEA = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+                                            uint32_t rbBase   = g_RbBase.load(std::memory_order_acquire);
+                                            uint32_t rbLenL2  = g_RbLen.load(std::memory_order_acquire);
+                                            const uint32_t rbSizeBytes = (rbLenL2 < 32u) ? (1u << (rbLenL2 & 31u)) : 0u;
+                                            auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(g_RbWriteBackPtr.load(std::memory_order_acquire)));
+                                            uint8_t* sysHost = reinterpret_cast<uint8_t*>(g_memory.Translate(sysbufEA));
+                                            uint8_t* rbHost  = reinterpret_cast<uint8_t*>(g_memory.Translate(rbBase));
+                                            if (sysHost && rbHost && rptr && rbSizeBytes)
+                                            {
+                                                const uint32_t headSkip = 0x10u; // skip 16-byte header
+                                                const uint32_t payloadBytes = (rbSizeBytes > headSkip) ? (rbSizeBytes - headSkip) : 0u;
+                                                if (payloadBytes)
+                                                {
+                                                    memcpy(rbHost, sysHost + headSkip, payloadBytes);
+                                                    const uint32_t offs = payloadBytes & (rbSizeBytes - 1u);
+                                                    *rptr = offs ? offs : 0x20u;
+                                                    KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X (on_write)", payloadBytes, offs);
+                                                    PM4_OnRingBufferWrite(offs);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                }
+                                // Update snapshot to the new content
+                                for (uint32_t i = 0; i < kWatchDwords; ++i) s_snap[i] = cur[i];
+                            }
+                        }
+                    }
+                }
+            }
+
 
             // Optionally invoke the guest graphics interrupt callback at vblank.
             // Many titles rely on this ISR to drive internal state machines.
@@ -1433,7 +1729,19 @@ static void Mw05StartVblankPumpOnce() {
                     Mw05RunHostDefaultVdIsrNudge("vblank");
                 } else if (cb) {
                     const uint32_t ctx = VdGetGraphicsInterruptContext();
-                    GuestToHostFunction<void>(cb, 0u, ctx);
+                    // Gate guest ISR dispatch for a few ticks after startup to avoid early-boot crashes
+                    static const uint32_t s_guest_isr_delay3 = [](){
+                        if (const char* v = std::getenv("MW05_GUEST_ISR_DELAY_TICKS"))
+                            return (uint32_t)std::strtoul(v, nullptr, 10);
+                        return 0u; // default: no delay unless configured
+                    }();
+                    const uint32_t ticks3 = g_vblankTicks.load(std::memory_order_acquire);
+                    if (ticks3 < s_guest_isr_delay3) {
+                        KernelTraceHostOpF("HOST.VblankPump.guest_isr.skip.early ticks=%u<%u", (unsigned)ticks3, (unsigned)s_guest_isr_delay3);
+                    } else {
+                        EnsureGuestContextForThisThread("VblankPump");
+                        GuestToHostFunction<void>(cb, 0u, ctx);
+                    }
                 } else if (const char* d = std::getenv("MW05_DEFAULT_VD_ISR")) {
                     if (!(d[0]=='0' && d[1]=='\0')) {
                         KernelTraceHostOp("HOST.VblankPump.default_isr");
@@ -1467,6 +1775,247 @@ static void Mw05StartVblankPumpOnce() {
             if (s_force_present || !Mw05HasGuestSwapped() || stale) {
                 Video::RequestPresentFromBackground();
             }
+
+            // Optional: one-shot nudge into MW05 present-wrapper region to try waking the scheduler
+            static const bool s_force_present_wrapper_once = [](){
+                if (const char* v = std::getenv("MW05_FORCE_PRESENT_WRAPPER_ONCE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static bool s_present_wrapper_fired = false;
+            static int s_present_wrapper_delay = [](){
+                if (const char* v = std::getenv("MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"))
+                    return (int)std::strtoul(v, nullptr, 10);
+                return 240; // ~4s at 60Hz
+            }();
+            // FPW debug: confirm we reach the FPW block each nudge
+            KernelTraceHostOp("HOST.FPW.debug.reach");
+
+            // Debug: periodically log FPW-once status to understand why it may not fire
+            static int s_fpwo_dbg = 0;
+            if (((++s_fpwo_dbg) % 60) == 0) {
+                {
+                    const uint32_t seen = Mw05Trace_SchedR3SeenCount();
+                    KernelTraceHostOpF(
+                        "HOST.ForcePresentWrapperOnce.status enabled=%d fired=%d sawSwap=%d delay=%d seen=%u",
+                        int(s_force_present_wrapper_once), int(s_present_wrapper_fired),
+                        int(g_sawRealVdSwap.load(std::memory_order_acquire)), s_present_wrapper_delay, seen);
+                }
+            }
+
+            if (s_force_present_wrapper_once && !s_present_wrapper_fired && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                if (--s_present_wrapper_delay <= 0) {
+                    const uint32_t seen = Mw05Trace_SchedR3SeenCount();
+                    if (seen < 3u) {
+                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.defer r3_unstable seen=%u", seen);
+                        s_present_wrapper_delay = 60; // retry after ~1s
+                    } else {
+                        KernelTraceHostOp("HOST.ForcePresentWrapperOnce.fire");
+                        // Construct a PPCContext based on the current thread guest context so r1/r2/r13/TOC are valid,
+                        // then override only the arguments we care about (r3, r4).
+                        PPCContext ctx{};
+                        if (auto* cur = GetPPCContext()) {
+                            ctx = *cur; // copy full live guest context for this thread
+                        }
+                        ctx.r3.u32 = Mw05Trace_LastSchedR3();
+                        if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40; // observed typical arg
+                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.ctx r3=%08X", ctx.r3.u32);
+                            // Optional: dump a small window of the scheduler context
+                            if (const char* dump = std::getenv("MW05_DUMP_SCHED_CTX")) {
+                                if (!(dump[0]=='0' && dump[1]=='\0') && GuestOffsetInRange(ctx.r3.u32, 64)) {
+                                    const uint32_t base = ctx.r3.u32;
+                                    const uint32_t* p32 = reinterpret_cast<const uint32_t*>(g_memory.Translate(base));
+                                    if (p32) {
+                                    #if defined(_MSC_VER)
+                                        auto bswap = [](uint32_t v){ return _byteswap_ulong(v); };
+                                    #else
+                                        auto bswap = [](uint32_t v){ return __builtin_bswap32(v); };
+                                    #endif
+                                        KernelTraceHostOpF("HOST.SchedCtxDump %08X: %08X %08X %08X %08X",
+                                                           base + 0, bswap(p32[0]), bswap(p32[1]), bswap(p32[2]), bswap(p32[3]));
+                                        KernelTraceHostOpF("HOST.SchedCtxDump %08X: %08X %08X %08X %08X",
+                                                           base + 16, bswap(p32[4]), bswap(p32[5]), bswap(p32[6]), bswap(p32[7]));
+                                    }
+                                }
+                            }
+
+
+                        // If no valid r3 was captured yet, allow an explicit env fallback
+                        if (!GuestOffsetInRange(ctx.r3.u32, 4)) {
+                            if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+                                uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+                                if (GuestOffsetInRange(env_r3, 4)) {
+                                    ctx.r3.u32 = env_r3;
+                                    KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.ctx.env r3=%08X", ctx.r3.u32);
+                                } else {
+                                    KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.ctx.env_invalid r3=%08X", env_r3);
+                                }
+                            }
+                        }
+
+                        if (GuestOffsetInRange(ctx.r3.u32, 4)) {
+                            uint8_t* base = g_memory.base;
+                            KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.enter r3=%08X", ctx.r3.u32);
+                            EnsureGuestContextForThisThread("FPWOnce");
+                        #if defined(_WIN32)
+                            __try {
+                                // Call by effective address via the guest call bridge to ensure proper marshalling
+                                bool use_inner = false;
+                                if (const char* v = std::getenv("MW05_FORCE_PRESENT_INNER"))
+                                    use_inner = !(v[0]=='0' && v[1]=='\0');
+                                const uint32_t target = use_inner ? 0x825A54F0u : 0x82598A20u;
+                                GuestToHostFunction<void>(target, ctx.r3.u32, ctx.r4.u32);
+                                KernelTraceHostOp("HOST.ForcePresentWrapperOnce.ret");
+                                // Optional: after present-manager returns, probe syscmd/ring headers
+                                // Optional: directly kick PM4 builder once if inner present returned but no draws
+                                if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
+                                    if (!(k[0]=='0' && k[1]=='\0') && GuestOffsetInRange(ctx.r3.u32, 4)) {
+                                    #if defined(_WIN32)
+                                        __try {
+                                            GuestToHostFunction<void>(0x82595FC8u, ctx.r3.u32, 64u);
+                                            KernelTraceHostOpF("HOST.FPW.kick.pm4 r3=%08X", ctx.r3.u32);
+                                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                            KernelTraceHostOpF("HOST.FPW.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                        }
+                                    #else
+                                        GuestToHostFunction<void>(0x82595FC8u, ctx.r3.u32, 64u);
+                                        KernelTraceHostOpF("HOST.FPW.kick.pm4 r3=%08X", ctx.r3.u32);
+                                    #endif
+                                    }
+                                }
+
+                                if (const char* e = std::getenv("MW05_FPW_POST_SYSBUF")) {
+                                    if (!(e[0]=='0' && e[1]=='\0')) {
+                                        // Ensure syscmd exists and get EA
+                                        VdGetSystemCommandBuffer(nullptr, nullptr);
+                                        uint32_t sys_ea = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+                                        uint32_t sys_val = g_SysCmdBufValue.load(std::memory_order_acquire);
+                                        KernelTraceHostOpF("HOST.FPW.post.sysbuf ea=%08X val=%08X", sys_ea, sys_val);
+                                        if (sys_ea && GuestOffsetInRange(sys_ea, 32)) {
+                                            const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(sys_ea));
+                                            if (p) {
+                                                KernelTraceHostOpF(
+                                                    "HOST.FPW.post.sysbuf.head %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X  %02X %02X %02X %02X",
+                                                    p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7], p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
+                                            }
+                                        }
+                                        // GPU-id writeback address/value, if any
+                                        uint32_t gid_ea = g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_acquire);
+                                        uint32_t gid_val = 0;
+                                        if (gid_ea && GuestOffsetInRange(gid_ea, sizeof(uint32_t))) {
+                                            if (auto* pv = reinterpret_cast<uint32_t*>(g_memory.Translate(gid_ea))) gid_val = *pv;
+                                        }
+                                        KernelTraceHostOpF("HOST.FPW.post.gpuid ea=%08X val=%08X", gid_ea, gid_val);
+                                        // Ring write-back pointer value, if configured
+                                        uint32_t rb_wb_ea = g_RbWriteBackPtr.load(std::memory_order_acquire);
+                                        uint32_t rb_val = 0;
+                                        if (rb_wb_ea && GuestOffsetInRange(rb_wb_ea, sizeof(uint32_t))) {
+                                            if (auto* rpv = reinterpret_cast<uint32_t*>(g_memory.Translate(rb_wb_ea))) rb_val = *rpv;
+                                        }
+                                        KernelTraceHostOpF("HOST.FPW.post.rptr_wb ea=%08X val=%08X", rb_wb_ea, rb_val);
+                                        // Optional heavy scan of sysbuf for PM4 right now
+                                        if (const char* s = std::getenv("MW05_PM4_SCAN_ON_FPW_POST")) {
+                                            if (!(s[0]=='0' && s[1]=='\0') && sys_ea) {
+                                                extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+                                                PM4_ScanLinear(sys_ea, 64u * 1024u);
+                                            }
+                                        }
+                                    }
+                                }
+
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                // Fallback: try inner present-manager and/or direct PM4 kick so we can still progress
+                                if (GuestOffsetInRange(ctx.r3.u32, 4)) {
+                                    __try {
+                                        GuestToHostFunction<void>(0x825A54F0u, ctx.r3.u32, ctx.r4.u32 ? ctx.r4.u32 : 0x40u);
+                                        KernelTraceHostOp("HOST.FPW.fallback.inner.ret");
+                                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                        KernelTraceHostOpF("HOST.FPW.fallback.inner.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                    }
+                                    if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
+                                        if (!(k[0]=='0' && k[1]=='\0')) {
+                                            __try {
+                                                GuestToHostFunction<void>(0x82595FC8u, ctx.r3.u32, 64u);
+                                                KernelTraceHostOpF("HOST.FPW.kick.pm4 r3=%08X", ctx.r3.u32);
+                                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                                KernelTraceHostOpF("HOST.FPW.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        #else
+                            GuestToHostFunction<void>(0x82598A20u, ctx.r3.u32, ctx.r4.u32);
+                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.ret");
+                        #endif
+                            s_present_wrapper_fired = true;
+                        } else {
+                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.defer r3_unsuitable");
+                            // Throttle retries: wait ~1s before attempting again
+                            s_present_wrapper_delay = 60;
+                            // Do not mark fired; try again later when r3 is captured
+                        }
+                    }
+                }
+            }
+            // Optional: repeat present-manager a few times if no swap/draws yet (diagnostic)
+            static int s_fpwo_retries = [](){
+                if (const char* v = std::getenv("MW05_FPW_RETRIES")) return (int)std::strtoul(v, nullptr, 10);
+                return 0; // default OFF
+            }();
+            static int s_fpwo_retry_delay = [](){
+                if (const char* v = std::getenv("MW05_FPW_RETRY_TICKS")) return (int)std::strtoul(v, nullptr, 10);
+                return 120; // ~2s
+            }();
+            static int s_fpwo_retry_timer = s_fpwo_retry_delay;
+            if (s_force_present_wrapper_once && s_present_wrapper_fired && s_fpwo_retries > 0 && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                extern uint64_t PM4_GetDrawCount();
+                if (PM4_GetDrawCount() == 0) {
+                    if (--s_fpwo_retry_timer <= 0) {
+                        const uint32_t seen = Mw05Trace_SchedR3SeenCount();
+                        if (seen >= 3u) {
+                            PPCContext ctx{};
+                            if (auto* cur = GetPPCContext()) ctx = *cur;
+                            ctx.r3.u32 = Mw05Trace_LastSchedR3();
+                            if (!GuestOffsetInRange(ctx.r3.u32, 4)) {
+                                if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+                                    uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+                                    if (GuestOffsetInRange(env_r3, 4)) ctx.r3.u32 = env_r3;
+                                }
+                            }
+                            if (GuestOffsetInRange(ctx.r3.u32, 4)) {
+                                EnsureGuestContextForThisThread("FPWOnce.refire");
+                                bool use_inner = false;
+                                if (const char* v = std::getenv("MW05_FORCE_PRESENT_INNER"))
+                                    use_inner = !(v[0]=='0' && v[1]=='\0');
+                                const uint32_t target = use_inner ? 0x825A54F0u : 0x82598A20u;
+                                KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.refire r3=%08X left=%d", ctx.r3.u32, s_fpwo_retries);
+                            #if defined(_WIN32)
+                                __try {
+                                    GuestToHostFunction<void>(target, ctx.r3.u32, ctx.r4.u32 ? ctx.r4.u32 : 0x40u);
+                                    KernelTraceHostOp("HOST.ForcePresentWrapperOnce.refire.ret");
+                                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                    KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.refire.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                }
+                            #else
+                                GuestToHostFunction<void>(target, ctx.r3.u32, ctx.r4.u32 ? ctx.r4.u32 : 0x40u);
+                                KernelTraceHostOp("HOST.ForcePresentWrapperOnce.refire.ret");
+                            #endif
+                                --s_fpwo_retries;
+                                s_fpwo_retry_timer = s_fpwo_retry_delay;
+                            } else {
+                                // No valid r3; re-arm quickly to try again
+                                s_fpwo_retry_timer = 30; // ~0.5s
+                            }
+                        } else {
+                            // r3 sightings unstable; wait a bit and try again
+                            s_fpwo_retry_timer = 60;
+                        }
+                    }
+                }
+            }
+
 
 
             // Optional: tick frame counter e70 once per vblank when enabled
@@ -2394,8 +2943,18 @@ static bool Mw05SignalVdInterruptEvent()
                         KernelTraceHostOp("HOST.VdInterruptEvent.dispatch.host_isr");
                         Mw05RunHostDefaultVdIsrNudge("dispatch");
                     } else {
-                        const uint32_t ctx = VdGetGraphicsInterruptContext();
+                        uint32_t ctx = VdGetGraphicsInterruptContext();
+                        // Optionally override context with discovered scheduler pointer
+                        static const bool s_force_ctx_sched_dispatch = [](){
+                            if (const char* v = std::getenv("MW05_VD_ISR_CTX_SCHED")) return !(v[0]=='0' && v[1]=='\0');
+                            return false;
+                        }();
+                        if (s_force_ctx_sched_dispatch) {
+                            uint32_t sched = Mw05Trace_LastSchedR3();
+                            if (GuestOffsetInRange(sched, 4)) ctx = sched;
+                        }
                         KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
+                        EnsureGuestContextForThisThread("VdInterruptEvent");
                         GuestToHostFunction<void>(cb, 0u, ctx);
                     }
                 } else if (const char* f = std::getenv("MW05_FORCE_VD_ISR")) {
@@ -2460,13 +3019,16 @@ extern "C"
         }
     }
 
-    // Expose ring buffer region for tracing purposes (read-only accessors)
+    // Expose ring/system buffer regions for tracing purposes (read-only accessors)
     uint32_t Mw05GetRingBaseEA() { return g_RbBase.load(std::memory_order_relaxed); }
-    uint32_t Mw05GetRingSizeBytes()
-    {
+    uint32_t Mw05GetRingSizeBytes() {
         const uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
         return (len_log2 < 32u) ? (1u << len_log2) : 0u;
     }
+    uint32_t Mw05GetSysBufBaseEA() { return g_VdSystemCommandBuffer.load(std::memory_order_relaxed); }
+    uint32_t Mw05GetSysBufSizeBytes() { return 64u * 1024u; }
+
+	static void Mw05ForceRegisterGfxNotifyIfRequested();
 }
 
 // Minimal reservation tracking for NtAllocateVirtualMemory reserve/commit emulation
@@ -4461,6 +5023,54 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
         KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.caller lr=%08X", (uint32_t)ctx->lr);
     }
     EnsureSystemCommandBuffer();
+    // Optional: seed a small header in the System Command Buffer so titles that
+    // expect a preinitialized descriptor (size/ticket) will proceed to write PM4.
+    static const bool s_sysbuf_seed_hdr = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_SEED_HDR")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_sysbuf_seed_hdr && g_SysCmdBufGuest != 0) {
+        uint32_t* p = reinterpret_cast<uint32_t*>(g_memory.Translate(g_SysCmdBufGuest));
+        if (p) {
+            // Only seed once while the first dword is zero
+            if (p[0] == 0) {
+            #if defined(_MSC_VER)
+                const uint32_t be_val  = _byteswap_ulong(g_SysCmdBufValue.load(std::memory_order_acquire));
+                const uint32_t be_size = _byteswap_ulong(kSysCmdBufSize);
+            #else
+                const uint32_t be_val  = __builtin_bswap32(g_SysCmdBufValue.load(std::memory_order_acquire));
+                const uint32_t be_size = __builtin_bswap32(kSysCmdBufSize);
+            #endif
+                p[0] = be_val;   // ticket/cookie that changes over time
+                p[1] = be_size;  // buffer size in bytes
+                p[2] = 0;        // reserved: write offset
+                p[3] = 0;        // reserved: read offset
+                KernelTraceHostOpF("HOST.PM4.SysBufSeed hdr0..3: %08X %08X %08X %08X", p[0], p[1], p[2], p[3]);
+            }
+        }
+    }
+    // Optional: tick header[0] every query to simulate progress some titles expect
+    // Enabled with MW05_PM4_SYSBUF_TICK_HDR=1. Uses g_SysCmdBufValue as the source ticket.
+    {
+        static const bool s_tick_hdr = [](){
+            if (const char* v = std::getenv("MW05_PM4_SYSBUF_TICK_HDR")) return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
+        if (s_tick_hdr && g_SysCmdBufGuest != 0) {
+            uint32_t* p = reinterpret_cast<uint32_t*>(g_memory.Translate(g_SysCmdBufGuest));
+            if (p) {
+            #if defined(_MSC_VER)
+                p[0] = _byteswap_ulong(g_SysCmdBufValue.load(std::memory_order_acquire));
+                p[1] = _byteswap_ulong(kSysCmdBufSize);
+            #else
+                p[0] = __builtin_bswap32(g_SysCmdBufValue.load(std::memory_order_acquire));
+                p[1] = __builtin_bswap32(kSysCmdBufSize);
+            #endif
+            }
+        }
+    }
+
+
 
     // Seed a non-zero value on first query to match titles that expect a ticking
     // system-command value very early (opt-in via MW05_BOOT_TICK=1).
@@ -4472,6 +5082,8 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
         uint32_t cur = g_SysCmdBufValue.load(std::memory_order_acquire);
         if (cur == 0) {
             uint32_t nv = 1u;
+
+
             g_SysCmdBufValue.store(nv, std::memory_order_release);
             // If GPU-id address is set, reflect it there as well.
             uint32_t sysIdEA = g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_acquire);
@@ -4694,6 +5306,7 @@ void Mw05LogIsrIfRegisteredOnce() {
     KernelTraceHostOpF("HOST.VdISR.registered cb=%08X ctx=%08X", cb, ctx);
 }
 
+
 // Force ring + writeback + engines, even earlier than the small auto-init.
 void Mw05ForceVdInitOnce() {
     if (!Mw05ForceVdInitEnabled()) return;
@@ -4740,8 +5353,44 @@ void Mw05ForceVdInitOnce() {
 
     // Start vblank pump to keep things flowing even if the title idles early.
     Mw05StartVblankPumpOnce();
+// fwd decls for locally-defined VD bridge helpers used below
+void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
+void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
+
+
+    // If requested, force-register the graphics notify ISR known from Xenia
+    Mw05ForceRegisterGfxNotifyIfRequested();
 
     KernelTraceHostOp("HOST.ForceVD.init.done");
+
+}
+
+
+// Optional: force-register a graphics notify/ISR callback from env (for bring-up)
+static void Mw05ForceRegisterGfxNotifyIfRequested() {
+    const char* en = std::getenv("MW05_FORCE_GFX_NOTIFY_CB");
+    if (!en || (en[0]=='0' && en[1]=='\0')) return;
+    // Default EA from known-good Xenia capture if not provided via MW05_FORCE_GFX_NOTIFY_CB_EA
+    uint32_t cb_ea = 0x825979A8u;
+    if (const char* s = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_EA")) {
+        cb_ea = (uint32_t)std::strtoul(s, nullptr, 0);
+    }
+    uint32_t ctx = 1u;
+    if (const char* c = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_CTX")) {
+        ctx = (uint32_t)std::strtoul(c, nullptr, 0);
+    }
+    // Only install if caller hasn't already set a real ISR (avoid overriding guest)
+    if (auto cur = VdGetGraphicsInterruptCallback(); cur == 0 || cur == kHostDefaultVdIsrMagic) {
+        KernelTraceHostOpF("HOST.VdISR.force_register cb=%08X ctx=%08X", cb_ea, ctx);
+        VdSetGraphicsInterruptCallback(cb_ea, ctx);
+        // Also register into notification list so VdCallGraphicsNotificationRoutines hits it
+        VdRegisterGraphicsNotificationRoutine(cb_ea, ctx);
+        Mw05LogIsrIfRegisteredOnce();
+        // Immediately drive one notify so the newly registered ISR runs right away
+        VdCallGraphicsNotificationRoutines(0u);
+    } else {
+        KernelTraceHostOp("HOST.VdISR.force_register.skipped (already set)\n");
+    }
 }
 
 uint32_t MmGetPhysicalAddress(uint32_t address)
@@ -4870,13 +5519,21 @@ void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context)
         g_VdNotifList.emplace_back(callback, context);
     }
 after_store:
-    // Some titles expect an immediate notify on registration to catch up
-    if (callback == kHostDefaultVdIsrMagic) {
-        KernelTraceHostOp("HOST.VdNotify.host_isr.immediate");
-        Mw05RunHostDefaultVdIsrNudge("notify");
-    } else if (callback) {
-        KernelTraceHostOp("HOST.VdNotify.dispatch.immediate");
-        GuestToHostFunction<void>(callback, 0u, context);
+    // Some titles expect an immediate notify on registration to catch up.
+    // Make this opt-in via MW05_NOTIFY_IMMEDIATE=1 to reduce early-boot risk.
+    static const bool s_notify_immediate = [](){
+        if (const char* v = std::getenv("MW05_NOTIFY_IMMEDIATE"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // default: off
+    }();
+    if (s_notify_immediate) {
+        if (callback == kHostDefaultVdIsrMagic) {
+            KernelTraceHostOp("HOST.VdNotify.host_isr.immediate");
+            Mw05RunHostDefaultVdIsrNudge("notify");
+        } else if (callback) {
+            KernelTraceHostOp("HOST.VdNotify.dispatch.immediate");
+            GuestToHostFunction<void>(callback, 0u, context);
+        }
     }
 }
 
@@ -4937,15 +5594,64 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
             std::scoped_lock lk(g_VdNotifMutex);
             local = g_VdNotifList; // copy to avoid holding lock while calling guest
         }
+        static const bool s_force_ctx_sched = [](){
+            if (const char* v = std::getenv("MW05_VD_ISR_CTX_SCHED")) return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
         for (const auto& [ncb, nctx] : local) {
             if (!ncb) continue;
             if (ncb == kHostDefaultVdIsrMagic) {
                 KernelTraceHostOp("HOST.VdNotify.host_isr");
                 Mw05RunHostDefaultVdIsrNudge("notify");
             } else {
-                KernelTraceHostOpF("HOST.VdNotify.dispatch cb=%08X ctx=%08X", ncb, nctx);
-                // Xbox 360 graphics notify routine receives (source, context)
-                GuestToHostFunction<void>(ncb, source, nctx);
+                // Optionally override context with discovered scheduler pointer
+
+                uint32_t use_ctx = nctx;
+                if (s_force_ctx_sched) {
+                    uint32_t sched = Mw05Trace_LastSchedR3();
+                    if (GuestOffsetInRange(sched, 4)) use_ctx = sched;
+                }
+                // Gate guest ISR dispatch for a few ticks after startup to avoid early-boot crashes
+                static const uint32_t s_guest_isr_delay = [](){
+                    if (const char* v = std::getenv("MW05_GUEST_ISR_DELAY_TICKS"))
+                        return (uint32_t)std::strtoul(v, nullptr, 10);
+                    return 0u; // default: no delay unless configured
+                }();
+                const uint32_t ticks = g_vblankTicks.load(std::memory_order_acquire);
+                if (ticks < s_guest_isr_delay) {
+                    KernelTraceHostOpF("HOST.VdNotify.dispatch.skip.early ticks=%u<%u", (unsigned)ticks, (unsigned)s_guest_isr_delay);
+                } else {
+                    KernelTraceHostOpF("HOST.VdNotify.dispatch cb=%08X ctx=%08X", ncb, use_ctx);
+                    // Xbox 360 graphics notify routine typically receives (source, context),
+                    // but allow an opt-in param swap for experiments.
+            // Optional: dump a small window of the scheduler context in notify-list dispatch
+            if (const char* dump = std::getenv("MW05_DUMP_SCHED_CTX")) {
+                if (!(dump[0]=='0' && dump[1]=='\0') && GuestOffsetInRange(use_ctx, 64)) {
+                    const uint32_t* p32 = reinterpret_cast<const uint32_t*>(g_memory.Translate(use_ctx));
+                    if (p32) {
+                    #if defined(_MSC_VER)
+                        auto bswap = [](uint32_t v){ return _byteswap_ulong(v); };
+                    #else
+                        auto bswap = [](uint32_t v){ return __builtin_bswap32(v); };
+                    #endif
+                        KernelTraceHostOpF("HOST.SchedCtxDump %08X: %08X %08X %08X %08X", use_ctx + 0, bswap(p32[0]), bswap(p32[1]), bswap(p32[2]), bswap(p32[3]));
+                        KernelTraceHostOpF("HOST.SchedCtxDump %08X: %08X %08X %08X %08X", use_ctx + 16, bswap(p32[4]), bswap(p32[5]), bswap(p32[6]), bswap(p32[7]));
+                    }
+                }
+            }
+
+                    EnsureGuestContextForThisThread("VdNotifyList");
+                    static const bool s_isr_swap = [](){
+                        if (const char* v = std::getenv("MW05_VD_ISR_SWAP_PARAMS")) return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    if (s_isr_swap) {
+                        KernelTraceHostOp("HOST.VdNotify.dispatch.swap r3<->r4");
+                        GuestToHostFunction<void>(ncb, use_ctx, source);
+                    } else {
+                        GuestToHostFunction<void>(ncb, source, use_ctx);
+                    }
+                }
             }
         }
     }
@@ -4958,9 +5664,124 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
             KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines.host_isr");
             Mw05RunHostDefaultVdIsrNudge("vd_call");
         } else {
-            const uint32_t ctx = VdGetGraphicsInterruptContext();
-            KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X (via VdCallGraphicsNotificationRoutines)", cb, ctx);
-            GuestToHostFunction<void>(cb, 0u, ctx);
+            uint32_t ctx = VdGetGraphicsInterruptContext();
+            // Optionally override context with discovered scheduler pointer
+            static const bool s_force_ctx_sched2 = [](){
+                if (const char* v = std::getenv("MW05_VD_ISR_CTX_SCHED")) return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_force_ctx_sched2) {
+                uint32_t sched = Mw05Trace_LastSchedR3();
+                if (GuestOffsetInRange(sched, 4)) ctx = sched;
+            }
+            // Gate guest ISR dispatch for a few ticks after startup to avoid early-boot crashes
+            static const uint32_t s_guest_isr_delay2 = [](){
+                if (const char* v = std::getenv("MW05_GUEST_ISR_DELAY_TICKS"))
+                    return (uint32_t)std::strtoul(v, nullptr, 10);
+                return 0u; // default: no delay unless configured
+            }();
+            const uint32_t ticks2 = g_vblankTicks.load(std::memory_order_acquire);
+            if (ticks2 < s_guest_isr_delay2) {
+                KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch.skip.early ticks=%u<%u (via VdCallGraphicsNotificationRoutines)", (unsigned)ticks2, (unsigned)s_guest_isr_delay2);
+            } else {
+                KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X (via VdCallGraphicsNotificationRoutines)", cb, ctx);
+                EnsureGuestContextForThisThread("VdCallGraphicsNotificationRoutines");
+                static const bool s_isr_swap2 = [](){
+                    if (const char* v = std::getenv("MW05_VD_ISR_SWAP_PARAMS")) return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                if (s_isr_swap2) {
+                    KernelTraceHostOp("HOST.VdInterruptEvent.dispatch.swap r3<->r4");
+                    GuestToHostFunction<void>(cb, ctx, 0u);
+                } else {
+                    GuestToHostFunction<void>(cb, 0u, ctx);
+                }
+
+                // Optional: try the one-shot present-wrapper nudge from within the ISR
+                // thread context. This more closely matches the title's expected calling
+                // environment than firing from the host pump.
+                static const bool s_force_present_wrapper_once_vd = [](){
+                    if (const char* v = std::getenv("MW05_FORCE_PRESENT_WRAPPER_ONCE"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                static bool s_present_wrapper_fired_vd = false;
+                if (s_force_present_wrapper_once_vd && !s_present_wrapper_fired_vd && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    const uint32_t seen = Mw05Trace_SchedR3SeenCount();
+                    if (seen >= 3u) {
+                        uint32_t r3_ea = Mw05Trace_LastSchedR3();
+                        if (!GuestOffsetInRange(r3_ea, 4)) {
+                            if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+                                uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+                                if (GuestOffsetInRange(env_r3, 4)) r3_ea = env_r3;
+                            }
+                        }
+                        if (GuestOffsetInRange(r3_ea, 4)) {
+                            KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.enter r3=%08X", r3_ea);
+                            EnsureGuestContextForThisThread("FPWOnce.vdcall");
+                            bool use_inner_vd = false;
+                            if (const char* v = std::getenv("MW05_FORCE_PRESENT_INNER"))
+                                use_inner_vd = !(v[0]=='0' && v[1]=='\0');
+                            const uint32_t vd_target = use_inner_vd ? 0x825A54F0u : 0x82598A20u;
+                        #if defined(_WIN32)
+                            __try {
+                                GuestToHostFunction<void>(vd_target, r3_ea, 0x40u);
+                                KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
+                                // Optional: kick PM4 builder even if the wrapper returned, to see if it produces draws
+                                if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
+                                    if (!(k[0]=='0' && k[1]=='\0')) {
+                                        __try {
+                                            GuestToHostFunction<void>(0x82595FC8u, r3_ea, 64u);
+                                            KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4 r3=%08X", r3_ea);
+                                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                            KernelTraceHostOpF("HOST.FPW.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                        }
+                                        // Also try the sibling PM4 path sub_825972B0
+                                        __try {
+                                            GuestToHostFunction<void>(0x825972B0u, r3_ea, 64u);
+                                            KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4b r3=%08X", r3_ea);
+                                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                            KernelTraceHostOpF("HOST.FPW.kick.pm4b.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                        }
+                                    }
+                                }
+                                s_present_wrapper_fired_vd = true;
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                // Fallback on vdcall fault: try inner present-manager and PM4 kick
+                                if (GuestOffsetInRange(r3_ea, 4)) {
+                                    __try {
+                                        GuestToHostFunction<void>(0x825A54F0u, r3_ea, 0x40u);
+                                        KernelTraceHostOp("HOST.FPW.vdcall.fallback.inner.ret");
+                                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                        KernelTraceHostOpF("HOST.FPW.vdcall.fallback.inner.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                    }
+                                    if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
+                                        if (!(k[0]=='0' && k[1]=='\0')) {
+                                            __try {
+                                                GuestToHostFunction<void>(0x82595FC8u, r3_ea, 64u);
+                                                KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4 r3=%08X", r3_ea);
+                                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                                KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                            }
+                                        }
+                                    }
+                                }
+                                s_present_wrapper_fired_vd = true; // avoid repeated faults
+                            }
+                        #else
+                            GuestToHostFunction<void>(0x82598A20u, r3_ea, 0x40u);
+                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
+                            s_present_wrapper_fired_vd = true;
+                        #endif
+                        } else {
+                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.defer r3_unsuitable");
+                        }
+                    } else {
+                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.defer r3_unstable seen=%u", seen);
+                    }
+                }
+            }
         }
     } else {
         const char* f = std::getenv("MW05_FORCE_VD_ISR");

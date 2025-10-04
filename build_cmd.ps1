@@ -4,7 +4,7 @@ param(
   [ValidateSet('all','0','configure','1','codegen','2','genlist','3','lib','4','app','5','patch','6')]
   [string]$Stage,
   [ValidateSet('Debug','Release','RelWithDebInfo','MinSizeRel')]
-  [string]$Config = 'Release',
+  [string]$Config = 'Debug',
   [ValidateSet('x64-Clang-Debug','x64-Clang-Release','x64-Clang-RelWithDebInfo','x64-Clang-MinSizeRel')]
   [string]$Preset,
   [switch]$Clean,

@@ -51,6 +51,16 @@ extern "C"
     uint32_t Mw05GetHostDefaultVdIsrMagic();
     void Mw05RunHostDefaultVdIsrNudge(const char* tag);
 }
+extern "C" {
+    // Accessors exposed by kernel/imports for ring/syscmd buffers
+    uint32_t Mw05GetRingBaseEA();
+    uint32_t Mw05GetRingSizeBytes();
+    uint32_t Mw05GetSysBufBaseEA();
+    uint32_t Mw05GetSysBufSizeBytes();
+}
+extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+
+
 
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
@@ -1062,6 +1072,24 @@ static void SetRenderState(GuestDevice* device, uint32_t value)
     cmd.setRenderState.value = value;
     g_renderQueue.enqueue(cmd);
 }
+extern "C" void Mw05DebugKickClear()
+{
+    // Minimal debug clear to force visible frames when MW05 micro buffer is detected
+    if (!g_rendererReady || !g_device || !g_swapChain || !g_swapChainValid)
+        return;
+
+    RenderCommand cmd{};
+    cmd.type = RenderCommandType::Clear;
+    cmd.clear.flags = 1; // color only
+    cmd.clear.color[0] = 0.04f;
+    cmd.clear.color[1] = 0.04f;
+    cmd.clear.color[2] = 0.06f;
+    cmd.clear.color[3] = 1.0f;
+    cmd.clear.z = 1.0f;
+
+    g_renderQueue.enqueue(cmd);
+}
+
 
 static void SetRenderStateUnimplemented(GuestDevice* device, uint32_t value)
 {
@@ -2806,6 +2834,23 @@ static void DrawImGui()
             }
         }
     }
+    // Optional bring-up overlay to guarantee visible output; controlled by MW05_ALWAYS_ON_OVERLAY=1 (default: off)
+    {
+        const char* ov = std::getenv("MW05_ALWAYS_ON_OVERLAY");
+        const bool overlayEnabled = (ov && !(ov[0]=='0' && ov[1]=='\0'));
+        if (overlayEnabled) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            if (dl)
+            {
+                const ImVec2 tl(16.0f, 16.0f);
+                const ImVec2 br(300.0f, 64.0f);
+                dl->AddRectFilled(tl, br, IM_COL32(0, 128, 255, 180), 6.0f);
+                dl->AddRect(tl, br, IM_COL32(255, 255, 255, 220), 6.0f);
+                dl->AddText(ImVec2(tl.x + 12.0f, tl.y + 12.0f), IM_COL32(255, 255, 255, 255), "MW05Recomp: Rendering active");
+            }
+        }
+    }
+
 
 #ifdef ASYNC_PSO_DEBUG
     if (ImGui::Begin("Async PSO Stats"))
@@ -3074,6 +3119,64 @@ void Video::Present()
         // Tick present profiler so FPS overlay won't appear stale while renderer initializes
         static auto s_last = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
+    // Optionally bridge System Command Buffer -> Ring buffer on present if no draws seen yet
+    {
+        static const bool s_sysbuf_to_ring = [](){ if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+        if (s_sysbuf_to_ring && PM4_GetDrawCount() == 0) {
+            uint32_t sysEA  = Mw05GetSysBufBaseEA();
+            uint32_t ringEA = Mw05GetRingBaseEA();
+            uint32_t ringSz = Mw05GetRingSizeBytes();
+            if (sysEA && ringEA && ringSz) {
+                uint8_t* sysHost = reinterpret_cast<uint8_t*>(g_memory.Translate(sysEA));
+                uint8_t* rbHost  = reinterpret_cast<uint8_t*>(g_memory.Translate(ringEA));
+                if (sysHost && rbHost) {
+                    sysHost += 0x10; // skip 16-byte syscmd header
+                    const uint32_t copyBytes = (ringSz > 16u) ? (ringSz - 16u) : 0u;
+                    bool any = false;
+                    for (uint32_t off = 0; off + 4 <= copyBytes; off += 4) {
+                        if (*reinterpret_cast<uint32_t*>(sysHost + off) != 0) { any = true; break; }
+                    }
+                    if (any) {
+                        // Optionally bypass WAIT_REG_MEM packets in the syscmd payload before copying
+                        static const bool s_bypass_waits = [](){ if (const char* v = std::getenv("MW05_PM4_BYPASS_WAITS")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+                        uint32_t replaced = 0;
+                        if (s_bypass_waits) {
+                            for (uint32_t off = 0; off + 4 <= copyBytes; off += 4) {
+                                uint32_t be = *reinterpret_cast<uint32_t*>(sysHost + off);
+                            #if defined(_MSC_VER)
+                                uint32_t le = _byteswap_ulong(be);
+                            #else
+                                uint32_t le = __builtin_bswap32(be);
+                            #endif
+                                uint32_t type = (le >> 30) & 0x3u;
+                                if (type == 3u) {
+                                    uint32_t opcode = (le >> 8) & 0x7Fu;
+                                    if (opcode == 0x3Cu) { // WAIT_REG_MEM
+                                        // Replace with TYPE2 NOP (big-endian): write bswap32(0x80000000)
+                                    #if defined(_MSC_VER)
+                                        const uint32_t be_nop = _byteswap_ulong(0x80000000u);
+                                    #else
+                                        const uint32_t be_nop = __builtin_bswap32(0x80000000u);
+                                    #endif
+                                        *reinterpret_cast<uint32_t*>(sysHost + off) = be_nop;
+                                        ++replaced;
+                                    }
+                                }
+                            }
+                            if (replaced) {
+                                KernelTraceHostOpF("HOST.PM4.SysBufBridge.bypass_waits replaced=%u", replaced);
+                            }
+                        }
+                        memcpy(rbHost, sysHost, copyBytes);
+                        const uint32_t offs = copyBytes & (ringSz - 1u);
+                        KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X (present)", copyBytes, offs);
+                        PM4_OnRingBufferWrite(offs ? offs : 0x20u);
+                    }
+                }
+            }
+        }
+    }
+
         g_presentProfiler.Set(std::chrono::duration<double, std::milli>(now - s_last).count());
         s_last = now;
         return;
@@ -3081,6 +3184,64 @@ void Video::Present()
     // Mark that at least one Present occurred so the boot banner can clear
     g_anyPresentSeen.store(true, std::memory_order_release);
     g_readyForCommands = false;
+
+    // Optionally bridge System Command Buffer -> Ring buffer on present if no draws seen yet
+    {
+        static const bool s_sysbuf_to_ring = [](){ if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+        if (s_sysbuf_to_ring && PM4_GetDrawCount() == 0) {
+            uint32_t sysEA  = Mw05GetSysBufBaseEA();
+            uint32_t ringEA = Mw05GetRingBaseEA();
+            uint32_t ringSz = Mw05GetRingSizeBytes();
+            if (sysEA && ringEA && ringSz) {
+                uint8_t* sysHost = reinterpret_cast<uint8_t*>(g_memory.Translate(sysEA));
+                uint8_t* rbHost  = reinterpret_cast<uint8_t*>(g_memory.Translate(ringEA));
+                if (sysHost && rbHost) {
+                    sysHost += 0x10; // skip 16-byte syscmd header
+                    const uint32_t copyBytes = (ringSz > 16u) ? (ringSz - 16u) : 0u;
+                    bool any = false;
+                    for (uint32_t off = 0; off + 4 <= copyBytes; off += 4) {
+                        if (*reinterpret_cast<uint32_t*>(sysHost + off) != 0) { any = true; break; }
+                    }
+                    if (any) {
+                        // Optionally bypass WAIT_REG_MEM packets in the syscmd payload before copying
+                        static const bool s_bypass_waits = [](){ if (const char* v = std::getenv("MW05_PM4_BYPASS_WAITS")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+                        uint32_t replaced = 0;
+                        if (s_bypass_waits) {
+                            for (uint32_t off = 0; off + 4 <= copyBytes; off += 4) {
+                                uint32_t be = *reinterpret_cast<uint32_t*>(sysHost + off);
+                            #if defined(_MSC_VER)
+                                uint32_t le = _byteswap_ulong(be);
+                            #else
+                                uint32_t le = __builtin_bswap32(be);
+                            #endif
+                                uint32_t type = (le >> 30) & 0x3u;
+                                if (type == 3u) {
+                                    uint32_t opcode = (le >> 8) & 0x7Fu;
+                                    if (opcode == 0x3Cu) { // WAIT_REG_MEM
+                                        // Replace with TYPE2 NOP (big-endian): write bswap32(0x80000000)
+                                    #if defined(_MSC_VER)
+                                        const uint32_t be_nop = _byteswap_ulong(0x80000000u);
+                                    #else
+                                        const uint32_t be_nop = __builtin_bswap32(0x80000000u);
+                                    #endif
+                                        *reinterpret_cast<uint32_t*>(sysHost + off) = be_nop;
+                                        ++replaced;
+                                    }
+                                }
+                            }
+                            if (replaced) {
+                                KernelTraceHostOpF("HOST.PM4.SysBufBridge.bypass_waits replaced=%u", replaced);
+                            }
+                        }
+                        memcpy(rbHost, sysHost, copyBytes);
+                        const uint32_t offs = copyBytes & (ringSz - 1u);
+                        KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X (present)", copyBytes, offs);
+                        PM4_OnRingBufferWrite(offs ? offs : 0x20u);
+                    }
+                }
+            }
+        }
+    }
 
     // Optional: aggressively scan PM4 ring during early presents to discover draws even if VdSwap path isn't hit
     static int s_pm4_probe_presents = 180; // ~3 seconds at 60 FPS
@@ -3092,11 +3253,136 @@ void Video::Present()
             (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
     }
 
+    // Optional: force a linear scan of the System Command Buffer payload each present to surface PM4, even if diff-watch didn't trigger
+    {
+        static const bool s_force_sysbuf_scan = [](){
+            if (const char* v = std::getenv("MW05_PM4_FORCE_SYSBUF_SCAN")) return !(v[0]=='0' && v[1]=='\0');
+            return false;
+        }();
+        if (s_force_sysbuf_scan) {
+            const uint32_t sys_base    = 0x00140400u;
+            const uint32_t sys_payload = sys_base + 0x10u;
+            const uint32_t sys_bytes   = 0x00010000u - 0x10u; // 64 KiB minus header
+            PM4_ScanLinear(sys_payload, sys_bytes);
+            KernelTraceHostOpF("HOST.PM4.SysBufForceScan draws=%llu pkts=%llu",
+                (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+        }
+        {
+            // Diagnostic: scan sysbuf payload for MW05 micro-draw markers to quantify guest activity
+            uint32_t sysEA = Mw05GetSysBufBaseEA();
+            if (sysEA) {
+                uint8_t* sysHostBytes = reinterpret_cast<uint8_t*>(g_memory.Translate(sysEA));
+                if (sysHostBytes) {
+                    const uint32_t headSkip = 0x10u;
+                    const uint32_t total    = 0x00010000u;
+                    const uint32_t payload  = (total > headSkip) ? (total - headSkip) : 0u;
+                    uint64_t microDraws = 0;
+                    uint32_t firstOff = 0xFFFFFFFFu;
+                    // Read as big-endian dwords and find first marker
+                    for (uint32_t off = 0; off + 4 <= payload; off += 4) {
+                        uint32_t be = (uint32_t)sysHostBytes[headSkip + off + 0] << 24 |
+                                      (uint32_t)sysHostBytes[headSkip + off + 1] << 16 |
+                                      (uint32_t)sysHostBytes[headSkip + off + 2] << 8  |
+                                      (uint32_t)sysHostBytes[headSkip + off + 3] << 0;
+                        if (be == 0x81000001u) {
+                            ++microDraws;
+                            if (firstOff == 0xFFFFFFFFu) firstOff = off;
+                        }
+                    // Search for MW05 micro-IB magic and hand off to interpreter (host-side bridge)
+                    {
+                        uint32_t hits = 0;
+                        uint32_t magicEA = 0;
+                        for (uint32_t off = 0; off + 4 <= payload; off += 4) {
+                            uint32_t be = (uint32_t)sysHostBytes[headSkip + off + 0] << 24 |
+                                          (uint32_t)sysHostBytes[headSkip + off + 1] << 16 |
+                                          (uint32_t)sysHostBytes[headSkip + off + 2] << 8  |
+                                          (uint32_t)sysHostBytes[headSkip + off + 3] << 0;
+                            if (be == 0x3530574Du) { // 'MW05'
+                                ++hits;
+                                if (!magicEA) magicEA = sysEA + headSkip + off;
+                                // Interpret the first hit immediately; further hits can be sampled in future iterations
+                                Mw05InterpretMicroIB(sysEA + headSkip + off, 32u);
+                                break;
+                            }
+                        }
+                        if (hits) {
+                            KernelTraceHostOpF("HOST.MW05.Scan.magic hits=%u first=%08X", hits, magicEA);
+                        }
+                    }
+                        // Also look for descriptor sentinel 0xFFFAFEFD and try to recover <ea, off, size>
+                        {
+                            for (uint32_t off = 0; off + 16 <= payload; off += 4) {
+                                uint32_t s0 = (uint32_t)sysHostBytes[headSkip + off + 0] << 24 |
+                                              (uint32_t)sysHostBytes[headSkip + off + 1] << 16 |
+                                              (uint32_t)sysHostBytes[headSkip + off + 2] << 8  |
+                                              (uint32_t)sysHostBytes[headSkip + off + 3] << 0;
+                                if (s0 == 0xFFFAFEFDu) {
+                                    uint32_t be_ea  = (uint32_t)sysHostBytes[headSkip + off + 4] << 24 |
+                                                      (uint32_t)sysHostBytes[headSkip + off + 5] << 16 |
+                                                      (uint32_t)sysHostBytes[headSkip + off + 6] << 8  |
+                                                      (uint32_t)sysHostBytes[headSkip + off + 7] << 0;
+                                    int32_t be_off   = (int32_t)((uint32_t)sysHostBytes[headSkip + off + 8] << 24 |
+                                                                  (uint32_t)sysHostBytes[headSkip + off + 9] << 16 |
+                                                                  (uint32_t)sysHostBytes[headSkip + off +10] << 8  |
+                                                                  (uint32_t)sysHostBytes[headSkip + off +11] << 0);
+                                    uint32_t be_size = (uint32_t)sysHostBytes[headSkip + off +12] << 24 |
+                                                      (uint32_t)sysHostBytes[headSkip + off +13] << 16 |
+                                                      (uint32_t)sysHostBytes[headSkip + off +14] << 8  |
+                                                      (uint32_t)sysHostBytes[headSkip + off +15] << 0;
+                                    uint32_t target = (uint32_t)((int32_t)be_ea + be_off);
+                                    if ((target & 0xFFFF0000u) == 0x00140000u && be_size > 0 && be_size <= 0x8000u) {
+                                        KernelTraceHostOpF("HOST.MW05.Scan.desc ea=%08X off=%d -> %08X size=%u", be_ea, be_off, target, be_size);
+                                        PM4_ScanLinear(target, be_size);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+
+                    }
+                    KernelTraceHostOpF("HOST.PM4.SysBufDrawCount=%llu", (unsigned long long)microDraws);
+                    // Optional: dump a small window around the first marker for format discovery
+                    static const bool s_dump_micro = [](){
+                        if (const char* v = std::getenv("MW05_PM4_DUMP_MICRO")) return !(v[0]=='0' && v[1]=='\0');
+                        return false;
+                    }();
+                    if (s_dump_micro && microDraws > 0 && firstOff != 0xFFFFFFFFu) {
+                        auto read_be = [&](uint32_t absOff)->uint32_t{
+                            if (absOff + 4 > total) return 0u;
+                            return ((uint32_t)sysHostBytes[absOff + 0] << 24) |
+                                   ((uint32_t)sysHostBytes[absOff + 1] << 16) |
+                                   ((uint32_t)sysHostBytes[absOff + 2] << 8)  |
+                                   ((uint32_t)sysHostBytes[absOff + 3] << 0);
+                        };
+                        const uint32_t center = headSkip + firstOff;
+                        const uint32_t win    = 16u; // 4 dwords on each side
+                        uint32_t vals[8];
+                        // 4 dwords before and 4 after (center is between them for symmetry in the log)
+                        vals[0] = (center >= 16u) ? read_be(center - 16u) : 0u;
+                        vals[1] = (center >= 12u) ? read_be(center - 12u) : 0u;
+                        vals[2] = (center >= 8u)  ? read_be(center - 8u)  : 0u;
+                        vals[3] = (center >= 4u)  ? read_be(center - 4u)  : 0u;
+                        vals[4] = read_be(center + 0u);
+                        vals[5] = read_be(center + 4u);
+                        vals[6] = read_be(center + 8u);
+                        vals[7] = read_be(center + 12u);
+                        KernelTraceHostOpF("HOST.PM4.MicroDump ea=%08X off=%04X be=[%08X %08X %08X %08X | %08X %08X %08X %08X]",
+                            sysEA + (center >= 16u ? center - 16u : headSkip), firstOff,
+                            vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]);
+                    }
+                }
+            }
+        }
+
+    }
+
     RenderCommand cmd;
     cmd.type = RenderCommandType::ExecutePendingStretchRectCommands;
     g_renderQueue.enqueue(cmd);
 
     DrawImGui();
+
 
     cmd.type = RenderCommandType::ExecuteCommandList;
     g_renderQueue.enqueue(cmd);
@@ -3208,6 +3494,7 @@ void Video::Present()
 
     cmd.type = RenderCommandType::BeginCommandList;
     g_renderQueue.enqueue(cmd);
+
 
     if (Config::FPS >= FPS_MIN && Config::FPS < FPS_MAX)
     {
@@ -3372,7 +3659,15 @@ static void ProcBeginCommandList(const RenderCommand& cmd)
         SetFramebuffer(g_backBuffer, nullptr, true);
 
         auto& commandList = g_commandLists[g_frame];
-        commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+        // Optional bring-up clear color; MW05_BRINGUP_NONBLACK_CLEAR=1 (default: black)
+        {
+            const char* nb = std::getenv("MW05_BRINGUP_NONBLACK_CLEAR");
+            const bool useNonBlack = (nb && !(nb[0]=='0' && nb[1]=='\0'));
+            if (useNonBlack)
+                commandList->clearColor(0, RenderColor(0.06f, 0.10f, 0.14f, 1.0f));
+            else
+                commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
+        }
     }
 }
 
@@ -7980,12 +8275,36 @@ PPC_FUNC(sub_82E3B1C0)
         g_userHeap.Free(newIndices);
 }
 
+
+// Pass-through wrapper for MW05 CreateDevice to execute original guest body
+struct PPCContext; extern "C" void __imp__sub_82598230(PPCContext&, uint8_t*);
+static void MW05_CreateDevicePass(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOp("HOST.sub_82598230.pass_through");
+    __imp__sub_82598230(ctx, base);
+}
+extern "C" void __imp__sub_82598A20(PPCContext&, uint8_t*);
+
+
+// Augment: log args when entering present wrapper to verify r3/r4
+static void MW05_PresentPass_Logged(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOpF("HOST.sub_82598A20.enter r3=%08X r4=%08X r5=%08X", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    __imp__sub_82598A20(ctx, base);
+}
+
 // Pass-through wrapper for MW05 present wrapper to allow original guest body to run
 struct PPCContext; // fwd decl
 extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
 static void MW05_PresentPass(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.sub_82598A20.pass_through");
     __imp__sub_82598A20(ctx, base);
+}
+
+
+// Log entry of the graphics notification callback used by VD (from Xenia log: cb=0x825979A8)
+extern "C" void __imp__sub_825979A8(PPCContext&, uint8_t*);
+static void MW05_GfxNotify_Logged(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOpF("HOST.sub_825979A8.enter r3=%08X r4=%08X r5=%08X", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    __imp__sub_825979A8(ctx, base);
 }
 
 #if MW05_ENABLE_UNLEASHED
@@ -8077,23 +8396,67 @@ static void MW05_Probe_sub_8250FC70(PPCContext& ctx, uint8_t* base) {
     sub_8250FC70(ctx, base);
 }
 
+// Trace shims for scheduler gating analysis
+struct PPCContext; void MW05Shim_sub_82596978(PPCContext&, uint8_t*);
+struct PPCContext; void MW05Shim_sub_825A97B8(PPCContext&, uint8_t*);
+struct PPCContext; void MW05Shim_sub_825979A8(PPCContext&, uint8_t*);
+
+struct PPCContext; void MW05Shim_sub_82598A20(PPCContext&, uint8_t*);
+
+struct PPCContext; void MW05Shim_sub_82441CF0(PPCContext&, uint8_t*);
+
+
+// Route graphics ISR through entry shim that can normalize r3
+GUEST_FUNCTION_HOOK(sub_825979A8, MW05Shim_sub_825979A8);
+
+
 
 
 
 
 // MW05 hooks (identified from MW05 recompiled mapping / IDA HTML)
 // - Present path pass-through: let original guest body run so it can call VdSwap and pre-swap helpers
-GUEST_FUNCTION_HOOK(sub_82598A20, MW05_PresentPass);
+GUEST_FUNCTION_HOOK(sub_82598A20, MW05Shim_sub_82598A20);
+GUEST_FUNCTION_HOOK(sub_82596978, MW05Shim_sub_82596978);
+GUEST_FUNCTION_HOOK(sub_825A97B8, MW05Shim_sub_825A97B8);
+
+// Hook a hot caller observed from TitleState, to opportunistically try PM4 builds
+GUEST_FUNCTION_HOOK(sub_82441CF0, MW05Shim_sub_82441CF0);
+
 // Register probes for addresses that exist in this build's override table
 // Register probes for addresses that exist in this build's override table
 GUEST_FUNCTION_HOOK(sub_8258B558, MW05_Probe_sub_8258B558);
 GUEST_FUNCTION_HOOK(sub_8250FC70, MW05_Probe_sub_8250FC70);
 
-// - Initial video bring-up: initialize engines + set graphics interrupt callback
+// - Initial video bring-up: allow original guest CreateDevice body to run (sets title state)
 //   Note: MW05 CreateDevice entrypoint for this XEX build is sub_82598230 (not 825A85E0 from earlier heuristics)
-GUEST_FUNCTION_HOOK(sub_82598230, CreateDevice);
+GUEST_FUNCTION_HOOK(sub_82598230, MW05_CreateDevicePass);
 // - Apply/set display mode and update cached display info
 GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
+
+    // MW05: Wire core render-state and draw hooks to backend implementations
+    // These addresses come from tools/hooks_mw05.csv and are safe pass-throughs to
+    // our engine; they will log via KernelTraceHostOp/GpuTraceHostCall only.
+    GUEST_FUNCTION_HOOK(sub_82BDD9F0, SetRenderTarget);
+    GUEST_FUNCTION_HOOK(sub_82BDDD38, SetDepthStencilSurface);
+    GUEST_FUNCTION_HOOK(sub_82BFE4C8, Clear);
+    GUEST_FUNCTION_HOOK(sub_82BDD8C0, SetViewport);
+    GUEST_FUNCTION_HOOK(sub_82BE9818, SetTexture);
+    GUEST_FUNCTION_HOOK(sub_82BDCFB0, SetScissorRect);
+    GUEST_FUNCTION_HOOK(sub_82BE5900, DrawPrimitive);
+    GUEST_FUNCTION_HOOK(sub_82BE5CF0, DrawIndexedPrimitive);
+    GUEST_FUNCTION_HOOK(sub_82BE52F8, DrawPrimitiveUP);
+    GUEST_FUNCTION_HOOK(sub_82BE0428, CreateVertexDeclaration);
+    GUEST_FUNCTION_HOOK(sub_82BE02E0, SetVertexDeclaration);
+    GUEST_FUNCTION_HOOK(sub_82BE1A80, CreateVertexShader);
+    GUEST_FUNCTION_HOOK(sub_82BE0110, SetVertexShader);
+    GUEST_FUNCTION_HOOK(sub_82BDD0F8, SetStreamSource);
+    GUEST_FUNCTION_HOOK(sub_82BDD218, SetIndices);
+    GUEST_FUNCTION_HOOK(sub_82BE1990, CreatePixelShader);
+    GUEST_FUNCTION_HOOK(sub_82BDFE58, SetPixelShader);
+    GUEST_FUNCTION_HOOK(sub_82C003B8, D3DXFillTexture);
+    GUEST_FUNCTION_HOOK(sub_82C00910, D3DXFillVolumeTexture);
+
 
 // Ensure MW05 probe/video hooks are registered even if not present in PPCFuncMappings
 static void RegisterMw05VideoManualHooks() {
@@ -8101,12 +8464,32 @@ static void RegisterMw05VideoManualHooks() {
                        0x82598230, 0x82598A20, 0x825A8460);
     // Probes used for discovery; these addresses might not be emitted by this XEX's recompiler table
     g_memory.InsertFunction(0x825E4300, sub_825E4300);
+    g_memory.InsertFunction(0x825979A8, sub_825979A8); // VD graphics notify callback (log and forward)
+
     g_memory.InsertFunction(0x8258B558, sub_8258B558);
     g_memory.InsertFunction(0x8250FC70, sub_8250FC70);
+    // Additional candidate probes near present/renderer
+    g_memory.InsertFunction(0x82598068, sub_82598068);
+    g_memory.InsertFunction(0x825981A0, sub_825981A0);
+    g_memory.InsertFunction(0x825981E8, sub_825981E8);
+
     // Key video entry points (idempotent; will override to our hook implementations)
     g_memory.InsertFunction(0x82598230, sub_82598230); // CreateDevice
     g_memory.InsertFunction(0x82598A20, sub_82598A20); // Present pass-through
     g_memory.InsertFunction(0x825A8460, sub_825A8460); // SetResolution (ensure)
+    // Research: make sure pre-present and PM4 builder helpers are hooked
+    g_memory.InsertFunction(0x82595FC8, sub_82595FC8);
+    g_memory.InsertFunction(0x825972B0, sub_825972B0);
+    g_memory.InsertFunction(0x82596E40, sub_82596E40);
+    g_memory.InsertFunction(0x82597650, sub_82597650);
+    g_memory.InsertFunction(0x825976D8, sub_825976D8);
+    g_memory.InsertFunction(0x825A54F0, sub_825A54F0);
+    g_memory.InsertFunction(0x825A6DF0, sub_825A6DF0);
+    g_memory.InsertFunction(0x825A65A8, sub_825A65A8);
+    g_memory.InsertFunction(0x8262F248, sub_8262F248);
+    g_memory.InsertFunction(0x8262F2A0, sub_8262F2A0);
+    g_memory.InsertFunction(0x8262F330, sub_8262F330);
+
 }
 #if defined(_MSC_VER)
 #  pragma section(".CRT$XCU",read)
@@ -8120,6 +8503,9 @@ static void RegisterMw05VideoManualHooks() {
 #else
     __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
 #endif
+    void MW05Shim_sub_82597650(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825976D8(PPCContext&, uint8_t*);
+
 
 // Forward decls for MW05 research shim handlers
 struct PPCContext;
@@ -8128,6 +8514,9 @@ void MW05Shim_sub_825972B0(PPCContext&, uint8_t*);
 void MW05Shim_sub_825A54F0(PPCContext&, uint8_t*);
 void MW05Shim_sub_825A6DF0(PPCContext&, uint8_t*);
 void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
+    void MW05Shim_sub_82596E40(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825968B0(PPCContext&, uint8_t*);
+
 
     void MW05Shim_sub_825986F8(PPCContext&, uint8_t*);
     void MW05Shim_sub_825987E0(PPCContext&, uint8_t*);
@@ -8151,6 +8540,9 @@ void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
     void MW05Shim_sub_823BC638(PPCContext&, uint8_t*);
     void MW05Shim_sub_82812E20(PPCContext&, uint8_t*);
 
+    GUEST_FUNCTION_HOOK(sub_82597650, MW05Shim_sub_82597650);
+    GUEST_FUNCTION_HOOK(sub_825976D8, MW05Shim_sub_825976D8);
+
 // Note: MW05 draw diagnostic shims are defined in gpu/mw05_draw_diagnostic.cpp
 // and their declarations are already in ppc_recomp_shared.h
 
@@ -8158,6 +8550,9 @@ void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
 // Research: trace MW05 pre-swap helpers (defined in gpu/mw05_trace_shims.cpp)
 GUEST_FUNCTION_HOOK(sub_82595FC8, MW05Shim_sub_82595FC8);
 GUEST_FUNCTION_HOOK(sub_825972B0, MW05Shim_sub_825972B0);
+    GUEST_FUNCTION_HOOK(sub_82596E40, MW05Shim_sub_82596E40);
+    GUEST_FUNCTION_HOOK(sub_825968B0, MW05Shim_sub_825968B0);
+
 GUEST_FUNCTION_HOOK(sub_825A54F0, MW05Shim_sub_825A54F0);
 GUEST_FUNCTION_HOOK(sub_825A6DF0, MW05Shim_sub_825A6DF0);
 GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);

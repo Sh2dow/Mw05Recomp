@@ -129,6 +129,7 @@ set(MW05_RECOMP_GPU_CXX_SOURCES
     "gpu/imgui/imgui_snapshot.cpp"
     "gpu/mw05_trace_shims.cpp"
     "gpu/mw05_draw_diagnostic.cpp"
+    "gpu/mw05_micro_interpreter.cpp"
     "gpu/pm4_parser.cpp"
 )
 

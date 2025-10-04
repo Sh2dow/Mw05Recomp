@@ -28,6 +28,11 @@ extern "C" {
     void __imp__sub_8215FEF0(PPCContext& ctx, uint8_t* base);
 }
 
+
+
+// Seed helper from GPU trace to capture candidate scheduler/context pointer safely (no logging)
+extern "C" void Mw05Trace_SeedSchedR3_NoLog(uint32_t r3);
+
 // simple feature gate (mirrors mw05_boot_shims style)
 static inline bool Mw05ListShimsEnabled() {
     if (const char* v = std::getenv("MW05_LIST_SHIMS"))
@@ -121,6 +126,9 @@ void sub_8215FEF0(PPCContext& ctx, uint8_t* base)
 void sub_820E25C0(PPCContext& ctx, uint8_t* base)
 {
     KernelTraceHostOp("HOST.sub_820E25C0");
+
+    // Opportunistically seed scheduler/context pointer candidate (no logging to avoid early crashes)
+    Mw05Trace_SeedSchedR3_NoLog(ctx.r3.u32);
 
     if (!Mw05ListShimsEnabled()) {
         __imp__sub_820E25C0(ctx, base);

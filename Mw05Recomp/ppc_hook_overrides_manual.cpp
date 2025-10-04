@@ -1,10 +1,18 @@
-// Manual hook overrides to guard problematic guest functions that AV before render init.
+// Manual hook overrides to guard problematic guest functions and install research shims.
 // Keep minimal; prefer targeted guards that return gracefully.
 
 #include <kernel/memory.h>
 #include <kernel/trace.h>
 #include <cpu/ppc_context.h>
 #include <ppc/ppc_recomp_shared.h>
+
+// Decls for GPU/scheduler trace shims (defined in gpu/mw05_trace_shims.cpp)
+extern void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_825972B0(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_8262F248(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_8262F2A0(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_8262F330(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_82812E20(PPCContext&, uint8_t*);
 
 // Guard for guest function at 0x82625D60 which repeatedly AVs while booting.
 // Behavior is unknown; until we understand it, stub it to a no-op that returns 0.
@@ -16,7 +24,21 @@ static void sub_82625D60_guard(PPCContext& ctx, uint8_t* /*base*/) {
 }
 
 static void RegisterHookOverridesManual() {
+    // Safety guard
     g_memory.InsertFunction(0x82625D60, sub_82625D60_guard);
+
+    // Research: scheduler/PM4-related shims to capture r3 (context) early and often
+    // These addresses are derived from the recompiled guest symbol names.
+    g_memory.InsertFunction(0x82595FC8, MW05Shim_sub_82595FC8);
+    g_memory.InsertFunction(0x825972B0, MW05Shim_sub_825972B0);
+    g_memory.InsertFunction(0x8262F248, MW05Shim_sub_8262F248);
+    g_memory.InsertFunction(0x8262F2A0, MW05Shim_sub_8262F2A0);
+    g_memory.InsertFunction(0x8262F330, MW05Shim_sub_8262F330);
+    g_memory.InsertFunction(0x82812E20, MW05Shim_sub_82812E20);
+
+    // Install a host allocator callback at a stable guest EA for MW05 to call if its fp is null
+    extern void MW05HostAllocCb(PPCContext& ctx, uint8_t* base);
+    g_memory.InsertFunction(0x82FF1000, MW05HostAllocCb);
 }
 
 #if defined(_MSC_VER)

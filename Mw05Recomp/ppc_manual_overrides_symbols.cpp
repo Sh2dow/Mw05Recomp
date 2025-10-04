@@ -7,9 +7,12 @@
 #include <ppc/ppc_recomp_shared.h>
 
 // Forward to original recompiled bodies when overrides are disabled
-extern "C" void __imp__sub_82625D60(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_8261E320(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_82855308(PPCContext& ctx, uint8_t* base);
+extern "C" 
+{
+    void __imp__sub_82625D60(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_8261E320(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_82855308(PPCContext& ctx, uint8_t* base);
+}
 
 static inline bool OverridesDisabled() {
     if (const char* v = std::getenv("MW05_DISABLE_OVERRIDES")) {

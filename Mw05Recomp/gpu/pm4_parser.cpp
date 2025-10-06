@@ -101,6 +101,8 @@ extern "C" {
     void Mw05HostApplyColorSurface(uint32_t rbSurfaceInfo, uint32_t rbColorInfo);
     void Mw05HostApplyDepthSurface(uint32_t rbSurfaceInfo, uint32_t rbDepthInfo);
 }
+extern "C" void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount);
+
 
 static uint32_t s_rb_surface_info = 0;
 static uint32_t s_rb_color_info = 0;
@@ -124,6 +126,10 @@ static inline bool IsApplyHostStateEnabled() {
 
 static inline bool IsPm4RegChangeLogEnabled() {
     if (const char* v = std::getenv("MW05_PM4_LOG_NONZERO")) return !(v[0]=='0' && v[1]=='\0');
+    return false;
+}
+static inline bool IsEmitDrawsEnabled() {
+    if (const char* v = std::getenv("MW05_PM4_EMIT_DRAWS")) return !(v[0]=='0' && v[1]=='\0');
     return false;
 }
 
@@ -318,11 +324,20 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
     uint32_t count  = (header >> 16) & 0x3FFFu;
 
     g_pm4PacketCount.fetch_add(1, std::memory_order_relaxed);
+    static bool s_logged_first_type3 = false;
+
     if (type < 4) g_typeCounts[type].fetch_add(1, std::memory_order_relaxed);
 
     if (type == PM4_TYPE3) {
         uint32_t opcode = (header >> 8) & 0x7F;
         uint32_t count = (header >> 16) & 0x3FFF;
+        if (!s_logged_first_type3) {
+            s_logged_first_type3 = true;
+            if (IsPM4TracingEnabled()) {
+                KernelTraceHostOpF("HOST.PM4.FirstType3 addr=%08X opc=%02X count=%u", addr, opcode, count);
+            }
+        }
+
         uint32_t size = (count + 2) * 4;  // +1 for header, +1 for count encoding
         if (opcode < 128) {
             g_opcodeCounts[opcode].fetch_add(1, std::memory_order_relaxed);
@@ -346,22 +361,68 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
             return size;
         }
 
-        // Log draw commands
+        // Log draw commands (and optionally emit guarded host draws)
         if (opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2) {
             g_pm4DrawCount.fetch_add(1, std::memory_order_relaxed);
 
+            // Read draw parameters (already byteswapped to host LE)
+            uint32_t* params = ptr + 1;
+            uint32_t p0 = (count >= 0 && params[0]) ? __builtin_bswap32(params[0]) : 0;
+            uint32_t p1 = (count >= 1 && params[1]) ? __builtin_bswap32(params[1]) : 0;
+            uint32_t p2 = (count >= 2 && params[2]) ? __builtin_bswap32(params[2]) : 0;
+
             if (IsPM4TracingEnabled()) {
-                // Read draw parameters
-                uint32_t* params = ptr + 1;
-                uint32_t p0 = params[0] ? __builtin_bswap32(params[0]) : 0;
-
-                uint32_t p1 = (count >= 1 && params[1]) ? __builtin_bswap32(params[1]) : 0;
-                uint32_t p2 = (count >= 2 && params[2]) ? __builtin_bswap32(params[2]) : 0;
-
                 KernelTraceHostOpF("HOST.PM4.DRAW_%s addr=%08X count=%u p0=%08X p1=%08X p2=%08X total_draws=%llu",
                                   (opcode == PM4_DRAW_INDX) ? "INDX" : "INDX_2",
                                   addr, count, p0, p1, p2,
                                   (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed));
+            }
+
+            // Guarded attempt to translate PM4 draw -> host DrawIndexed.
+            // Only emit when parameters look defensible; otherwise just log.
+            if (IsEmitDrawsEnabled()) {
+                auto indices_per_prim = [](uint32_t prim) -> uint32_t {
+                    switch (prim) {
+                        case 1: /*POINTLIST*/ return 1;
+                        case 2: /*LINELIST*/ return 2;
+                        case 3: /*LINESTRIP*/ return 2; // uses n+1 verts, but indices per prim ~2
+                        case 4: /*TRIANGLELIST*/ return 3;
+                        case 5: /*TRIANGLEFAN*/ return 3;
+                        case 6: /*TRIANGLESTRIP*/ return 3; // uses n+2 verts, but indices per prim ~3
+                        default: return 0;
+                    }
+                };
+
+                // Heuristics (subject to refinement):
+                // - Primitive type is commonly encoded in low 6 bits of the initiator (p0).
+                // - Index count often appears in p1 or p2; prefer p2 when present.
+                uint32_t prim_cand0 = (p0 & 0x3Fu);
+                uint32_t prim_cand1 = (p1 & 0x3Fu);
+                uint32_t prim = 0;
+                if (indices_per_prim(prim_cand0)) prim = prim_cand0;
+                else if (indices_per_prim(prim_cand1)) prim = prim_cand1;
+
+                uint32_t idx_count0 = (p1 & 0xFFFFu);
+                uint32_t idx_count1 = (p2 & 0xFFFFu);
+                uint32_t index_count = idx_count1 ? idx_count1 : idx_count0;
+
+                uint32_t ipp = indices_per_prim(prim);
+                uint32_t prim_count = (ipp > 0 && index_count >= ipp) ? (index_count / ipp) : 0;
+                bool divisible = (ipp > 0) && (prim_count * ipp == index_count);
+
+                if (prim && prim_count > 0 && divisible) {
+                    if (IsPM4TracingEnabled()) {
+                        KernelTraceHostOpF("HOST.PM4.DRAW.emit prim=%u index_count=%u prim_count=%u baseVtx=%d startIdx=%u (opc=%s)",
+                            prim, index_count, prim_count, 0, 0, (opcode == PM4_DRAW_INDX) ? "22" : "36");
+                    }
+                    // Conservative: assume startIndex=0, baseVertexIndex=0 until better mapping is confirmed.
+                    Mw05HostDrawIndexed(prim, /*baseVertexIndex*/ 0, /*startIndex*/ 0, prim_count);
+                } else {
+                    if (IsPM4TracingEnabled()) {
+                        KernelTraceHostOpF("HOST.PM4.DRAW.guarded.skip prim_cand0=%u prim_cand1=%u idx_cand0=%u idx_cand1=%u",
+                            prim_cand0, prim_cand1, idx_count0, idx_count1);
+                    }
+                }
             }
         }
         // Heuristic: MW05 micro-IB wrapper observed as TYPE3 opc=0x04 followed by pattern
@@ -1147,6 +1208,33 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
                                             if (s_ring_scan_magic_depth == 0) {
                                                 ++s_ring_scan_magic_depth;
                                                 PM4_ScanLinear(start, size);
+                                // Optional much wider scan when enabled (covers 0x00100000..0x00200000 once)
+                                static const bool s_scan_wider = [](){ if (const char* v = std::getenv("MW05_PM4_SCAN_WIDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+                                if (s_scan_wider) {
+                                    KernelTraceHostOpF("HOST.PM4.MW05.ScanWider.begin 00100000..00200000");
+                                    uint32_t w2_lo = 0x00100000u;
+                                    uint32_t w2_hi = 0x00200000u;
+                                    uint32_t steps2 = 0;
+                                    for (uint32_t ea2 = w2_lo; ea2 + 4 <= w2_hi && steps2 < 262144; ea2 += 4, ++steps2) {
+                                        uint32_t* hp2 = (uint32_t*)g_memory.Translate(ea2);
+                                        if (!hp2) continue;
+                                        uint32_t le2 =
+                                        #if defined(_MSC_VER)
+                                            _byteswap_ulong(*hp2);
+                                        #else
+                                            __builtin_bswap32(*hp2);
+                                        #endif
+                                        if (le2 == 0x3530574Du) {
+                                            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.scan.hit ea=%08X (wider)", ea2);
+                                            uint32_t s = (ea2 >= 0x200u) ? (ea2 - 0x200u) : ea2;
+                                            uint32_t e = ea2 + 0x400u; if (e > w2_hi) e = w2_hi;
+                                            if (e > s) PM4_ScanLinear(s, e - s);
+                                            Mw05InterpretMicroIB(ea2, 0x100u);
+                                            break;
+                                        }
+                                    }
+                                }
+
                                                 --s_ring_scan_magic_depth;
                                             }
                                         }

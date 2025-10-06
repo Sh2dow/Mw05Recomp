@@ -653,6 +653,15 @@ static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
 static std::atomic<uint32_t> g_SysCmdBufValue{0};
 
 static constexpr uint32_t kHostDefaultVdIsrMagic = 0xDEFAD15A; // magic tag for host default ISR
+
+// Accessor functions for GPU writeback pointers (used by mw05_trace_shims.cpp)
+extern "C" uint32_t GetRbWriteBackPtr() {
+    return g_RbWriteBackPtr.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr() {
+    return g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_relaxed);
+}
 static std::mutex g_VdNotifMutex;
 static std::vector<std::pair<uint32_t,uint32_t>> g_VdNotifList;
 

@@ -238,6 +238,15 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
         KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=B eff_pre=%08X base=%08X off_dw=%d off_b=%d sz_hint=%u ib=%08X", eff, base_ea, rel_dw, rel_bytes, sz, ib_addr);
     }
 
+    // Proactively scan the effective micro-IB region to surface any nested standard PM4 draws
+    if (eff && sz) {
+        uint32_t clamp_sz = sz;
+        if (clamp_sz == 0 || clamp_sz > 0x8000u) clamp_sz = 0x8000u; // cap scan
+        KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.scan.eff eff=%08X sz=%u", eff, clamp_sz);
+        PM4_ScanLinear(eff, clamp_sz);
+    }
+
+
     // Log calculation, then follow the effective target if it translates; otherwise fall back
     KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.calc eff=%08X follow=%08X off=%d sz_hint=%u ib=%08X", eff, follow_ea, rel_bytes, sz, ib_addr);
     if (void* eff_ptr = g_memory.Translate(eff)) {

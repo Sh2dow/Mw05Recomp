@@ -16,6 +16,7 @@
 
 ## Table of Contents
 
+> 📈 **[View Progress Report](./PROGRESS_REPORT.md)** — Latest updates on GPU Writeback and MW05 Rendering
 - [Minimum System Requirements](#minimum-system-requirements)
 - [How to Install](#how-to-install)
 - [Features](#features)

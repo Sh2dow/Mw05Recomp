@@ -3201,6 +3201,25 @@ void Video::Present()
     KernelTraceHostOp("HOST.VideoPresent.enter2");
     // Ensure early VD/ring bring-up if requested (safe no-op otherwise)
     Mw05ForceVdInitOnce();
+    // Optional: force-call PM4 builder shim once early to validate path
+    {
+        static bool s_forced_once = false;
+        static const bool s_force_builder = [](){ if (const char* v = std::getenv("MW05_FORCE_PM4_BUILDER_ONCE")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+        if (!s_forced_once && s_force_builder) {
+            s_forced_once = true;
+            uint32_t seed = Mw05Trace_LastSchedR3();
+            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < PPC_MEMORY_SIZE; };
+            if (!looks_ptr(seed)) seed = 0x00060E30u;
+            PPCContext ctx{};
+            if (auto* cur = GetPPCContext()) ctx = *cur;
+            ctx.r3.u32 = seed;
+            if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
+            uint8_t* base = g_memory.base;
+            KernelTraceHostOpF("HOST.VideoPresent.pm4_force_once r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
+            MW05Shim_sub_825972B0(ctx, base);
+        }
+    }
+
     KernelTraceHostOpF("HOST.VideoPresent.pm4_kick.guard draws=%llu", (unsigned long long)PM4_GetDrawCount());
 
     // If no draws yet, try to kick MW05's PM4 builder a few times (guarded and logged)
@@ -3309,6 +3328,12 @@ void Video::Present()
                 }
             }
         }
+        // Also force a ring scan even before renderer init to surface early PM4
+        PM4_DebugScanAll_Force();
+        PM4_DumpOpcodeHistogram();
+        KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu (early)",
+            (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+
     }
 
         g_presentProfiler.Set(std::chrono::duration<double, std::milli>(now - s_last).count());
@@ -8621,18 +8646,57 @@ static void RegisterMw05VideoManualHooks() {
     g_memory.InsertFunction(0x82598230, sub_82598230); // CreateDevice
     g_memory.InsertFunction(0x82598A20, sub_82598A20); // Present pass-through
     g_memory.InsertFunction(0x825A8460, sub_825A8460); // SetResolution (ensure)
-    // Research: make sure pre-present and PM4 builder helpers are hooked
-    g_memory.InsertFunction(0x82595FC8, sub_82595FC8);
-    g_memory.InsertFunction(0x825972B0, sub_825972B0);
-    g_memory.InsertFunction(0x82596E40, sub_82596E40);
+
+    // CRITICAL: PM4 builder shims must be manually registered to seed scheduler state
+    // These addresses route to MW05Shim_* wrappers that install allocator and seed syscmd pointers
+    g_memory.InsertFunction(0x82595FC8, sub_82595FC8); // Pre-present helper (seeds scheduler)
+    g_memory.InsertFunction(0x825972B0, sub_825972B0); // PM4 builder (CRITICAL: seeds allocator/syscmd)
+    g_memory.InsertFunction(0x82596E40, sub_82596E40); // Builder variant
+    g_memory.InsertFunction(0x825968B0, sub_825968B0); // Builder variant
+
+    // Additional PM4 builder and present-path helpers
     g_memory.InsertFunction(0x82597650, sub_82597650);
     g_memory.InsertFunction(0x825976D8, sub_825976D8);
     g_memory.InsertFunction(0x825A54F0, sub_825A54F0);
     g_memory.InsertFunction(0x825A6DF0, sub_825A6DF0);
     g_memory.InsertFunction(0x825A65A8, sub_825A65A8);
+
+    // Dynamic discovery traces (log + forward)
+    g_memory.InsertFunction(0x825986F8, sub_825986F8);
+    g_memory.InsertFunction(0x825987E0, sub_825987E0);
+    g_memory.InsertFunction(0x825988B0, sub_825988B0);
+    g_memory.InsertFunction(0x82599010, sub_82599010);
+    g_memory.InsertFunction(0x82599208, sub_82599208);
+    g_memory.InsertFunction(0x82599338, sub_82599338);
+    g_memory.InsertFunction(0x825A7A40, sub_825A7A40);
+    g_memory.InsertFunction(0x825A7DE8, sub_825A7DE8);
+
+    // Additional probes
     g_memory.InsertFunction(0x8262F248, sub_8262F248);
     g_memory.InsertFunction(0x8262F2A0, sub_8262F2A0);
     g_memory.InsertFunction(0x8262F330, sub_8262F330);
+
+    // MW05 render/draw hooks: manually register addresses so GUEST_FUNCTION_HOOK macros take effect
+    // These addresses come from tools/hooks_mw05.csv and route to backend implementations
+    g_memory.InsertFunction(0x82BDD9F0, sub_82BDD9F0); // SetRenderTarget
+    g_memory.InsertFunction(0x82BDDD38, sub_82BDDD38); // SetDepthStencilSurface
+    g_memory.InsertFunction(0x82BFE4C8, sub_82BFE4C8); // Clear
+    g_memory.InsertFunction(0x82BDD8C0, sub_82BDD8C0); // SetViewport
+    g_memory.InsertFunction(0x82BE9818, sub_82BE9818); // SetTexture
+    g_memory.InsertFunction(0x82BDCFB0, sub_82BDCFB0); // SetScissorRect
+    g_memory.InsertFunction(0x82BE5900, sub_82BE5900); // DrawPrimitive
+    g_memory.InsertFunction(0x82BE5CF0, sub_82BE5CF0); // DrawIndexedPrimitive
+    g_memory.InsertFunction(0x82BE52F8, sub_82BE52F8); // DrawPrimitiveUP
+    g_memory.InsertFunction(0x82BE0428, sub_82BE0428); // CreateVertexDeclaration
+    g_memory.InsertFunction(0x82BE02E0, sub_82BE02E0); // SetVertexDeclaration
+    g_memory.InsertFunction(0x82BE1A80, sub_82BE1A80); // CreateVertexShader
+    g_memory.InsertFunction(0x82BE0110, sub_82BE0110); // SetVertexShader
+    g_memory.InsertFunction(0x82BDD0F8, sub_82BDD0F8); // SetStreamSource
+    g_memory.InsertFunction(0x82BDD218, sub_82BDD218); // SetIndices
+    g_memory.InsertFunction(0x82BE1990, sub_82BE1990); // CreatePixelShader
+    g_memory.InsertFunction(0x82BDFE58, sub_82BDFE58); // SetPixelShader
+    g_memory.InsertFunction(0x82C003B8, sub_82C003B8); // D3DXFillTexture
+    g_memory.InsertFunction(0x82C00910, sub_82C00910); // D3DXFillVolumeTexture
 
 }
 #if defined(_MSC_VER)

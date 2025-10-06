@@ -68,6 +68,28 @@ static void MwApplyDebugProfile() {
     MwSetEnvDefault("MW05_ALLOW_FLAG_CLEAR_AFTER_MS",    "300000");
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MS",               "2000");
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MAX",              "12");
+    // Additional debug defaults to surface MW05 PM4/micro-IB behavior and guarded draws
+    MwSetEnvDefault("MW05_PM4_APPLY_STATE",              "1");
+    MwSetEnvDefault("MW05_PM4_EMIT_DRAWS",               "1");
+    MwSetEnvDefault("MW05_PM4_SCAN_AFTER_BUILDER",       "1");
+    MwSetEnvDefault("MW05_FORCE_MICROIB",                 "1");
+    MwSetEnvDefault("MW05_PM4_SYSBUF_WATCH",             "1");
+    MwSetEnvDefault("MW05_PM4_SYSBUF_TO_RING",           "1");
+    MwSetEnvDefault("MW05_FORCE_ACK_WAIT",               "1");
+
+    // Try kicking the PM4 builder around main loop/present hot spots
+    MwSetEnvDefault("MW05_LOOP_TRY_PM4_PRE",             "1");
+    MwSetEnvDefault("MW05_LOOP_TRY_PM4",                 "1");
+    MwSetEnvDefault("MW05_INNER_TRY_PM4",                "1");
+    MwSetEnvDefault("MW05_PRES_TRY_PM4",                 "1");
+    // Keep deep paths optional (can be enabled manually if needed)
+    MwSetEnvDefault("MW05_LOOP_TRY_PM4_DEEP",            "0");
+    MwSetEnvDefault("MW05_INNER_TRY_PM4_DEEP",           "0");
+    MwSetEnvDefault("MW05_PRES_TRY_PM4_DEEP",            "0");
+
+    // Scanning aggressiveness
+    MwSetEnvDefault("MW05_PM4_EAGER_SCAN",               "1");
+
 }
 
 PPC_EXTERN_FUNC(sub_82621640);

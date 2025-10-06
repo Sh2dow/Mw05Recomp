@@ -171,12 +171,24 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
         env.setdefault("MW05_PM4_SCAN_SYSBUF", "1")
         env.setdefault("MW05_PM4_SCAN_ON_FPW_POST", "1")
         env.setdefault("MW05_PM4_APPLY_STATE", "1")  # Mirror real RT/DS/VP/Scissor when detected
+        # Enable guarded draw emission path so DRAW_* packets produce host draws during diagnostics
+        env.setdefault("MW05_PM4_EMIT_DRAWS", "1")
+        # Force-call PM4 builder shim once from Present to validate shim wiring (off by default due to AV risk)
+        env.setdefault("MW05_FORCE_PM4_BUILDER_ONCE", "0")
+
+
         # After inner present manager returns, attempt a PM4 build within same guest context
         env.setdefault("MW05_INNER_TRY_PM4", "1")
 
         # Also attempt PM4 build after present wrapper returns
         env.setdefault("MW05_PRES_TRY_PM4", "1")
         env.setdefault("MW05_PRES_TRY_PM4_DEEP", "0")
+
+        # Deep scanning and dump toggles for diagnostics
+        env.setdefault("MW05_PM4_SCAN_FULL", "1")
+        env.setdefault("MW05_PM4_SCAN_WIDER", "1")
+        env.setdefault("MW05_DUMP_SYSBUF", "1")
+        env.setdefault("MW05_MICRO_TREE", "1")
 
         # Also, try from the hot 0x82441CF0 loop caller we see in logs
         env.setdefault("MW05_LOOP_TRY_PM4_PRE", "1")
@@ -200,6 +212,9 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
         env.setdefault("MW05_HOST_ISR_ACK_EVENT", "1")
         env.setdefault("MW05_HOST_ISR_FORCE_SIGNAL_LAST_WAIT", "1")
         env.setdefault("MW05_HOST_ISR_SIGNAL_VD_EVENT", "1")
+        # Aggressively try MW05 micro-IB path discovery
+        env.setdefault("MW05_FORCE_MICROIB", "1")
+
         env.setdefault("MW05_HOST_ISR_NUDGE_ONCE", "1")
         env.setdefault("MW05_HOST_ISR_NUDGE_AFTER", "180")  # ~3s
         # Watch syscmd writes to prove guest PM4 construction
@@ -231,7 +246,7 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
 
         env.setdefault("MW05_PM4_SCAN_ALL_ON_SWAP", "1")
         env.setdefault("MW05_PM4_SCAN_ON_FPW_POST", "1")
-        env.setdefault("MW05_PM4_SYSBUF_TO_RING", "1")
+        env["MW05_PM4_SYSBUF_TO_RING"] = "1"
         env.setdefault("MW05_FPW_KICK_PM4", "0")
 
         env.setdefault("MW05_PM4_SCAN_SYSBUF", "1")
@@ -243,7 +258,7 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
         env.setdefault("MW05_PM4_TRACE_REG_BUDGET", "4096")
 
         # Optional: bypass WAIT_REG_MEM packets in syscmd->ring bridge to uncover later commands
-        env.setdefault("MW05_PM4_BYPASS_WAITS", "1")
+        env["MW05_PM4_BYPASS_WAITS"] = "1"
 
 
         # Dump syscmd payload after builder returns to catch freshly written PM4 (guarded in shim)
@@ -251,6 +266,8 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
 
         # Scan syscmd payload after builder returns to run PM4 parser on opcode 0x04 wrapper
         env.setdefault("MW05_PM4_SCAN_AFTER_BUILDER", "1")
+        # One-shot attempt to call PM4 builder with SEH guard (safe if it faults)
+        env.setdefault("MW05_TRY_BUILDER_WITH_SEH", "1")
 
         # Deeper instrumentation: dump scheduler ACK blocks and syscmd header on queries
         env.setdefault("MW05_DUMP_SCHED_BLOCK", "1")

@@ -8,6 +8,11 @@ extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
 #include <ppc/ppc_context.h>
 
 #include <kernel/memory.h>
+#include <atomic>
+
+// Forward declarations for GPU writeback access functions
+extern "C" uint32_t GetRbWriteBackPtr();
+extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr();
 #include <cstdlib>
 #include <atomic>
 
@@ -72,6 +77,132 @@ static inline void DumpSchedState(const char* tag, uint32_t baseEA) {
     const uint32_t flags = ReadBE32(baseEA + 0x1C);
     KernelTraceHostOpF("HOST.Sched.%s base=%08X qhead=%08X qtail=%08X flags=%08X",
                        tag, baseEA, qhead, qtail, flags);
+}
+
+// Track all unique scheduler contexts we've seen
+static std::atomic<uint32_t> g_schedulerContexts[8] = {};
+static std::atomic<uint32_t> g_schedulerContextCount{0};
+
+static inline void RegisterSchedulerContext(uint32_t baseEA) {
+    if (!baseEA) return;
+
+    // Check if already registered
+    uint32_t count = g_schedulerContextCount.load(std::memory_order_acquire);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (g_schedulerContexts[i].load(std::memory_order_relaxed) == baseEA) {
+            return; // Already registered
+        }
+    }
+
+    // Add new context (if space available)
+    if (count < 8) {
+        g_schedulerContexts[count].store(baseEA, std::memory_order_relaxed);
+        g_schedulerContextCount.fetch_add(1, std::memory_order_release);
+        if (TitleStateTraceOn()) {
+            KernelTraceHostOpF("HOST.RegisterSchedulerContext base=%08X count=%d", baseEA, count + 1);
+        }
+    }
+}
+
+// Process commands in the MW05 scheduler queue
+static inline void ProcessMW05Queue(uint32_t baseEA) {
+    if (!baseEA) return;
+
+    uint32_t qhead = ReadBE32(baseEA + 0x10);
+    uint32_t qtail = ReadBE32(baseEA + 0x14);
+
+    // If queue is empty, nothing to do
+    if (qtail == 0 || qhead == qtail) return;
+
+    // CRITICAL FIX: If qhead is 0, MW05 hasn't initialized it yet.
+    // The queue actually starts at the syscmd buffer (typically 0x00140400).
+    // We can infer the queue start from qtail by masking to the buffer base.
+    if (qhead == 0 && qtail != 0) {
+        // Assume queue starts at a 1KB-aligned address before qtail
+        // Typical syscmd buffer is at 0x00140400
+        qhead = qtail & 0xFFFF0000;  // Get base (e.g., 0x00140000)
+        if (qhead < qtail) {
+            qhead += 0x400;  // Add typical offset (0x400)
+        }
+
+        if (TitleStateTraceOn()) {
+            KernelTraceHostOpF("HOST.ProcessQueue.infer_qhead base=%08X qtail=%08X inferred_qhead=%08X",
+                               baseEA, qtail, qhead);
+        }
+    }
+
+    // Sanity check: qhead should be less than qtail
+    if (qhead >= qtail) return;
+
+    uint32_t bytes_to_process = qtail - qhead;
+
+    // Trace that we're processing the queue
+    if (TitleStateTraceOn()) {
+        KernelTraceHostOpF("HOST.ProcessQueue base=%08X qhead=%08X qtail=%08X bytes=%d",
+                           baseEA, qhead, qtail, (int32_t)bytes_to_process);
+    }
+
+    // Limit processing to avoid excessive work in one frame
+    if (bytes_to_process > 0x10000) {
+        bytes_to_process = 0x10000;
+        if (TitleStateTraceOn()) {
+            KernelTraceHostOpF("HOST.ProcessQueue.limit bytes to %d", (int32_t)bytes_to_process);
+        }
+    }
+
+    // Scan the PM4 commands in the queue
+    // This will parse and execute the commands
+    PM4_ScanLinear(qhead, bytes_to_process);
+
+    // Advance qhead to mark commands as consumed
+    uint32_t new_qhead = qhead + bytes_to_process;
+    WriteBE32(baseEA + 0x10, new_qhead);
+
+    // CRITICAL: Set the ready bit at +0x1C to signal MW05 that commands have been processed
+    // This is what MW05 is waiting for - without this, the game will stall!
+    uint32_t ready = ReadBE32(baseEA + 0x1C);
+    if ((ready & 0x1u) == 0) {
+        WriteBE32(baseEA + 0x1C, ready | 0x1u);
+        if (TitleStateTraceOn()) {
+            KernelTraceHostOpF("HOST.ProcessQueue.ready_flag %08X->%08X", ready, ready | 0x1u);
+        }
+    }
+
+    // CRITICAL: Update GPU writeback pointers to signal command completion
+    // MW05 polls these addresses waiting for the GPU to make progress!
+    // This is the Xbox 360's "tail pointer write-back" mechanism.
+
+    // 1. Update ring buffer read pointer writeback
+    uint32_t rb_wb = GetRbWriteBackPtr();
+    if (rb_wb) {
+        if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(rb_wb))) {
+            // Advance the read pointer to show we've consumed commands
+            uint32_t old_rptr = *rptr;
+            *rptr = new_qhead;  // Update to new queue head position
+            if (TitleStateTraceOn() && old_rptr != new_qhead) {
+                KernelTraceHostOpF("HOST.ProcessQueue.rb_writeback %08X: %08X->%08X",
+                                   rb_wb, old_rptr, new_qhead);
+            }
+        }
+    }
+
+    // 2. Update GPU identifier writeback (increment to show progress)
+    uint32_t gpu_id_ea = GetVdSystemCommandBufferGpuIdAddr();
+    if (gpu_id_ea) {
+        if (auto* gpu_id = reinterpret_cast<uint32_t*>(g_memory.Translate(gpu_id_ea))) {
+            uint32_t old_id = *gpu_id;
+            *gpu_id = old_id + 1;  // Increment to signal GPU progress
+            if (TitleStateTraceOn()) {
+                KernelTraceHostOpF("HOST.ProcessQueue.gpu_id_writeback %08X: %08X->%08X",
+                                   gpu_id_ea, old_id, old_id + 1);
+            }
+        }
+    }
+
+    if (TitleStateTraceOn()) {
+        KernelTraceHostOpF("HOST.ProcessQueue.done new_qhead=%08X consumed=%d ready=%08X",
+                           new_qhead, (int32_t)bytes_to_process, ReadBE32(baseEA + 0x1C));
+    }
 }
 
 // Track last-seen scheduler/context pointer to optionally nudge present-wrapper once
@@ -335,6 +466,19 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
     DumpEAWindow("825979A8.r4", ctx.r4.u32);
     DumpSchedState("825979A8", ctx.r3.u32);
 
+    // Register this scheduler context
+    RegisterSchedulerContext(ctx.r3.u32);
+
+    // CRITICAL: Process any pending commands in ALL MW05 scheduler queues
+    // MW05 uses multiple scheduler contexts, so we need to process all of them
+    uint32_t count = g_schedulerContextCount.load(std::memory_order_acquire);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t schedEA = g_schedulerContexts[i].load(std::memory_order_relaxed);
+        if (schedEA) {
+            ProcessMW05Queue(schedEA);
+        }
+    }
+
     __imp__sub_825979A8(ctx, base);
 }
 
@@ -541,6 +685,12 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
     auto looks_ptr = [](uint32_t ea) { return ea >= 0x1000 && ea < PPC_MEMORY_SIZE; };
     if (!looks_ptr(schedEA)) return;
     KernelTraceHostOpF("HOST.BuilderKick.no_fwd2 r3=%08X", schedEA);
+    // Debug probe of scheduler block before seeding
+    KernelTraceHostOpF("HOST.BuilderKick.probe @%08X 13520=%08X 13620=%08X 13624=%08X 10432=%08X 14012=%08X 14016=%08X 14020=%08X 001C=%08X",
+        schedEA,
+        ReadBE32(schedEA + 13520), ReadBE32(schedEA + 13620), ReadBE32(schedEA + 13624), ReadBE32(schedEA + 10432),
+        ReadBE32(schedEA + 14012), ReadBE32(schedEA + 14016), ReadBE32(schedEA + 14020), ReadBE32(schedEA + 0x1C));
+
     // Seed syscmd payload pointer if missing (game expects this for PM4 emission)
     uint32_t v13520b = ReadBE32(schedEA + 13520);
     if (v13520b == 0) {
@@ -593,14 +743,32 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
     }
     KernelTraceHostOpF("HOST.BuilderKick.will_forward r3=%08X", schedEA);
 
-    // Forward-call the actual PM4 builder now that state is seeded
-    if (looks_ptr(schedEA)) {
+    // Forward-call the actual PM4 builder now that state is seeded (optional, gated)
+    static const bool s_try_builder_with_seh = [](){
+        if (const char* v = std::getenv("MW05_TRY_BUILDER_WITH_SEH")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    static bool s_tried_once = false;
+    if (s_try_builder_with_seh && !s_tried_once && looks_ptr(schedEA)) {
+        s_tried_once = true;
         PPCContext ctx{};
         if (auto* cur = GetPPCContext()) ctx = *cur; // preserve TOC/r13 etc.
         ctx.r3.u32 = schedEA;
         uint8_t* base = g_memory.base;
         KernelTraceHostOpF("HOST.BuilderKick.forward r3=%08X", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
+    #if defined(_MSC_VER)
+        __try {
+            MW05Shim_sub_825972B0(ctx, base);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION code=%08X", (unsigned)GetExceptionCode());
+        }
+    #else
+        try {
+            MW05Shim_sub_825972B0(ctx, base);
+        } catch (...) {
+            KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION cpp");
+        }
+    #endif
     }
 
     // Optional scan of the syscmd payload to surface MW05 wrapper and nested PM4

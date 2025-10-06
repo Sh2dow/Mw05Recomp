@@ -215,8 +215,35 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
                         KernelTraceHostOpF("HOST.sub_826346A8.target.unmapped ea=%08X", w4);
                     }
 
-                    // Existing synth wake + clear
-                    KernelTraceHostOpF("HOST.sub_826346A8.synth_wake block=%08X target=%08X", blockEA, w4);
+                    // Synth wake - call the entry function if present
+                    KernelTraceHostOpF("HOST.sub_826346A8.synth_wake block=%08X target=%08X entry=%08X", blockEA, w4, w1);
+
+                    // Check if there's an entry function to call (w1 at offset +4)
+                    // Scheduler block format: [state, entry, ctx, evt, ...]
+                    if (w1 && GuestCodeRangeContains(w1)) {
+                        KernelTraceHostOpF("HOST.sub_826346A8.synth_wake.call_entry entry=%08X", w1);
+
+                        // Clear the block before calling the entry function
+                        ClearSchedulerBlock(base, blockEA);
+
+                        // Call the entry function - it will do the actual work
+                        // The entry function is responsible for initialization (e.g., creating threads, calling CreateDevice)
+                        auto* entryFunc = g_memory.FindFunction(w1);
+                        if (entryFunc) {
+                            KernelTraceHostOpF("HOST.sub_826346A8.synth_wake.invoke entry=%08X", w1);
+                            entryFunc(ctx, base);
+                            // Return success after calling the entry function
+                            ctx.r3.u64 = 0;
+                            return;
+                        } else {
+                            KernelTraceHostOpF("HOST.sub_826346A8.synth_wake.no_stub entry=%08X", w1);
+                            // Fall through to clear and return
+                        }
+                    } else {
+                        KernelTraceHostOpF("HOST.sub_826346A8.synth_wake.no_entry w1=%08X", w1);
+                    }
+
+                    // Clear and return success
                     ClearSchedulerBlock(base, blockEA);
                     ctx.r3.u64 = 0;
                     return;

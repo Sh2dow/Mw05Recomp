@@ -471,7 +471,14 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
                     break;
                 }
             }
-            if (ib_addr && ib_size) {
+            // If we found an address but no size, use a default scan window
+            if (ib_addr && !ib_size) {
+                ib_size = 0x400u;  // Default 1KB scan window
+                if (IsPM4TracingEnabled()) {
+                    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.default_size addr=%08X size=%u", ib_addr, ib_size);
+                }
+            }
+            if (ib_addr) {
                 // If inline params match sentinel pattern, adjust address by signed dword offset
                 for (uint32_t i = 0; i + 3 < 8 && i + 3 < count; ++i) {
                     if (beParams[i] == 0xFFFAFEFDu && (beParams[i+1] & 0xFFFF0000u) == 0x00140000u) {
@@ -483,6 +490,14 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
                         break;
                     }
                 }
+
+                // CRITICAL: Call the micro-IB interpreter to execute the commands
+                // Even if we don't see the MW05 magic header directly, the interpreter
+                // can follow pointers and find the actual rendering commands
+                if (IsPM4TracingEnabled()) {
+                    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.execute addr=%08X size=%u", ib_addr, ib_size);
+                }
+                Mw05InterpretMicroIB(ib_addr, ib_size);
                 if (IsPM4TracingEnabled()) {
                     // Dump first few dwords from the target so we can understand the micro-IB payload
                     uint32_t preview[16] = {};

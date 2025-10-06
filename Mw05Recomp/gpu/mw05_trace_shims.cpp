@@ -13,6 +13,13 @@ extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
 // Forward declarations for GPU writeback access functions
 extern "C" uint32_t GetRbWriteBackPtr();
 extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr();
+extern "C" uint32_t GetRbLen();
+
+// Forward declarations for diagnostic draw testing
+struct GuestDevice;  // Forward declaration
+extern "C" void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount);
+extern "C" void Mw05DebugKickClear();
+extern "C" GuestDevice* Mw05GetGuestDevicePtr();
 #include <cstdlib>
 #include <atomic>
 
@@ -176,12 +183,20 @@ static inline void ProcessMW05Queue(uint32_t baseEA) {
     uint32_t rb_wb = GetRbWriteBackPtr();
     if (rb_wb) {
         if (auto* rptr = reinterpret_cast<uint32_t*>(g_memory.Translate(rb_wb))) {
-            // Advance the read pointer to show we've consumed commands
+            // Advance the read pointer using proper ring buffer wrapping logic
             uint32_t old_rptr = *rptr;
-            *rptr = new_qhead;  // Update to new queue head position
-            if (TitleStateTraceOn() && old_rptr != new_qhead) {
-                KernelTraceHostOpF("HOST.ProcessQueue.rb_writeback %08X: %08X->%08X",
-                                   rb_wb, old_rptr, new_qhead);
+            uint32_t len_log2 = GetRbLen() & 31u;
+            uint32_t mask = len_log2 ? ((1u << len_log2) - 1u) : 0xFFFFu;
+
+            // Advance by the number of bytes we processed
+            uint32_t next = (old_rptr + bytes_to_process) & mask;
+            // Avoid writing 0, use 0x20 instead (matches imports.cpp pattern)
+            uint32_t write_val = next ? next : 0x20u;
+
+            *rptr = write_val;
+            if (TitleStateTraceOn() && old_rptr != write_val) {
+                KernelTraceHostOpF("HOST.ProcessQueue.rb_writeback %08X: %08X->%08X (bytes=%d mask=%08X)",
+                                   rb_wb, old_rptr, write_val, (int32_t)bytes_to_process, mask);
             }
         }
     }
@@ -202,6 +217,28 @@ static inline void ProcessMW05Queue(uint32_t baseEA) {
     if (TitleStateTraceOn()) {
         KernelTraceHostOpF("HOST.ProcessQueue.done new_qhead=%08X consumed=%d ready=%08X",
                            new_qhead, (int32_t)bytes_to_process, ReadBE32(baseEA + 0x1C));
+    }
+
+    // DIAGNOSTIC: Emit a test draw call to verify the rendering pipeline works
+    // This is a temporary test to see if draw commands can reach the renderer
+    static std::atomic<uint32_t> s_diagDrawCount{0};
+    uint32_t drawNum = s_diagDrawCount.fetch_add(1, std::memory_order_relaxed);
+    if (drawNum < 10) {  // Only emit first 10 diagnostic draws to avoid spam
+        // Check if device is initialized
+        auto* dev = Mw05GetGuestDevicePtr();
+        if (TitleStateTraceOn()) {
+            KernelTraceHostOpF("HOST.ProcessQueue.DIAG_DRAW num=%d device=%p primitiveType=3 startVertex=0 primitiveCount=1",
+                               drawNum, dev);
+        }
+        if (dev) {
+            // Emit a simple triangle draw (primitiveType=3 is D3DPT_TRIANGLELIST)
+            // This should trigger the rendering pipeline if it's working
+            Mw05HostDraw(3, 0, 1);
+        } else {
+            if (TitleStateTraceOn()) {
+                KernelTraceHostOpF("HOST.ProcessQueue.DIAG_DRAW.skip num=%d reason=device_not_initialized", drawNum);
+            }
+        }
     }
 }
 
@@ -488,6 +525,38 @@ void MW05Shim_sub_825A97B8(PPCContext& ctx, uint8_t* base) {
     DumpEAWindow("825A97B8.r3", ctx.r3.u32);
     __imp__sub_825A97B8(ctx, base);
 }
+
+// Shim for sub_82880FA0 - logs calls to the function that calls sub_82885A70
+void MW05Shim_sub_82880FA0(PPCContext& ctx, uint8_t* base) {
+    KernelTraceHostOpF("sub_82880FA0.lr=%08llX r3=%08X r4=%08X r5=%08X",
+                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    extern void sub_82880FA0(PPCContext& ctx, uint8_t* base);
+    sub_82880FA0(ctx, base);
+    KernelTraceHostOpF("sub_82880FA0.ret r3=%08X", ctx.r3.u32);
+}
+
+// Shim for sub_82885A70 - logs the condition check for thread creation
+void MW05Shim_sub_82885A70(PPCContext& ctx, uint8_t* base) {
+    // Log the input structure to understand what's being checked
+    uint32_t r25 = ctx.r3.u32;  // r25 = r3 (first parameter)
+    uint32_t r30_ptr = 0;
+    uint32_t check_value = 0xFFFFFFFF;
+
+    if (r25 >= 0x0A000000 && r25 < 0x90000000) {
+        r30_ptr = ReadBE32(r25 + 0);  // r30 = *(r25 + 0)
+        if (r30_ptr != 0 && r30_ptr >= 0x0A000000 && r30_ptr < 0x90000000) {
+            check_value = ReadBE32(r30_ptr + 0);  // value at *(r30 + 0) that will be copied to *(r31 + 8)
+        }
+    }
+
+    KernelTraceHostOpF("sub_82885A70.lr=%08llX r3=%08X r4=%08X r30_ptr=%08X check_value=%08X",
+                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, r30_ptr, check_value);
+    extern void sub_82885A70(PPCContext& ctx, uint8_t* base);
+    sub_82885A70(ctx, base);
+    KernelTraceHostOpF("sub_82885A70.ret r3=%08X", ctx.r3.u32);
+}
+
+
 
 // Host allocator callback to be installed into scheduler if game leaves it null
 // Contract: return r3 = pointer to writable PM4 space (we use System Command Buffer payload)

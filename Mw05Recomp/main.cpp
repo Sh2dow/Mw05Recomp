@@ -275,6 +275,9 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
 
     g_xdbfWrapper = XDBFWrapper((uint8_t*)g_memory.Translate(res->offset.get()), res->sizeOfData);
 
+    KernelTraceHostOpF("HOST.LdrLoadModule entry=0x%08X loadAddr=0x%08X imageSize=0x%08X",
+                       entry, security->loadAddress.get(), security->imageSize);
+
     return entry;
 }
 
@@ -611,6 +614,7 @@ int main(int argc, char *argv[])
     }
 
     uint32_t entry = LdrLoadModule(modulePath);
+    KernelTraceHostOpF("HOST.main.after_ldr_load entry=0x%08X", entry);
     if (entry == 0)
     {
         // LdrLoadModule already displayed a message box with details.
@@ -618,25 +622,33 @@ int main(int argc, char *argv[])
         std::_Exit(1);
     }
 
+    KernelTraceHostOpF("HOST.main.runInstallerWizard=%d", runInstallerWizard ? 1 : 0);
     if (!runInstallerWizard)
     {
+        KernelTraceHostOp("HOST.main.before_create_host_device");
         if (!Video::CreateHostDevice(sdlVideoDriver, graphicsApiRetry))
         {
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), Localise("Video_BackendError").c_str(), GameWindow::s_pWindow);
             std::_Exit(1);
         }
+        KernelTraceHostOp("HOST.main.after_create_host_device");
 
         // Optional heartbeat: present once or twice immediately to verify renderer path
-        if (const char* hb = std::getenv("MW05_FORCE_PRESENT"))
-        {
-            if (!(hb[0] == '0' && hb[1] == '\0'))
-            {
-                Video::Present();
-            }
-        }
+        // DISABLED: This causes the app to enter the event loop before creating guest threads
+        // if (const char* hb = std::getenv("MW05_FORCE_PRESENT"))
+        // {
+        //     if (!(hb[0] == '0' && hb[1] == '\0'))
+        //     {
+        //         KernelTraceHostOp("HOST.main.before_present");
+        //         Video::Present();
+        //         KernelTraceHostOp("HOST.main.after_present");
+        //     }
+        // }
     }
 
+    KernelTraceHostOp("HOST.main.before_pipeline_precomp");
     Video::StartPipelinePrecompilation();
+    KernelTraceHostOp("HOST.main.after_pipeline_precomp");
 
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
@@ -677,12 +689,20 @@ int main(int argc, char *argv[])
         reinterpret_cast<const void*>(sub_828134E0),
         reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
 
+    KernelTraceHostOp("HOST.main.before_unblock");
+
     // Workaround: Set the flag that the main thread will wait for
     UnblockMainThreadEarly();
 
+    KernelTraceHostOp("HOST.main.before_guest_start");
+
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events
-    GuestThread::Start({ entry, 0, 0 }, nullptr);
+    KernelTraceHostOpF("HOST.GuestThread.Start entry=0x%08X", entry);
+    uint32_t mainThreadId = 0;
+    GuestThread::Start({ entry, 0, 0 }, &mainThreadId);
+
+    KernelTraceHostOpF("HOST.main.after_guest_start threadId=0x%08X", mainThreadId);
 
     // Optional continuous present (safe, main-thread only)
     // Also present while MW05_KICK_VIDEO is set and the guest hasn't called VdSwap yet.

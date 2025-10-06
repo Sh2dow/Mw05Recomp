@@ -662,6 +662,10 @@ extern "C" uint32_t GetRbWriteBackPtr() {
 extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr() {
     return g_VdSystemCommandBufferGpuIdAddr.load(std::memory_order_relaxed);
 }
+
+extern "C" uint32_t GetRbLen() {
+    return g_RbLen.load(std::memory_order_relaxed);
+}
 static std::mutex g_VdNotifMutex;
 static std::vector<std::pair<uint32_t,uint32_t>> g_VdNotifList;
 
@@ -1638,7 +1642,55 @@ static void Mw05StartVblankPumpOnce() {
         }();
         while (g_vblankPumpRun.load(std::memory_order_acquire)) {
             // Global vblank tick counter for gating guest ISR dispatches
-            g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
+            const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
+
+            // EXPERIMENTAL: Force-create video thread after initialization completes
+            // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
+            // MW05 appears to be waiting for a condition that's not being met in our version.
+            // Force-create the thread to unblock progression to rendering.
+            static const bool s_force_video_thread = [](){
+                if (const char* v = std::getenv("MW05_FORCE_VIDEO_THREAD"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false; // default: disabled (investigating condition check)
+            }();
+            static const uint32_t s_force_video_thread_tick = [](){
+                if (const char* v = std::getenv("MW05_FORCE_VIDEO_THREAD_TICK"))
+                    return (uint32_t)std::strtoul(v, nullptr, 10);
+                return 250u; // slightly after Xenia's 227 ticks
+            }();
+            static std::atomic<bool> s_video_thread_created{false};
+
+            if (s_force_video_thread && !s_video_thread_created.load(std::memory_order_acquire)) {
+                if (currentTick >= s_force_video_thread_tick) {
+                    bool expected = false;
+                    if (s_video_thread_created.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                        KernelTraceHostOpF("HOST.ForceVideoThread.trigger tick=%u", currentTick);
+
+                        // Call the thread creation function sub_8284F548 which creates the video thread
+                        // This function is normally called by sub_82885A70 -> sub_8284F548 -> ExCreateThread
+                        // We'll call it directly to bypass the condition check
+
+                        // Set up a minimal context for the call
+                        // Based on Xenia logs, the function is called with specific parameters
+                        // We'll use default values and let the function set up the thread properly
+                        EnsureGuestContextForThisThread("ForceVideoThread");
+                        PPCContext ctx{};
+                        SetPPCContext(ctx);
+
+                        // Initialize registers to safe defaults
+                        ctx.r3.u64 = 0;  // parameter 1
+                        ctx.r4.u64 = 0;  // parameter 2
+                        ctx.r5.u64 = 0;  // parameter 3
+                        ctx.r1.u64 = 0x00010000;  // stack pointer (safe default)
+                        ctx.lr = 0;  // return address
+
+                        KernelTraceHostOp("HOST.ForceVideoThread.call_sub_8284F548");
+                        extern void sub_8284F548(PPCContext& ctx, uint8_t* base);
+                        sub_8284F548(ctx, g_memory.base);
+                        KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
+                    }
+                }
+            }
 
             // Keep a pending interrupt flowing; if event not yet registered,
             // Mw05SignalVdInterruptEvent() will fail and we keep the pending flag.

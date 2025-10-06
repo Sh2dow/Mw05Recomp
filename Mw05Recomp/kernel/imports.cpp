@@ -1,6 +1,8 @@
 #include <stdafx.h>
 #include <cpu/ppc_context.h>
 #include <cpu/guest_thread.h>
+#include <ppc/ppc_context.h>
+
 #include <apu/audio.h>
 #include "function.h"
 #include "xex.h"
@@ -25,6 +27,10 @@ extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
 // Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
 extern "C" uint32_t Mw05Trace_LastSchedR3();
 extern "C" uint32_t Mw05Trace_SchedR3SeenCount();
+
+
+// Diagnostic forward decl for MW05 micro-interpreter
+extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
 
 
 #include "kernel/event.h"
@@ -124,6 +130,9 @@ extern "C"
     bool Mw05AnyPresentSeen();
 
 }
+    // Forward decl: MW05 PM4 builder shim entry (defined in mw05_trace_shims.cpp)
+    void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
+
 
 
 // Forward declarations for VD bridge helpers used across this file
@@ -775,6 +784,44 @@ extern "C" {
             }
         }
 
+        // Optional: scan the ring buffer periodically early-on to surface TYPE3 packets (env: MW05_PM4_SCAN_RING=1)
+        {
+            static uint32_t s_ring_scan_count = 0;
+            static const bool s_scan_ring = [](){ if (const char* v = std::getenv("MW05_PM4_SCAN_RING")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+            if (s_scan_ring && s_ring_scan_count < 8) {
+                const uint32_t base = g_RbBase.load(std::memory_order_relaxed);
+                const uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
+                if (base && len_log2) {
+                    const uint32_t bytes = 1u << len_log2;
+                    KernelTraceHostOpF("HOST.PM4.ScanLinear.RingTick base=%08X bytes=%u tick_scan=%u", base, bytes, s_ring_scan_count);
+                    PM4_ScanLinear(base, bytes);
+                    ++s_ring_scan_count;
+                }
+        // Optional: try calling the MW05 PM4 builder shim from ISR a few times early (env: MW05_ISR_TRY_BUILDER=1)
+        {
+            static uint32_t s_builder_calls = 0;
+            static const bool s_try_builder = [](){ if (const char* v = std::getenv("MW05_ISR_TRY_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+            if (s_try_builder && s_builder_calls < 3) {
+                uint32_t seed = Mw05Trace_LastSchedR3();
+                if (!(seed >= 0x1000u)) seed = 0x00060E30u;
+                if (seed >= 0x1000u) {
+                    // Ensure guest context on this thread to preserve TOC/r13 etc.
+                    EnsureGuestContextForThisThread("HostDefaultVdIsr");
+                    PPCContext ctx{};
+                    if (auto* cur = GetPPCContext()) ctx = *cur;
+                    ctx.r3.u32 = seed;
+                    if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
+                    uint8_t* base = g_memory.base;
+                    KernelTraceHostOpF("HOST.ISR.pm4_forward r3=%08X r4=%08X call=%u", ctx.r3.u32, ctx.r4.u32, s_builder_calls);
+                    MW05Shim_sub_825972B0(ctx, base);
+                    ++s_builder_calls;
+                }
+            }
+        }
+
+            }
+        }
+
         // Optionally ACK the VD event directly in ISR path
         if (const char* a = std::getenv("MW05_HOST_ISR_ACK_EVENT")) {
             if (!(a[0]=='0' && a[1]=='\0')) {
@@ -1316,6 +1363,20 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
                         KernelTraceHostOpF("HOST.VdSwap.rptr.set offs=%04X (wc=%08X base=%08X size=%u)", offs, write_cur, base, size);
                         set_to_write = true;
 
+                        // Optional: force a MW05 micro-IB interpreter pass at the default syscmd payload
+                        // to surface headers/logs even if PM4 scans don't trigger. Controlled by MW05_FORCE_MICROIB.
+                        {
+                            static const bool s_force_micro = [](){
+                                if (const char* v = std::getenv("MW05_FORCE_MICROIB")) return !(v[0]=='0' && v[1]=='\0');
+                                return false;
+                            }();
+                            if (s_force_micro) {
+                                KernelTraceHostOpF("HOST.PM4.MW05.ForceMicroIB.call ea=%08X size=%u", 0x00140410u, 0x400u);
+                                Mw05InterpretMicroIB(0x00140410u, 0x400u);
+                            }
+                        }
+
+
                         // Scan ring buffer for PM4 draw commands
                         PM4_OnRingBufferWrite(offs);
 
@@ -1386,6 +1447,7 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 	                                            *rptr = offs ? offs : 0x20u;
 	                                            KernelTraceHostOpF("HOST.PM4.SysBufBridge.copy bytes=%u offs=%04X", payloadBytes, offs);
 	                                            PM4_OnRingBufferWrite(offs);
+
 	                                        }
 	                                    }
 	                                }
@@ -5308,6 +5370,11 @@ void Mw05LogIsrIfRegisteredOnce() {
 
 
 // Force ring + writeback + engines, even earlier than the small auto-init.
+extern "C" uint32_t Mw05Trace_LastSchedR3();
+extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
+
+extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
+
 void Mw05ForceVdInitOnce() {
     if (!Mw05ForceVdInitEnabled()) return;
     bool expected = false;
@@ -5337,6 +5404,28 @@ void Mw05ForceVdInitOnce() {
                 VdInitializeRingBuffer(ring_guest, len_log2);
                 VdEnableRingBufferRPtrWriteBack(wb_guest);
                 VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
+                // Optionally try to kick MW05's PM4 builder once we have ring/sysid
+                uint32_t seed = Mw05Trace_LastSchedR3();
+                if (!(seed >= 0x1000u)) seed = 0x00060E30u;
+                if (seed >= 0x1000u) {
+                    KernelTraceHostOpF("HOST.ForceVD.pm4_kick r3=%08X", seed);
+                    Mw05TryBuilderKickNoForward(seed);
+                    // Also forward-call the guest PM4 builder once to ensure TYPE3 emission
+                    {
+                        PPCContext ctx{};
+                        if (auto* cur = GetPPCContext()) ctx = *cur;
+                        ctx.r3.u32 = seed;
+                        if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40; // typical arg observed
+                        uint8_t* base = g_memory.base;
+                        KernelTraceHostOpF("HOST.ForceVD.pm4_forward r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
+                        MW05Shim_sub_825972B0(ctx, base);
+                    }
+                    // One-time ring scan to surface any pre-existing TYPE3 packets
+                    KernelTraceHostOpF("HOST.PM4.ScanLinear.Ring base=%08X bytes=%u", ring_guest, 1u << len_log2);
+                    PM4_ScanLinear(ring_guest, 1u << len_log2);
+
+                }
+
             }
         }
     }

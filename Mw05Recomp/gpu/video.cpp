@@ -51,6 +51,12 @@ extern "C"
     uint32_t Mw05GetHostDefaultVdIsrMagic();
     void Mw05RunHostDefaultVdIsrNudge(const char* tag);
 }
+#include <ppc/ppc_context.h>
+#include <kernel/memory.h>
+extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
+
+extern "C" void __imp__sub_825972B0(PPCContext& ctx, uint8_t* base);
+
 extern "C" {
     // Accessors exposed by kernel/imports for ring/syscmd buffers
     uint32_t Mw05GetRingBaseEA();
@@ -58,7 +64,16 @@ extern "C" {
     uint32_t Mw05GetSysBufBaseEA();
     uint32_t Mw05GetSysBufSizeBytes();
 }
+
+// Optional forced VD bring-up hooks (defined in kernel/imports.cpp)
+extern "C" void Mw05ForceVdInitOnce();
+extern "C" void Mw05LogIsrIfRegisteredOnce();
+
 extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+// Forward declare MW05 PM4 builder shim helpers so we can kick it if needed
+extern "C" uint32_t Mw05Trace_LastSchedR3();
+extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
+
 
 
 
@@ -1062,6 +1077,18 @@ struct RenderCommand
 };
 
 static moodycamel::BlockingConcurrentQueue<RenderCommand> g_renderQueue;
+// Global GuestDevice bridge for PM4/MW05 interpreter
+static GuestDevice* g_guestDeviceForPm4 = nullptr;
+
+extern "C" GuestDevice* Mw05GetGuestDevicePtr()
+{
+    return g_guestDeviceForPm4;
+}
+// Forward declarations of local draw helpers used by extern wrappers below
+static void DrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount);
+static void DrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount);
+
+
 
 template<GuestRenderState TType>
 static void SetRenderState(GuestDevice* device, uint32_t value)
@@ -1072,8 +1099,73 @@ static void SetRenderState(GuestDevice* device, uint32_t value)
     cmd.setRenderState.value = value;
     g_renderQueue.enqueue(cmd);
 }
+
+// Minimal wrappers for PM4->host state application from pm4_parser
+extern "C" void Mw05HostSetViewport(float x, float y, float width, float height, float minDepth, float maxDepth)
+{
+    RenderCommand cmd;
+    cmd.type = RenderCommandType::SetViewport;
+    cmd.setViewport.x = x;
+    cmd.setViewport.y = y;
+    cmd.setViewport.width = width;
+    cmd.setViewport.height = height;
+    cmd.setViewport.minDepth = minDepth;
+    cmd.setViewport.maxDepth = maxDepth;
+    g_renderQueue.enqueue(cmd);
+}
+
+
+// Minimal wrappers for PM4->host RT/DS application from pm4_parser (gated by env)
+extern "C" void Mw05HostApplyColorSurface(uint32_t rbSurfaceInfo, uint32_t rbColorInfo)
+{
+    KernelTraceHostOpF("HOST.PM4.RT.apply RB_SURFACE_INFO=%08X RB_COLOR_INFO=%08X", rbSurfaceInfo, rbColorInfo);
+    // For now, bind the backbuffer as the render target when title sets a non-zero color surface.
+    // This does not synthesize draws; it only ensures we have a target bound when real draws arrive.
+    RenderCommand cmd;
+    cmd.type = RenderCommandType::SetRenderTarget;
+    cmd.setRenderTarget.renderTarget = g_backBuffer; // conservative: swapchain RT
+    g_renderQueue.enqueue(cmd);
+}
+
+extern "C" void Mw05HostApplyDepthSurface(uint32_t rbSurfaceInfo, uint32_t rbDepthInfo)
+{
+    KernelTraceHostOpF("HOST.PM4.DS.apply RB_SURFACE_INFO=%08X RB_DEPTH_INFO=%08X", rbSurfaceInfo, rbDepthInfo);
+    // Depth binding: none yet (no guest DS surface). Keep null to avoid wrong state.
+    RenderCommand cmd;
+    cmd.type = RenderCommandType::SetDepthStencilSurface;
+    cmd.setDepthStencilSurface.depthStencil = nullptr;
+    g_renderQueue.enqueue(cmd);
+}
+
+extern "C" void Mw05HostSetScissor(int32_t left, int32_t top, int32_t right, int32_t bottom)
+{
+    RenderCommand cmd;
+    cmd.type = RenderCommandType::SetScissorRect;
+    cmd.setScissorRect.top = top;
+    cmd.setScissorRect.left = left;
+    cmd.setScissorRect.bottom = bottom;
+    cmd.setScissorRect.right = right;
+    g_renderQueue.enqueue(cmd);
+}
+
+extern "C" void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount)
+{
+    if (auto* dev = Mw05GetGuestDevicePtr()) {
+        DrawIndexedPrimitive(dev, primitiveType, baseVertexIndex, startIndex, primCount);
+    }
+}
+
+extern "C" void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount)
+{
+    if (auto* dev = Mw05GetGuestDevicePtr()) {
+        DrawPrimitive(dev, primitiveType, startVertex, primitiveCount);
+    }
+}
+
 extern "C" void Mw05DebugKickClear()
 {
+
+
     // Minimal debug clear to force visible frames when MW05 micro buffer is detected
     if (!g_rendererReady || !g_device || !g_swapChain || !g_swapChainValid)
         return;
@@ -2240,6 +2332,7 @@ static uint32_t CreateDevice(uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4,
     g_backBufferHolder = nullptr;
 
     auto device = g_userHeap.AllocPhysical<GuestDevice>();
+    g_guestDeviceForPm4 = device; // expose to PM4/MW05 interpreter
     memset(device, 0, sizeof(*device));
 
     // Append render state functions to the end of guest function table.
@@ -3105,7 +3198,48 @@ bool Video::ConsumePresentRequest()
 void Video::Present()
 {
     // Always write a host trace entry when Present is entered to diagnose bring-up
-    KernelTraceHostOp("HOST.VideoPresent.enter");
+    KernelTraceHostOp("HOST.VideoPresent.enter2");
+    // Ensure early VD/ring bring-up if requested (safe no-op otherwise)
+    Mw05ForceVdInitOnce();
+    KernelTraceHostOpF("HOST.VideoPresent.pm4_kick.guard draws=%llu", (unsigned long long)PM4_GetDrawCount());
+
+    // If no draws yet, try to kick MW05's PM4 builder a few times (guarded and logged)
+    if (PM4_GetDrawCount() == 0) {
+        static uint32_t s_pm4KickTries = 0;
+        if (s_pm4KickTries < 4) {
+            uint32_t seed = Mw05Trace_LastSchedR3();
+            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < PPC_MEMORY_SIZE; };
+            if (!looks_ptr(seed)) {
+                // Heuristic fallback: known scheduler block seen in earlier runs
+                seed = 0x00060E30u;
+            }
+            if (looks_ptr(seed)) {
+                KernelTraceHostOpF("HOST.VideoPresent.pm4_kick.try n=%u r3=%08X", s_pm4KickTries, seed);
+                Mw05TryBuilderKickNoForward(seed);
+                // Also forward-call the guest PM4 builder once to ensure TYPE3 emission
+                {
+                    PPCContext ctx{};
+                    if (auto* cur = GetPPCContext()) ctx = *cur;
+                    ctx.r3.u32 = seed;
+                    if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
+                    uint8_t* base = g_memory.base;
+                    // Fallback: call guest builder directly in case shim symbol was not linked
+                    KernelTraceHostOpF("HOST.VideoPresent.pm4_forward.guest_only r3=%08X r4=%08X try=%u", ctx.r3.u32, ctx.r4.u32, s_pm4KickTries);
+                    __imp__sub_825972B0(ctx, base);
+
+                    KernelTraceHostOpF("HOST.VideoPresent.pm4_forward r3=%08X r4=%08X try=%u", ctx.r3.u32, ctx.r4.u32, s_pm4KickTries);
+                    MW05Shim_sub_825972B0(ctx, base);
+                }
+
+                ++s_pm4KickTries;
+            } else {
+                KernelTraceHostOpF("HOST.VideoPresent.pm4_kick.skip n=%u no_seed", s_pm4KickTries);
+                ++s_pm4KickTries;
+            }
+        }
+    }
+
+    Mw05LogIsrIfRegisteredOnce();
 
     // Avoid any work until renderer is initialized
     if (!g_rendererReady || !g_device || !g_queue)
@@ -3267,6 +3401,16 @@ void Video::Present()
             KernelTraceHostOpF("HOST.PM4.SysBufForceScan draws=%llu pkts=%llu",
                 (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
         }
+        {
+            // Optional: scan the 0x00130000..0x00140000 window where some micro-IB pairs point (env: MW05_PM4_SCAN_BLK13=1)
+            static const bool s_scan_blk13 = [](){ if (const char* v = std::getenv("MW05_PM4_SCAN_BLK13")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+            if (s_scan_blk13 && PM4_GetDrawCount() == 0) {
+                PM4_ScanLinear(0x00130000u, 0x10000u);
+                KernelTraceHostOpF("HOST.PM4.Blk13Scan draws=%llu pkts=%llu",
+                    (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+            }
+        }
+
         {
             // Diagnostic: scan sysbuf payload for MW05 micro-draw markers to quantify guest activity
             uint32_t sysEA = Mw05GetSysBufBaseEA();
@@ -6581,7 +6725,7 @@ static void SetResolution(be<uint32_t>* device)
 
     uint32_t width = uint32_t(round(Video::s_viewportWidth * Config::ResolutionScale));
     uint32_t height = uint32_t(round(Video::s_viewportHeight * Config::ResolutionScale));
-    device[46] = width == 0 ? 880 : width;
+    device[46] = width == 0 ? 1280 : width;
     device[47] = height == 0 ? 720 : height;
 }
 

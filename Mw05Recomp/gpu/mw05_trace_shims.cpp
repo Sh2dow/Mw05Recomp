@@ -1,8 +1,12 @@
 // MW05 dynamic discovery shims for frequently used engine helpers.
+extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+
 // They log the caller (LR) and common arg regs, then tail-call the original.
 
 #include <cpu/ppc_context.h>
 #include <kernel/trace.h>
+#include <ppc/ppc_context.h>
+
 #include <kernel/memory.h>
 #include <cstdlib>
 #include <atomic>
@@ -117,6 +121,9 @@ extern "C" {
 
 
     void __imp__sub_82599010(PPCContext& ctx, uint8_t* base);
+    // MW05 micro-IB interpreter
+    void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+
     void __imp__sub_82599208(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82599338(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82596E40(PPCContext& ctx, uint8_t* base);
@@ -408,6 +415,8 @@ void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
 
 void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("sub_825972B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    uint32_t pre_r3 = ctx.r3.u32;
+
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) {
         MaybeLogSchedCapture(ctx.r3.u32);
         s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release);
@@ -442,12 +451,189 @@ void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base) {
             KernelTraceHostOpF("HOST.825972B0.ready_flag %08X->%08X", ready, ready | 0x1u);
         }
     }
+    // Clear gating bits and seed allocator like pre-build helpers do
+    // Some XEX variants require clearing forbid bits at +10432 (low8), e.g., 0x84
+    {
+        uint32_t f10432 = ReadBE32(ctx.r3.u32 + 10432);
+        uint8_t b10433 = (uint8_t)(f10432 & 0xFF);
+        uint8_t nb = (uint8_t)(b10433 & ~0x84u);
+        if (nb != b10433) {
+            uint32_t nw = (f10432 & 0xFFFFFF00u) | nb;
+            WriteBE32(ctx.r3.u32 + 10432, nw);
+            KernelTraceHostOpF("HOST.825972B0.flags10433 %02X->%02X", (unsigned)b10433, (unsigned)nb);
+        }
+        // Seed allocator state if missing: write_ptr/rear_ptr/end_ptr
+        uint32_t a_wptr = ReadBE32(ctx.r3.u32 + 14012);
+        uint32_t a_rend = ReadBE32(ctx.r3.u32 + 14016);
+        uint32_t a_end  = ReadBE32(ctx.r3.u32 + 14020);
+        if (a_wptr == 0 || a_end == 0) {
+            const uint32_t sysbufBase = 0x00140400u;
+            const uint32_t sysbufSize = 0x00010000u; // 64 KB
+            WriteBE32(ctx.r3.u32 + 14012, sysbufBase + 0x10u);
+            WriteBE32(ctx.r3.u32 + 14016, sysbufBase + sysbufSize);
+            WriteBE32(ctx.r3.u32 + 14020, sysbufBase + sysbufSize);
+            KernelTraceHostOpF("HOST.825972B0.seed alloc w=%08X re=%08X end=%08X", sysbufBase+0x10, sysbufBase+sysbufSize, sysbufBase+sysbufSize);
+        }
+    }
+
 
     // Keep dumps minimal; avoid heavy structure mutation here (XEX variant sensitive)
     DumpEAWindow("825972B0.r3", ctx.r3.u32);
     DumpSchedState("825972B0", ctx.r3.u32);
     __imp__sub_825972B0(ctx, base);
+
+    // Optional post-call dump of syscmd payload region to catch freshly written PM4
+    static const bool s_dump_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_DUMP_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_dump_after_builder) {
+        uint32_t post_sys = ReadBE32(pre_r3 + 13520);
+        if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+            DumpEAWindow("825972B0.post.sys", post_sys);
+        }
+        DumpSchedState("825972B0.post", pre_r3);
+    }
+    // Opportunistic scan of the just-built syscmd payload to surface MW05 wrapper and nested PM4
+    static const bool s_scan_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_SCAN_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_scan_after_builder) {
+        uint32_t post_sys = ReadBE32(pre_r3 + 13520);
+        if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+            uint32_t be_hdr = ReadBE32(post_sys);
+        #if defined(_MSC_VER)
+            uint32_t hdr_le = _byteswap_ulong(be_hdr);
+        #else
+            uint32_t hdr_le = __builtin_bswap32(be_hdr);
+        #endif
+            uint32_t hdr_be = be_hdr; // handle case where value is already LE in dumps
+            auto decode_and_scan = [&](uint32_t hdr){
+                uint32_t type = (hdr >> 30) & 0x3u;
+                uint32_t opc  = (hdr >> 8)  & 0x7Fu;
+                uint32_t cnt  = (hdr >> 16) & 0x3FFFu;
+                if (type == 3u && opc == 0x04u) {
+                    uint32_t bytes = (cnt + 1u) * 4u;
+                    // Optionally force-call the MW05 micro-IB interpreter on the syscmd payload
+                    static const bool s_force_micro = [](){ if (const char* v = std::getenv("MW05_FORCE_MICROIB")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+                    if (s_force_micro) {
+                        uint32_t payload_ea = post_sys + 0x10u;
+                        uint32_t payload_bytes = bytes > 0x10u ? (bytes - 0x10u) : 0u;
+                            // Expand interpreter scan window to improve discovery
+                            payload_bytes = 0x400u;
+                        KernelTraceHostOpF("HOST.PM4.MW05.ForceMicroIB.call2 ea=%08X size=%u", payload_ea, payload_bytes);
+                        Mw05InterpretMicroIB(payload_ea, payload_bytes);
+                    }
+
+                    KernelTraceHostOpF("HOST.PM4.ScanAfterBuilder ea=%08X bytes=%u", post_sys, bytes);
+                    PM4_ScanLinear(post_sys, bytes);
+                    return true;
+                }
+                return false;
+            };
+            if (!decode_and_scan(hdr_le)) {
+                (void)decode_and_scan(hdr_be);
+            }
+        }
+    }
+
 }
+extern "C" uint32_t VdGetSystemCommandBuffer(void* outCmdBufPtr, void* outValue);
+
+
+
+extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
+    auto looks_ptr = [](uint32_t ea) { return ea >= 0x1000 && ea < PPC_MEMORY_SIZE; };
+    if (!looks_ptr(schedEA)) return;
+    KernelTraceHostOpF("HOST.BuilderKick.no_fwd2 r3=%08X", schedEA);
+    // Seed syscmd payload pointer if missing (game expects this for PM4 emission)
+    uint32_t v13520b = ReadBE32(schedEA + 13520);
+    if (v13520b == 0) {
+        uint32_t sys_base = VdGetSystemCommandBuffer(nullptr, nullptr);
+        const uint32_t sys_payload = sys_base ? (sys_base + 0x10u) : 0u;
+        if (sys_payload) {
+            WriteBE32(schedEA + 13520, sys_payload);
+            KernelTraceHostOpF("HOST.BuilderKick.seed 13520=%08X", sys_payload);
+            v13520b = sys_payload;
+        }
+    }
+    // If allocator callback is null, install our host callback so builder can proceed
+    uint32_t fp_ea = ReadBE32(schedEA + 13620);
+    uint32_t cbctx = ReadBE32(schedEA + 13624);
+    if (fp_ea == 0) {
+        WriteBE32(schedEA + 13620, 0x82FF1000u);
+        WriteBE32(schedEA + 13624, schedEA);
+        KernelTraceHostOpF("HOST.BuilderKick.install_alloc_cb fp=%08X ctx=%08X", 0x82FF1000u, schedEA);
+    }
+    // Clear gating bits similar to builder shim and seed allocator window
+    {
+        uint32_t f10432 = ReadBE32(schedEA + 10432);
+        uint8_t b10433 = (uint8_t)(f10432 & 0xFF);
+        uint8_t nb = (uint8_t)(b10433 & ~0x84u);
+        if (nb != b10433) {
+            uint32_t nw = (f10432 & 0xFFFFFF00u) | nb;
+            WriteBE32(schedEA + 10432, nw);
+            KernelTraceHostOpF("HOST.BuilderKick.flags10433 %02X->%02X", (unsigned)b10433, (unsigned)nb);
+        }
+        // Seed allocator state if missing: write_ptr/rear_ptr/end_ptr
+        uint32_t a_wptr = ReadBE32(schedEA + 14012);
+        uint32_t a_rear = ReadBE32(schedEA + 14016);
+        uint32_t a_end  = ReadBE32(schedEA + 14020);
+        if (a_wptr == 0 || a_rear == 0 || a_end == 0) {
+            uint32_t sysbufBase = VdGetSystemCommandBuffer(nullptr, nullptr);
+            const uint32_t sysbufSize = 64u * 1024u;
+            if (sysbufBase) {
+                WriteBE32(schedEA + 14012, sysbufBase + 0x10u);
+                WriteBE32(schedEA + 14016, sysbufBase + sysbufSize);
+                WriteBE32(schedEA + 14020, sysbufBase + sysbufSize);
+                KernelTraceHostOpF("HOST.BuilderKick.seed alloc w=%08X re=%08X end=%08X", sysbufBase+0x10, sysbufBase+sysbufSize, sysbufBase+sysbufSize);
+            }
+        }
+        // Conservative ready-bit nudge: set bit0 at +0x1C if not set yet
+        uint32_t ready = ReadBE32(schedEA + 0x1C);
+        if ((ready & 0x1u) == 0) {
+            WriteBE32(schedEA + 0x1C, ready | 0x1u);
+            KernelTraceHostOpF("HOST.BuilderKick.ready_flag %08X->%08X", ready, ready | 0x1u);
+        }
+    }
+    KernelTraceHostOpF("HOST.BuilderKick.will_forward r3=%08X", schedEA);
+
+    // Forward-call the actual PM4 builder now that state is seeded
+    if (looks_ptr(schedEA)) {
+        PPCContext ctx{};
+        if (auto* cur = GetPPCContext()) ctx = *cur; // preserve TOC/r13 etc.
+        ctx.r3.u32 = schedEA;
+        uint8_t* base = g_memory.base;
+        KernelTraceHostOpF("HOST.BuilderKick.forward r3=%08X", ctx.r3.u32);
+        MW05Shim_sub_825972B0(ctx, base);
+    }
+
+    // Optional scan of the syscmd payload to surface MW05 wrapper and nested PM4
+    KernelTraceHostOpF("HOST.BuilderKick.end r3=%08X", schedEA);
+
+    uint32_t post_sys = ReadBE32(schedEA + 13520);
+    if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+        uint32_t be_hdr = ReadBE32(post_sys);
+    #if defined(_MSC_VER)
+        uint32_t hdr_le = _byteswap_ulong(be_hdr);
+    #else
+        uint32_t hdr_le = __builtin_bswap32(be_hdr);
+    #endif
+        uint32_t type = (hdr_le >> 30) & 0x3u;
+        uint32_t opc  = (hdr_le >> 8)  & 0x7Fu;
+        uint32_t cnt  = (hdr_le >> 16) & 0x3FFFu;
+        if (type == 3u && opc == 0x04u) {
+            uint32_t bytes = (cnt + 1u) * 4u;
+            KernelTraceHostOpF("HOST.PM4.ScanAfterKick ea=%08X bytes=%u", post_sys, bytes);
+            static const bool s_force_micro = [](){ if (const char* v = std::getenv("MW05_FORCE_MICROIB")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+            if (s_force_micro) {
+                uint32_t payload_ea = post_sys + 0x10u;
+                uint32_t payload_bytes = bytes > 0x10u ? (bytes - 0x10u) : 0u;
+                if (payload_bytes >= 8u && payload_bytes <= 0x10000u) {
+                    KernelTraceHostOpF("HOST.PM4.MW05.ForceMicroIB.call2 ea=%08X size=%u", payload_ea, payload_bytes);
+                    Mw05InterpretMicroIB(payload_ea, payload_bytes);
+                }
+            }
+            PM4_ScanLinear(post_sys, bytes);
+        }
+    }
+}
+
 
 void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
@@ -496,6 +682,8 @@ void MW05Shim_sub_82596E40(PPCContext& ctx, uint8_t* base) {
 }
 void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("sub_82597650.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    uint32_t pre_r3 = ctx.r3.u32;
+
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) {
         MaybeLogSchedCapture(ctx.r3.u32);
         s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release);
@@ -513,6 +701,7 @@ void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
         uint32_t a_wptr = ReadBE32(ctx.r3.u32 + 14012);
         uint32_t a_rend = ReadBE32(ctx.r3.u32 + 14016);
         uint32_t a_end  = ReadBE32(ctx.r3.u32 + 14020);
+
         if (a_wptr == 0 || a_end == 0) {
             uint32_t sysbufBase = 0x00140400u;
             uint32_t sysbufSize = 0x00010000u; // 64 KB
@@ -524,10 +713,63 @@ void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
         DumpSchedState("82597650.pre", ctx.r3.u32);
     }
     __imp__sub_82597650(ctx, base);
+    // Optional post-call dump of syscmd payload region (same guard as 825972B0)
+    static const bool s_dump_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_DUMP_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_dump_after_builder) {
+        uint32_t post_sys = ReadBE32(pre_r3 + 13520);
+        if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+            DumpEAWindow("82597650.post.sys", post_sys);
+        }
+        DumpSchedState("82597650.post", pre_r3);
+    }
+    // Opportunistic scan of syscmd payload (same guard as 825972B0)
+    static const bool s_scan_after_builder_650 = [](){ if (const char* v = std::getenv("MW05_PM4_SCAN_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_scan_after_builder_650) {
+        uint32_t post_sys = ReadBE32(pre_r3 + 13520);
+        if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+            uint32_t be_hdr = ReadBE32(post_sys);
+        #if defined(_MSC_VER)
+            uint32_t hdr_le = _byteswap_ulong(be_hdr);
+        #else
+            uint32_t hdr_le = __builtin_bswap32(be_hdr);
+        #endif
+            uint32_t hdr_be = be_hdr;
+            auto decode_and_scan = [&](uint32_t hdr){
+                uint32_t type = (hdr >> 30) & 0x3u;
+                uint32_t opc  = (hdr >> 8)  & 0x7Fu;
+                uint32_t cnt  = (hdr >> 16) & 0x3FFFu;
+                if (type == 3u && opc == 0x04u) {
+                    uint32_t bytes = (cnt + 1u) * 4u;
+                    extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
+                    KernelTraceHostOpF("HOST.PM4.ScanAfterBuilder ea=%08X bytes=%u", post_sys, bytes);
+                    // Optionally force-call the MW05 micro-IB interpreter on the syscmd payload
+                    static const bool s_force_micro = [](){ if (const char* v = std::getenv("MW05_FORCE_MICROIB")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+                    if (s_force_micro) {
+                        uint32_t payload_ea = post_sys + 0x10u;
+                        uint32_t payload_bytes = bytes > 0x10u ? (bytes - 0x10u) : 0u;
+                        // Expand interpreter scan window to improve discovery
+                        payload_bytes = 0x2000u;
+                        KernelTraceHostOpF("HOST.PM4.MW05.ForceMicroIB.call2 ea=%08X size=%u", payload_ea, payload_bytes);
+                        Mw05InterpretMicroIB(payload_ea, payload_bytes);
+                    }
+                    PM4_ScanLinear(post_sys, bytes);
+                    return true;
+                }
+                return false;
+            };
+            if (!decode_and_scan(hdr_le)) {
+                (void)decode_and_scan(hdr_be);
+            }
+        }
+    }
+
+
 }
 
 void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("sub_825976D8.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    uint32_t pre_r3 = ctx.r3.u32;
+
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) {
         MaybeLogSchedCapture(ctx.r3.u32);
         s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release);
@@ -539,10 +781,12 @@ void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
             uint32_t nw = (f10432 & 0xFFFFFF00u) | nb;
             WriteBE32(ctx.r3.u32 + 10432, nw);
             KernelTraceHostOpF("HOST.825976D8.flags10433 %02X->%02X", (unsigned)b10433, (unsigned)nb);
+
         }
         // Ensure allocator fields look valid
         uint32_t a_wptr = ReadBE32(ctx.r3.u32 + 14012);
         if (a_wptr == 0) {
+
             uint32_t sysbufBase = 0x00140400u;
             WriteBE32(ctx.r3.u32 + 14012, sysbufBase + 0x10u);
             WriteBE32(ctx.r3.u32 + 14016, sysbufBase + 0x00010000u);
@@ -552,6 +796,16 @@ void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
         DumpSchedState("825976D8.pre", ctx.r3.u32);
     }
     __imp__sub_825976D8(ctx, base);
+    // Optional post-call dump of syscmd payload region (same guard)
+    static const bool s_dump_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_DUMP_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_dump_after_builder) {
+        uint32_t post_sys = ReadBE32(pre_r3 + 13520);
+        if ((post_sys & 0xFFFF0000u) == 0x00140000u) {
+            DumpEAWindow("825976D8.post.sys", post_sys);
+        }
+        DumpSchedState("825976D8.post", pre_r3);
+    }
+
 }
 
 void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
@@ -560,6 +814,7 @@ void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
     // Ensure r3 looks like a pointer; if not, seed from last-sched
     if (!(ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE)) {
         uint32_t seed = s_lastSchedR3.load(std::memory_order_acquire);
+
         if (seed >= 0x1000 && seed < PPC_MEMORY_SIZE) {
             KernelTraceHostOpF("HOST.sub_825A54F0.force r3=%08X", seed);
             ctx.r3.u32 = seed;
@@ -571,6 +826,7 @@ void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
     // Heuristic: flags at +0x1C, set bit0 if zero
     uint32_t flags_ea = ctx.r3.u32 + 0x1C;
     if (flags_ea >= 0x1000 && flags_ea + 4 <= PPC_MEMORY_SIZE) {
+
         if (auto* pf = reinterpret_cast<uint32_t*>(g_memory.Translate(flags_ea))) {
         #if defined(_MSC_VER)
             uint32_t le = _byteswap_ulong(*pf);

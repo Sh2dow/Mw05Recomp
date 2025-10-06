@@ -72,8 +72,12 @@ def write_summary(summary_path: Path, d: dict):
         pass
 
 
-def build_env(from_parent: bool, until_draw: bool, draw_diag: bool) -> dict:
+def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool = False, pm4_le: str | None = None) -> dict:
     env = dict(os.environ if from_parent else {})
+    # Ensure key PM4/Micro tracing and state mirroring are enabled by default
+    env.setdefault("MW05_PM4_APPLY_STATE", "1")
+    env.setdefault("MW05_PM4_LOG_NONZERO", "1")
+    env.setdefault("MW05_MICRO_TREE", "1")
     # Baseline diagnostics and safe defaults
     env.setdefault("MW05_TRACE_INDIRECT", "1")
     env.setdefault("MW05_TRACE_KERNEL", "1")
@@ -115,6 +119,27 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool) -> dict:
     env.setdefault("MW05_AUTO_VDSWAP_HEUR_E68_MASK", "0x2")
     # Optionally keep ack bit asserted to satisfy heuristics preconditions
     env.setdefault("MW05_PM4_FAKE_SWAP", "0")
+    # Aggressive nudge to progress pre-swap and present paths when stuck
+    env["MW05_PM4_FAKE_SWAP"] = "1"          # keep ACK bit asserted (safe pre-render)
+    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
+    env["MW05_FORCE_PRESENT"] = "1"
+    env["MW05_FORCE_PRESENT_BG"] = "1"
+    env["MW05_SYNTH_VDSWAP_ONCE"] = "1"
+    # Allow toggles to be overridden for strict mode after defaults are set
+    if strict:
+        # Disable aggressive present/swap nudges
+        env["MW05_PM4_FAKE_SWAP"] = "0"
+        env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "0"
+        env["MW05_FORCE_PRESENT"] = "0"
+        env["MW05_FORCE_PRESENT_BG"] = "0"
+        env["MW05_SYNTH_VDSWAP_ONCE"] = "0"
+        # Keep ISR visibility but avoid forcing ctx if running draw_diag strict
+        env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0"
+        # Avoid mutating WAITs or bridging syscmd into ring artificially
+        env["MW05_PM4_BYPASS_WAITS"] = "0"
+        env["MW05_PM4_SYSBUF_TO_RING"] = "0"
+
+
     env.setdefault("MW05_PM4_FAKE_SWAP_ADDR", "0x00060E68")
     env.setdefault("MW05_PM4_FAKE_SWAP_OR", "0x2")
     # Nudge swap path for titles that never call VdSwap early
@@ -141,9 +166,11 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool) -> dict:
         env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "0"
         env["MW05_FORCE_PRESENT_INNER"] = "0"
         # Extra post-call probes and scans to understand missing prerequisites
+        env.setdefault("MW05_PM4_LE", "1")  # Treat syscmd PM4 as little-endian while diagnosing
         env["MW05_FPW_POST_SYSBUF"] = "1"
         env.setdefault("MW05_PM4_SCAN_SYSBUF", "1")
         env.setdefault("MW05_PM4_SCAN_ON_FPW_POST", "1")
+        env.setdefault("MW05_PM4_APPLY_STATE", "1")  # Mirror real RT/DS/VP/Scissor when detected
         # After inner present manager returns, attempt a PM4 build within same guest context
         env.setdefault("MW05_INNER_TRY_PM4", "1")
 
@@ -219,6 +246,12 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool) -> dict:
         env.setdefault("MW05_PM4_BYPASS_WAITS", "1")
 
 
+        # Dump syscmd payload after builder returns to catch freshly written PM4 (guarded in shim)
+        env.setdefault("MW05_PM4_DUMP_AFTER_BUILDER", "1")
+
+        # Scan syscmd payload after builder returns to run PM4 parser on opcode 0x04 wrapper
+        env.setdefault("MW05_PM4_SCAN_AFTER_BUILDER", "1")
+
         # Deeper instrumentation: dump scheduler ACK blocks and syscmd header on queries
         env.setdefault("MW05_DUMP_SCHED_BLOCK", "1")
         env.setdefault("MW05_PM4_SYSBUF_DUMP_ON_GET", "1")
@@ -229,6 +262,9 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool) -> dict:
 
     if until_draw:
         env.setdefault("MW05_UNTIL_DRAW", "1")
+    # Explicit override for PM4 endianness if provided via CLI
+    if pm4_le is not None:
+        env["MW05_PM4_LE"] = pm4_le
     return env
 
 
@@ -238,6 +274,7 @@ def stop_process_tree(pid: int, grace: float = 1.5):
             # Try gentle terminate first
             try:
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             except Exception:
                 pass
@@ -263,6 +300,9 @@ def main():
     ap.add_argument('--no-inherit-env', action='store_true', help='Do not inherit parent environment; use only MW05_* overrides')
     ap.add_argument('--cwd', type=Path, default=DEFAULT_BUILD_DIR, help='Working directory for the process')
     ap.add_argument('--seed-ea', type=str, default='', help='Optional EA (hex or dec) to pass as MW05_SCHED_R3_EA for FPW once')
+    ap.add_argument('--strict', action='store_true', help='Disable aggressive nudges/bypasses to let guest run naturally')
+    ap.add_argument('--pm4-le', choices=['0','1'], help='Override MW05_PM4_LE (1=little-endian PM4)')
+
     args = ap.parse_args()
 
     exe = args.exe
@@ -277,7 +317,7 @@ def main():
     from_parent = True
     if getattr(args, 'no_inherit_env', False):
         from_parent = False
-    env = build_env(from_parent, args.until_draw, args.draw_diag)
+    env = build_env(from_parent, args.until_draw, args.draw_diag, strict=getattr(args, 'strict', False), pm4_le=getattr(args, 'pm4_le', None))
     # If user provided a seed EA, pass it via env and slightly reduce FPW delay
     if getattr(args, 'seed_ea', ''):
         env['MW05_SCHED_R3_EA'] = args.seed_ea

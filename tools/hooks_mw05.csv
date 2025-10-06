@@ -1,0 +1,30 @@
+# Verified MW05 EU XEX hook map (NfsMWEurope.xex.html)
+# symbol,address,notes
+sub_82598230,0x82598230,CreateDevice
+sub_82598A20,0x82598A20,Present
+sub_825A8460,0x825A8460,SetResolution
+sub_8262F2A0,0x8262F2A0,PresentLoop/Manager
+sub_82441CF0,0x82441CF0,TitleState caller to loop
+sub_825972B0,0x825972B0,PM4 builder main
+sub_82597650,0x82597650,PM4 builder pre
+sub_825976D8,0x825976D8,PM4 builder pre2
+sub_825968B0,0x825968B0,Alloc/callback helper
+sub_82596E40,0x82596E40,PM4 gating clear helper
+sub_825979A8,0x825979A8,VD ISR / graphics notify
+sub_825A54F0,0x825A54F0,Inner present preamble
+sub_825A65A8,0x825A65A8,Pipeline helper
+sub_825A6DF0,0x825A6DF0,Pipeline helper
+sub_825A7208,0x825A7208,Pipeline helper
+sub_825A74B8,0x825A74B8,Pipeline helper
+sub_825A7A40,0x825A7A40,Pipeline helper
+sub_825A7B78,0x825A7B78,Viewport/Scissor group
+sub_825A7DE8,0x825A7DE8,Pipeline helper
+sub_825A7E60,0x825A7E60,Pipeline helper
+sub_825A7EA0,0x825A7EA0,Pipeline helper
+sub_825A7F10,0x825A7F10,Pipeline helper
+sub_825A7F88,0x825A7F88,Pipeline helper
+sub_825A8040,0x825A8040,Pipeline helper
+sub_82595FC8,0x82595FC8,Sched dump helper
+sub_8262F248,0x8262F248,Loop neighbor
+sub_8262F330,0x8262F330,Loop neighbor
+

@@ -24118,4 +24118,5 @@ functions = [
 
 invalid_instructions = [
     { data = 0x82621640, size = 232 }, # Padding
+    { data = 0x825968B0, size = 0xC8 }, # sub_825968B0 - replaced by PPC_FUNC in mw05_trace_shims.cpp
 ]

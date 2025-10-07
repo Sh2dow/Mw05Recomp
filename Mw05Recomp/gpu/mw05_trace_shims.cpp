@@ -872,8 +872,27 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
 }
 
 
+// Declare the original recompiled function
+PPC_FUNC_IMPL(__imp__sub_825968B0);
+
+// Full replacement for sub_825968B0 to avoid NULL function pointer calls
+PPC_FUNC(sub_825968B0) {
+    // Forward to the shim implementation
+    MW05Shim_sub_825968B0(ctx, base);
+}
+
 void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[SHIM-ENTRY] sub_825968B0 lr=%08llX r3=%08X\n", (unsigned long long)ctx.lr, ctx.r3.u32);
+    fflush(stderr);
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+
+    // Check if r3 is valid before accessing memory
+    if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
+        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - returning NULL", ctx.r3.u32);
+        ctx.r3.u32 = 0;
+        return;
+    }
+
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
     uint32_t fp_ea = ReadBE32(ctx.r3.u32 + 13620);
     uint32_t cbctx = ReadBE32(ctx.r3.u32 + 13624);
@@ -881,28 +900,44 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     uint32_t f10432w = ReadBE32(ctx.r3.u32 + 10432);
     uint8_t b10433 = (uint8_t)(f10432w & 0xFF);
     KernelTraceHostOpF("HOST.825968B0.flags10433=%02X", (unsigned)b10433);
-    // If the allocator callback is NULL, optionally fake an allocation into the System Command Buffer payload
-    static const bool s_fake_alloc = [](){ if (const char* v = std::getenv("MW05_FAKE_ALLOC_SYSBUF")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    if (s_fake_alloc && fp_ea == 0) {
-        // Known default guest EA for syscmd buffer base from our bridge: 0x00140400
-        // Return a pointer just past the 16-byte header we seed (payload begins at +0x10)
-        const uint32_t sys_base    = 0x00140400u;
-        const uint32_t sys_payload = sys_base + 0x10u;
-        const uint32_t sys_end     = sys_base + 0x10000u; // 64 KiB
-        // Seed basic allocator state so subsequent code can advance pointers
-        WriteBE32(ctx.r3.u32 + 14012, sys_payload); // current write ptr
-        WriteBE32(ctx.r3.u32 + 14016, sys_payload); // running end ptr
+    // If the allocator callback is NULL or invalid, optionally fake an allocation into the System Command Buffer payload
+    static const bool s_fake_alloc = [](){
+        const char* v = std::getenv("MW05_FAKE_ALLOC_SYSBUF");
+        bool result = (v && v[0] && !(v[0]=='0' && v[1]=='\0'));
+        fprintf(stderr, "[SHIM-INIT] MW05_FAKE_ALLOC_SYSBUF=%s result=%d\n", v ? v : "(null)", result);
+        fflush(stderr);
+        return result;
+    }();
+    KernelTraceHostOpF("HOST.825968B0.fake_alloc=%d", s_fake_alloc);
+    // Check if function pointer is NULL or outside valid PPC range
+    bool fp_invalid = (fp_ea == 0 || fp_ea < 0x82000000 || fp_ea >= 0x82CD0000);
+    if (s_fake_alloc) {
+        if (fp_invalid) {
+            // Known default guest EA for syscmd buffer base from our bridge: 0x00140400
+            // Return a pointer just past the 16-byte header we seed (payload begins at +0x10)
+            const uint32_t sys_base    = 0x00140400u;
+            const uint32_t sys_payload = sys_base + 0x10u;
+            const uint32_t sys_end     = sys_base + 0x10000u; // 64 KiB
+            // Seed basic allocator state so subsequent code can advance pointers
+            WriteBE32(ctx.r3.u32 + 14012, sys_payload); // current write ptr
+            WriteBE32(ctx.r3.u32 + 14016, sys_payload); // running end ptr
 
 
-        WriteBE32(ctx.r3.u32 + 14020, sys_end);     // buffer end
-        // Clear forbid bit (top bit of 10433) if set, to avoid early exits
-        uint32_t f10432w2 = ReadBE32(ctx.r3.u32 + 10432);
-        uint8_t b10433_2 = (uint8_t)(f10432w2 & 0xFF);
-        if (b10433_2 & 0x80) {
-            WriteBE8(ctx.r3.u32 + 10433, (uint8_t)(b10433_2 & ~0x80));
+            WriteBE32(ctx.r3.u32 + 14020, sys_end);     // buffer end
+            // Clear forbid bit (top bit of 10433) if set, to avoid early exits
+            uint32_t f10432w2 = ReadBE32(ctx.r3.u32 + 10432);
+            uint8_t b10433_2 = (uint8_t)(f10432w2 & 0xFF);
+            if (b10433_2 & 0x80) {
+                WriteBE8(ctx.r3.u32 + 10433, (uint8_t)(b10433_2 & ~0x80));
+            }
+            KernelTraceHostOpF("HOST.825968B0.fake ret=%08X (fp_ea=%08X was invalid)", sys_payload, fp_ea);
+            ctx.r3.u32 = sys_payload;
+            return;
         }
-        KernelTraceHostOpF("HOST.825968B0.fake ret=%08X", sys_payload);
-        ctx.r3.u32 = sys_payload;
+        // Even if fp_ea is valid, don't call the original function - it will try to call through fp_ea
+        // which might be invalid later. Just return NULL to skip the allocation.
+        KernelTraceHostOpF("HOST.825968B0.skip ret=0 (fake_alloc enabled, fp_ea=%08X)", fp_ea);
+        ctx.r3.u32 = 0;
         return;
     }
     __imp__sub_825968B0(ctx, base);

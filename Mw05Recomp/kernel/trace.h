@@ -438,10 +438,10 @@ inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
     }
 
     // Normal load with byte swap
-    if (uint32_t* p = (uint32_t*)g_memory.Translate(ea)) {
-        return __builtin_bswap32(*p);
-    }
-    return 0;
+    // ea is a guest address (e.g., 0x82813090)
+    // The default PPC_LOAD_U32 macro does: base + ea
+    // So we just replicate that behavior here
+    return __builtin_bswap32(*(volatile uint32_t*)(base + ea));
 }
 
 #ifdef PPC_LOAD_U32

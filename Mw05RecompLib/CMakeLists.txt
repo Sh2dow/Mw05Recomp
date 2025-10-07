@@ -143,6 +143,12 @@ target_include_directories(Mw05RecompLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(Mw05RecompLib PRIVATE "${CMAKE_SOURCE_DIR}/Mw05Recomp")
 target_include_directories(Mw05RecompLib PRIVATE "${MW05_RECOMP_TOOLS_ROOT}/XenonRecomp/thirdparty/simde")
 target_compile_definitions(Mw05RecompLib PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+# Enable memory access guards for debug builds
+# Temporarily disabled due to compilation issues
+# if (CMAKE_BUILD_TYPE MATCHES "Debug")
+#     target_compile_definitions(Mw05RecompLib PRIVATE MW05_ENABLE_MEM_GUARD)
+# endif()
 target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
 # Force-include our PPC trace glue so generated TUs log indirect-miss via logger
 if (MSVC)

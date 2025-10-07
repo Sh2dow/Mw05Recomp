@@ -358,6 +358,25 @@ PPC_FUNC(sub_828134E0)
 
     // Arm the watch **before** the loop/producer touches the block
     KernelTraceHostOp("HOST.sub_828134E0.enter");
+    KernelTraceHostOpF("HOST.sub_828134E0.regs r29=%08X r30=%08X r31=%08X lr=%08llX",
+                       ctx.r29.u32, ctx.r30.u32, ctx.r31.u32, ctx.lr);
+
+    // Check if the link register (return address) is valid
+    uint32_t lr32 = static_cast<uint32_t>(ctx.lr);
+    if (lr32 < 0x82000000 || lr32 >= 0x82CD0000) {
+        KernelTraceHostOpF("HOST.sub_828134E0.INVALID_LR lr=0x%08X (outside valid range)", lr32);
+    }
+
+    // Check if we can read from the addresses that sub_828134E0 will access
+    // According to the disassembly, it calculates r29 = 0x82813090 and reads from it
+    const uint32_t test_addr = 0x82813090;
+    auto* test_ptr = g_memory.Translate(test_addr);
+    if (test_ptr) {
+        uint32_t test_val = __builtin_bswap32(*(volatile uint32_t*)test_ptr);
+        KernelTraceHostOpF("HOST.sub_828134E0.memtest [0x%08X]=0x%08X (accessible)", test_addr, test_val);
+    } else {
+        KernelTraceHostOpF("HOST.sub_828134E0.memtest [0x%08X]=NULL (NOT MAPPED!)", test_addr);
+    }
 
     // Prefer the block recorded by sub_826346A8; r29 may not be set yet at entry
     uint32_t block = Mw05PeekSchedulerBlockEA();
@@ -374,4 +393,6 @@ PPC_FUNC(sub_828134E0)
     }
 
     __imp__sub_828134E0(ctx, base);
+
+    KernelTraceHostOpF("HOST.sub_828134E0.exit lr=%08llX", ctx.lr);
 }

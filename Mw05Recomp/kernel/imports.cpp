@@ -5081,20 +5081,26 @@ void RtlRaiseException_x()
 
 void KfReleaseSpinLock(uint32_t* spinLock)
 {
-    std::atomic_ref spinLockRef(*spinLock);
-    spinLockRef = 0;
+    // Use volatile write instead of atomic_ref to avoid alignment issues
+    volatile uint32_t* vol_ptr = spinLock;
+    *vol_ptr = 0;
 }
 
 void KfAcquireSpinLock(uint32_t* spinLock)
 {
-    std::atomic_ref spinLockRef(*spinLock);
-
+    // Use volatile operations instead of atomic_ref to avoid alignment issues
+    volatile uint32_t* vol_ptr = spinLock;
     while (true)
     {
-        uint32_t expected = 0;
-        if (spinLockRef.compare_exchange_weak(expected, g_ppcContext->r13.u32))
-            break;
-
+        uint32_t current = *vol_ptr;
+        if (current == 0)
+        {
+            *vol_ptr = g_ppcContext->r13.u32;
+            if (*vol_ptr == g_ppcContext->r13.u32)
+            {
+                break;
+            }
+        }
         std::this_thread::yield();
     }
 }
@@ -5277,20 +5283,26 @@ uint32_t VdQuerySystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* ou
 
 void KeReleaseSpinLockFromRaisedIrql(uint32_t* spinLock)
 {
-    std::atomic_ref spinLockRef(*spinLock);
-    spinLockRef = 0;
+    // Use volatile write instead of atomic_ref to avoid alignment issues
+    volatile uint32_t* vol_ptr = spinLock;
+    *vol_ptr = 0;
 }
 
 void KeAcquireSpinLockAtRaisedIrql(uint32_t* spinLock)
 {
-    std::atomic_ref spinLockRef(*spinLock);
-
+    // Use volatile operations instead of atomic_ref to avoid alignment issues
+    volatile uint32_t* vol_ptr = spinLock;
     while (true)
     {
-        uint32_t expected = 0;
-        if (spinLockRef.compare_exchange_weak(expected, g_ppcContext->r13.u32))
-            break;
-
+        uint32_t current = *vol_ptr;
+        if (current == 0)
+        {
+            *vol_ptr = g_ppcContext->r13.u32;
+            if (*vol_ptr == g_ppcContext->r13.u32)
+            {
+                break;
+            }
+        }
         std::this_thread::yield();
     }
 }

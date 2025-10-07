@@ -79,16 +79,17 @@ static void UnblockThreadFunc() {
 			// Read current value
 			uint32_t current = __builtin_bswap32(*flag_ptr);
 
-			// Set the flag to 1 (big-endian) using atomic store with release semantics
-			std::atomic<uint32_t>* atomic_ptr = reinterpret_cast<std::atomic<uint32_t>*>(flag_ptr);
-			atomic_ptr->store(__builtin_bswap32(1), std::memory_order_release);
+			// Set the flag to 1 (big-endian) using volatile write
+			// Note: We can't use std::atomic here because the pointer might not be properly aligned
+			volatile uint32_t* vol_ptr = flag_ptr;
+			*vol_ptr = __builtin_bswap32(1);
 
 			// Log only if enough time passed and we haven't exceeded max lines
 			if (logged < log_max) {
 				auto now = std::chrono::steady_clock::now();
 				uint64_t elapsed = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
 				if (elapsed >= log_ms) {
-					uint32_t readback = __builtin_bswap32(atomic_ptr->load(std::memory_order_acquire));
+					uint32_t readback = __builtin_bswap32(*vol_ptr);
 					KernelTraceHostOpF("HOST.UnblockThread.set iter=%d current=%u readback=%u", iteration, current, readback);
 					last = now;
 					logged++;

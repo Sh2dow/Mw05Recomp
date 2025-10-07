@@ -95,26 +95,28 @@ struct GuestResource
 
     void AddRef()
     {
-        std::atomic_ref atomicRef(refCount.value);
-
+        // Use volatile operations instead of atomic_ref to avoid alignment issues
+        volatile uint32_t* vol_ptr = &refCount.value;
         uint32_t originalValue, incrementedValue;
         do
         {
-            originalValue = refCount.value;
+            originalValue = *vol_ptr;
             incrementedValue = ByteSwap(ByteSwap(originalValue) + 1);
-        } while (!atomicRef.compare_exchange_weak(originalValue, incrementedValue));
+            *vol_ptr = incrementedValue;
+        } while (*vol_ptr != incrementedValue);
     }
 
     void Release()
     {
-        std::atomic_ref atomicRef(refCount.value);
-
+        // Use volatile operations instead of atomic_ref to avoid alignment issues
+        volatile uint32_t* vol_ptr = &refCount.value;
         uint32_t originalValue, decrementedValue;
         do
         {
-            originalValue = refCount.value;
+            originalValue = *vol_ptr;
             decrementedValue = ByteSwap(ByteSwap(originalValue) - 1);
-        } while (!atomicRef.compare_exchange_weak(originalValue, decrementedValue));
+            *vol_ptr = decrementedValue;
+        } while (*vol_ptr != decrementedValue);
 
         // Normally we are supposed to release here, so only use this
         // function when you know you won't be the one destructing it.

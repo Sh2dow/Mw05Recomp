@@ -2580,7 +2580,8 @@ static const char *DeviceTypeName(RenderDeviceType type)
 
 static void DrawProfiler()
 {
-    bool toggleProfiler = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_F1] != 0;
+    // SDL3: SDL_GetKeyboardState() returns const bool*, so we can use the value directly
+    bool toggleProfiler = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_F1];
 
     if (!g_profilerWasToggled && toggleProfiler)
     {

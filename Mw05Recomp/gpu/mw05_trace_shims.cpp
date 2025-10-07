@@ -887,10 +887,34 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 
     // Check if r3 is valid before accessing memory
+    // If invalid, try to seed from environment variable or last known scheduler context
     if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - returning NULL", ctx.r3.u32);
-        ctx.r3.u32 = 0;
-        return;
+        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - attempting to seed", ctx.r3.u32);
+
+        // Try environment variable first
+        if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+            uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+            if (env_r3 >= 0x1000 && env_r3 < PPC_MEMORY_SIZE) {
+                ctx.r3.u32 = env_r3;
+                KernelTraceHostOpF("HOST.825968B0.seeded_from_env r3=%08X", ctx.r3.u32);
+            }
+        }
+
+        // If still invalid, try last known scheduler context
+        if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
+            uint32_t last_sched = s_lastSchedR3.load(std::memory_order_acquire);
+            if (last_sched >= 0x1000 && last_sched < PPC_MEMORY_SIZE) {
+                ctx.r3.u32 = last_sched;
+                KernelTraceHostOpF("HOST.825968B0.seeded_from_last r3=%08X", ctx.r3.u32);
+            }
+        }
+
+        // If still invalid, return NULL
+        if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
+            KernelTraceHostOpF("HOST.825968B0.still_invalid r3=%08X - returning NULL", ctx.r3.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
     }
 
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }

@@ -1644,6 +1644,12 @@ static void Mw05StartVblankPumpOnce() {
             // Global vblank tick counter for gating guest ISR dispatches
             const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
 
+            // Debug: log tick count every 10 ticks AND always log tick 0
+            if (currentTick == 0 || currentTick % 10 == 0) {
+                fprintf(stderr, "[VBLANK-TICK] count=%u\n", currentTick);
+                fflush(stderr);
+            }
+
             // EXPERIMENTAL: Force-create video thread after initialization completes
             // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
             // MW05 appears to be waiting for a condition that's not being met in our version.
@@ -6788,12 +6794,16 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
     LOGF_UTILITY("0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}",
         (intptr_t)handle, stackSize, (intptr_t)threadId, xApiThreadStartup, startAddress, startContext, creationFlags);
 
+    KernelTraceHostOpF("HOST.ExCreateThread entry=%08X ctx=%08X flags=%08X", startAddress, startContext, creationFlags);
+
     uint32_t hostThreadId;
 
     *handle = GetKernelHandle(GuestThread::Start({ startAddress, startContext, creationFlags }, &hostThreadId));
 
     if (threadId != nullptr)
         *threadId = hostThreadId;
+
+    KernelTraceHostOpF("HOST.ExCreateThread DONE entry=%08X hostTid=%08X", startAddress, hostThreadId);
 
     return 0;
 }

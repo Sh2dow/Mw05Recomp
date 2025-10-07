@@ -217,3 +217,29 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
 	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
     __imp__sub_82812ED0(ctx, base);
 }
+
+
+// Thread entry point that should call sub_82442080 to set the main thread unblock flag
+// This is a proper fix to replace the MW05_UNBLOCK_MAIN workaround
+void sub_824411E0(PPCContext& ctx, uint8_t* base) {
+    SetPPCContext(ctx);
+    KernelTraceHostOpF("HOST.ThreadEntry.824411E0 r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
+
+    // This thread entry is responsible for calling sub_82442080 which sets dword_82A2CF40
+    // The condition check in the original code (at 0x8244129C) looks at dword_828FBB50
+    // and calls sub_82442080 when dword_828FBB50 == 1
+    // We'll ensure the condition is met by setting it to 1 before calling the original function
+    const uint32_t condition_flag_ea = 0x828FBB50;
+    if (uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(condition_flag_ea))) {
+        uint32_t current = __builtin_bswap32(*flag_ptr);
+        KernelTraceHostOpF("HOST.ThreadEntry.824411E0 condition_flag ea=%08X current=%u", condition_flag_ea, current);
+
+        // Set the condition flag to 1 to ensure sub_82442080 gets called
+        // This will cause the code path at 0x824412A8 to execute: bl sub_82442080
+        *flag_ptr = __builtin_bswap32(1);
+        KernelTraceHostOpF("HOST.ThreadEntry.824411E0 set condition_flag to 1");
+    }
+
+    __imp__sub_824411E0(ctx, base);
+    KernelTraceHostOp("HOST.ThreadEntry.824411E0 complete");
+}

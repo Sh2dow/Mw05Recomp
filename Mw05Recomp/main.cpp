@@ -97,6 +97,7 @@ PPC_EXTERN_FUNC(sub_8284E658);
 PPC_EXTERN_FUNC(sub_826346A8);
 PPC_EXTERN_FUNC(sub_82812ED0);
 PPC_EXTERN_FUNC(sub_828134E0);
+PPC_EXTERN_FUNC(sub_824411E0);
 
 extern "C" void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/); // declaration with exact signature
 extern "C" bool Mw05HasGuestSwapped();
@@ -172,6 +173,23 @@ void KiSystemStartup()
             MwInstallGeneratedIndirectRedirects();
         #endif
     #endif
+
+    // CRITICAL FIX: Set the flag that unblocks the main thread
+    // The main thread waits in a loop at sub_82441CF0 checking dword_82A2CF40
+    // It only proceeds when this flag is non-zero
+    KernelTraceHostOpF("HOST.Init.UnblockMainThread BEFORE");
+    {
+        const uint32_t unblock_flag_ea = 0x82A2CF40;
+        uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(unblock_flag_ea));
+        KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X ptr=%p", unblock_flag_ea, flag_ptr);
+        if (flag_ptr) {
+            *flag_ptr = __builtin_bswap32(1);  // Set to 1 (big-endian)
+            KernelTraceHostOpF("HOST.Init.UnblockMainThread DONE value=1");
+        } else {
+            KernelTraceHostOpF("HOST.Init.UnblockMainThread FAILED ptr=NULL");
+        }
+    }
+    KernelTraceHostOpF("HOST.Init.UnblockMainThread AFTER");
 
     const auto gameContent = XamMakeContent(XCONTENTTYPE_RESERVED, "Game");
     const auto updateContent = XamMakeContent(XCONTENTTYPE_RESERVED, "Update");

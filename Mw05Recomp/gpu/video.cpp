@@ -336,11 +336,9 @@ static Profiler g_frameFenceProfiler;
 static Profiler g_presentWaitProfiler;
 static Profiler g_swapChainAcquireProfiler;
 
-static bool g_profilerVisible;
+static bool g_profilerVisible = false;
 
 extern "C" bool Mw05HasGuestSwapped();
-
-static bool g_profilerWasToggled;
 
 #ifdef MW05_RECOMP_D3D12
 static bool g_vulkan = false;
@@ -2580,17 +2578,16 @@ static const char *DeviceTypeName(RenderDeviceType type)
 
 static void DrawProfiler()
 {
-    // SDL3: SDL_GetKeyboardState() returns const bool*, so we can use the value directly
-    bool toggleProfiler = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_F1];
+    // Use ImGui's keyboard state instead of SDL directly to ensure proper synchronization
+    // with the event processing on the main thread
+    bool toggleProfiler = ImGui::IsKeyPressed(ImGuiKey_F1, false);
 
-    if (!g_profilerWasToggled && toggleProfiler)
+    if (toggleProfiler)
     {
         g_profilerVisible = !g_profilerVisible;
 
         GameWindow::SetFullscreenCursorVisibility(App::s_isInit ? g_profilerVisible : true);
     }
-
-    g_profilerWasToggled = toggleProfiler;
 
     if (!g_profilerVisible)
         return;

@@ -252,6 +252,11 @@ static inline void ProcessMW05Queue(uint32_t baseEA) {
     }
 }
 
+// Extern "C" wrapper to allow calling from imports.cpp
+extern "C" void Mw05ProcessSchedulerQueue(uint32_t baseEA) {
+    ProcessMW05Queue(baseEA);
+}
+
 // Track last-seen scheduler/context pointer to optionally nudge present-wrapper once
 static std::atomic<uint32_t> s_lastSchedR3{0};
 static std::atomic<bool> s_schedR3Logged{false};

@@ -24,6 +24,21 @@
 // Forward decl: original guest MW05 present-wrapper body
 extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
 
+// Forward decl: MW05 graphics initialization function (calls VdInitializeEngines + VdSetGraphicsInterruptCallback)
+extern "C" void __imp__sub_825A85E0(PPCContext& ctx, uint8_t* base);
+
+// Forward decl: MW05 graphics initialization chain
+extern "C" void __imp__sub_82216088(PPCContext& ctx, uint8_t* base);  // Entry point for graphics init
+
+// Forward decl: MW05 functions called by sub_821BB4D0 (for debugging the hang)
+extern "C" void __imp__sub_8215CB08(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8215C790(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8215C838(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821B2C28(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821B71E0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821B7C28(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821BB4D0(PPCContext& ctx, uint8_t* base);
+
 // Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
 extern "C" uint32_t Mw05Trace_LastSchedR3();
 extern "C" uint32_t Mw05Trace_SchedR3SeenCount();
@@ -1695,6 +1710,16 @@ static void Mw05StartVblankPumpOnce() {
                 fflush(stderr);
             }
 
+            // MW05 FIX: Disabled for now while testing initialization path
+            // if (currentTick >= 300) {
+            //     static uint32_t s_vdcall_count = 0;
+            //     if ((++s_vdcall_count) % 100 == 1) {
+            //         fprintf(stderr, "[MW05_FIX] Calling VdCallGraphicsNotificationRoutines tick=%u count=%u\n", currentTick, s_vdcall_count);
+            //         fflush(stderr);
+            //     }
+            //     VdCallGraphicsNotificationRoutines(0u);
+            // }
+
             // EXPERIMENTAL: Force-trigger video thread initialization after boot completes
             // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
             // MW05 appears to be waiting for a condition that's not being met in our version.
@@ -1840,6 +1865,10 @@ static void Mw05StartVblankPumpOnce() {
                                         uint32_t thr = LoadBE32_Watched(g_memory.base, video_obj_ptr + 0x64);
                                         fprintf(stderr, "[VBLANK-FORCE] Video object initialized: vptr=%08X thr=%08X\n", vptr, thr);
                                         fflush(stderr);
+
+                                        // MW05 DEBUG: Disabled forced initialization - let the game call it naturally
+                                        // The game will call VdSetGraphicsInterruptCallback when it's ready
+                                        // We were forcing it too early before the context was set up
                                     }
                                 } else {
                                     fprintf(stderr, "[VBLANK-FORCE] ERROR: Vtable not allocated yet!\n");
@@ -7113,6 +7142,11 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
 
     KernelTraceHostOpF("HOST.ExCreateThread entry=%08X ctx=%08X flags=%08X", startAddress, startContext, creationFlags);
 
+    // MW05 FIX: Log all thread creations to find the graphics initialization thread
+    static int s_thread_count = 0;
+    fprintf(stderr, "[MW05_FIX] Thread #%d created: entry=%08X ctx=%08X flags=%08X\n", ++s_thread_count, startAddress, startContext, creationFlags);
+    fflush(stderr);
+
     uint32_t hostThreadId;
 
     *handle = GetKernelHandle(GuestThread::Start({ startAddress, startContext, creationFlags }, &hostThreadId));
@@ -7325,6 +7359,112 @@ GUEST_FUNCTION_STUB(__imp__XamShowMarketplaceUI);
 GUEST_FUNCTION_STUB(__imp__XamShowMessageComposeUI);
 GUEST_FUNCTION_STUB(__imp__XamShowGameInviteUI);
 GUEST_FUNCTION_STUB(__imp__XamShowFriendRequestUI);
+
+// MW05 DEBUG: Wrappers to trace sub_821BB4D0 sub-function calls
+static std::atomic<int> s_debug_call_depth{0};
+
+void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    uint32_t size = ctx.r3.u32;
+    uint32_t flags = ctx.r4.u32;
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215CB08 r3=%08X (size=%u bytes = %u KB) r4=%08X\n",
+            depth, size, size, size/1024, flags);
+    fflush(stderr);
+
+    // INTERCEPT: Handle memory allocation ourselves like Xenia does
+    // Instead of calling the game's broken allocator, use our own memory allocation
+    uint32_t alignment = 0x1000;  // 4KB default
+    if (size >= 64 * 1024) {
+        alignment = 0x10000;  // 64KB for large allocations
+    }
+
+    // Allocate from physical memory using MmAllocatePhysicalMemoryEx
+    uint32_t result = MmAllocatePhysicalMemoryEx(0, size, PAGE_READWRITE, 0, 0xFFFFFFFF, alignment);
+
+    if (result == 0) {
+        fprintf(stderr, "[MW05_DEBUG] [depth=%d] FAILED sub_8215CB08 - MmAllocatePhysicalMemoryEx returned 0 for size=%u\n",
+                depth, size);
+    } else {
+        fprintf(stderr, "[MW05_DEBUG] [depth=%d] SUCCESS sub_8215CB08 - allocated %u bytes at %08X\n",
+                depth, size, result);
+    }
+
+    ctx.r3.u32 = result;
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_8215C790_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215C790 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
+    fflush(stderr);
+    __imp__sub_8215C790(ctx, base);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_8215C790 r3=%08X\n", depth, ctx.r3.u32);
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_8215C838_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215C838 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
+    fflush(stderr);
+    __imp__sub_8215C838(ctx, base);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_8215C838 r3=%08X\n", depth, ctx.r3.u32);
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_821B2C28_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_821B2C28 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
+    fflush(stderr);
+    __imp__sub_821B2C28(ctx, base);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_821B2C28 r3=%08X\n", depth, ctx.r3.u32);
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_821B71E0_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_821B71E0 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
+    fflush(stderr);
+    __imp__sub_821B71E0(ctx, base);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_821B71E0 r3=%08X\n", depth, ctx.r3.u32);
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_821B7C28_debug(PPCContext& ctx, uint8_t* base) {
+    int depth = s_debug_call_depth.fetch_add(1);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_821B7C28 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
+    fflush(stderr);
+    __imp__sub_821B7C28(ctx, base);
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_821B7C28 r3=%08X\n", depth, ctx.r3.u32);
+    fflush(stderr);
+    s_debug_call_depth.fetch_sub(1);
+}
+
+void sub_821BB4D0_debug(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[MW05_DEBUG] ========== ENTER sub_821BB4D0 ==========\n");
+    fflush(stderr);
+
+    auto start = std::chrono::steady_clock::now();
+    __imp__sub_821BB4D0(ctx, base);
+    auto end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  sub_821BB4D0 r3=%08X (took %lld ms) ==========\n", ctx.r3.u32, duration);
+    fflush(stderr);
+}
+
+// Hook the debug wrappers
+GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);
+GUEST_FUNCTION_HOOK(sub_8215C790, sub_8215C790_debug);
+GUEST_FUNCTION_HOOK(sub_8215C838, sub_8215C838_debug);
+GUEST_FUNCTION_HOOK(sub_821B2C28, sub_821B2C28_debug);
+GUEST_FUNCTION_HOOK(sub_821B71E0, sub_821B71E0_debug);
+GUEST_FUNCTION_HOOK(sub_821B7C28, sub_821B7C28_debug);
+GUEST_FUNCTION_HOOK(sub_821BB4D0, sub_821BB4D0_debug);
 
 GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderTerminateTitle, XamLoaderTerminateTitle);

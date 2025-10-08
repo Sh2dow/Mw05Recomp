@@ -497,13 +497,39 @@ void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
     // r3 = object pointer
     uint32_t obj = ctx.r3.u32;
 
-    // HACK: Detect if this is being called as a vtable method (r4 = 0..3, r5 = specific value)
+    // HACK: Detect if this is being called as a vtable method (r4 = 0..3)
     // The vtable method is called 4 times with r4 = 0, 1, 2, 3
     // If so, just return 1 to indicate "available" without re-initializing the object
-    if (ctx.r4.u32 <= 3 && ctx.r5.u32 == 0x00221438) {
+    if (ctx.r4.u32 <= 3) {
         static int vtable_call_count = 0;
+        static int loop_iteration = 0;
+
+        // Check if we're in an infinite loop (same r4 pattern repeating)
+        static uint32_t last_r4 = 0xFFFFFFFF;
+        if (ctx.r4.u32 == 0 && last_r4 == 3) {
+            loop_iteration++;
+        }
+        last_r4 = ctx.r4.u32;
+
+        // Break the loop after a few iterations
+        static const bool s_break_wait_loop = [](){
+            if (const char* v = std::getenv("MW05_BREAK_WAIT_LOOP")) {
+                return !(v[0] == '0' && v[1] == '\0');
+            }
+            return false;
+        }();
+
+        if (s_break_wait_loop && loop_iteration > 2) {
+            if (vtable_call_count++ < 5) {
+                fprintf(stderr, "[heap] sub_82881020 BREAKING WAIT LOOP at iteration %d, r4=%08X\n", loop_iteration, ctx.r4.u32);
+                fflush(stderr);
+            }
+            ctx.r3.u32 = 0;  // Return "not available" to break the loop
+            return;
+        }
+
         if (vtable_call_count++ < 5) {
-            fprintf(stderr, "[heap] sub_82881020 called as VTABLE METHOD r4=%08X, returning 1\n", ctx.r4.u32);
+            fprintf(stderr, "[heap] sub_82881020 called as VTABLE METHOD r4=%08X iter=%d, returning 1\n", ctx.r4.u32, loop_iteration);
             fflush(stderr);
         }
         ctx.r3.u32 = 1;  // Return "available"

@@ -25,6 +25,55 @@ static void sub_82625D60_guard(PPCContext& ctx, uint8_t* /*base*/) {
     ctx.r3.u32 = 0;
 }
 
+// Stub for NULL vtable methods - these are optional vtable methods that some objects don't implement
+// The game calls these through vtables, but some objects have NULL pointers for these methods
+static void vtable_method_stub_noop(PPCContext& ctx, uint8_t* /*base*/) {
+    // Do nothing - this is a no-op vtable method
+    // Return 0 in r3 to indicate success/no-op
+    ctx.r3.u32 = 0;
+}
+
+// Loop breaker for wait functions called in infinite loop at 0x825CEE18/0x825CEE28
+// These are code snippets (not full functions) that are part of a wait loop
+static inline bool BreakWaitLoopEnabled() {
+    if (const char* v = std::getenv("MW05_BREAK_WAIT_LOOP")) {
+        return !(v[0] == '0' && v[1] == '\0');
+    }
+    return false;
+}
+
+// Stub for code snippet at 0x825CEE18 - part of wait loop
+static void sub_825CEE18_stub(PPCContext& ctx, uint8_t* /*base*/) {
+    static int call_count = 0;
+    static const bool s_break_loop = BreakWaitLoopEnabled();
+
+    if (s_break_loop && ++call_count > 100) {
+        // Break the loop by returning a value that will exit the wait
+        KernelTraceHostOpF("HOST.BreakWaitLoop.825CEE18 count=%d", call_count);
+        ctx.r3.u32 = 1;  // Return "ready" to break the loop
+        return;
+    }
+
+    // Otherwise, return 0 to continue waiting
+    ctx.r3.u32 = 0;
+}
+
+// Stub for code snippet at 0x825CEE28 - part of wait loop
+static void sub_825CEE28_stub(PPCContext& ctx, uint8_t* /*base*/) {
+    static int call_count = 0;
+    static const bool s_break_loop = BreakWaitLoopEnabled();
+
+    if (s_break_loop && ++call_count > 100) {
+        // Break the loop by returning a value that will exit the wait
+        KernelTraceHostOpF("HOST.BreakWaitLoop.825CEE28 count=%d", call_count);
+        ctx.r3.u32 = 1;  // Return "ready" to break the loop
+        return;
+    }
+
+    // Otherwise, return 0 to continue waiting
+    ctx.r3.u32 = 0;
+}
+
 static void RegisterHookOverridesManual() {
     // Safety guard
     g_memory.InsertFunction(0x82625D60, sub_82625D60_guard);
@@ -36,6 +85,15 @@ static void RegisterHookOverridesManual() {
     g_memory.InsertFunction(0x8262F2A0, MW05Shim_sub_8262F2A0);
     g_memory.InsertFunction(0x8262F330, MW05Shim_sub_8262F330);
     g_memory.InsertFunction(0x82812E20, MW05Shim_sub_82812E20);
+
+    // CRITICAL: Wait loop breakers - these code snippets are called in an infinite loop
+    g_memory.InsertFunction(0x825CEE18, sub_825CEE18_stub);
+    g_memory.InsertFunction(0x825CEE28, sub_825CEE28_stub);
+
+    // CRITICAL: NULL vtable method stubs - these are optional vtable methods that some objects don't implement
+    // Register at fake addresses that can be used to replace NULL pointers in vtables
+    g_memory.InsertFunction(0x82FF2000, vtable_method_stub_noop);  // Stub for vtable method at offset +0x50
+    g_memory.InsertFunction(0x82FF2010, vtable_method_stub_noop);  // Stub for vtable method at offset +0x2C
 
     // DISABLED: Thread creation shims - investigating if these cause address space issues
     // g_memory.InsertFunction(0x82880FA0, MW05Shim_sub_82880FA0);

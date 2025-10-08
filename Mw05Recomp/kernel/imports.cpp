@@ -674,6 +674,14 @@ static inline bool Mw05EnvEnabled(const char* name) {
     return false;
 }
 static void Mw05MaybeInstallDefaultVdIsr() {
+    static bool s_logged_once = false;
+    if (!s_logged_once) {
+        bool env_enabled = Mw05EnvEnabled("MW05_REGISTER_DEFAULT_VD_ISR");
+        uint32_t cur_cb = g_VdGraphicsCallback.load(std::memory_order_acquire);
+        fprintf(stderr, "[VBLANK-ISR-INSTALL] env_enabled=%d cur_cb=%08X\n", (int)env_enabled, cur_cb);
+        fflush(stderr);
+        s_logged_once = true;
+    }
     if (!Mw05EnvEnabled("MW05_REGISTER_DEFAULT_VD_ISR")) return;
     if (g_VdGraphicsCallback.load(std::memory_order_acquire) != 0) return;
     g_VdGraphicsCallback.store(kHostDefaultVdIsrMagic, std::memory_order_release);
@@ -1679,6 +1687,14 @@ static void Mw05StartVblankPumpOnce() {
                 fflush(stderr);
             }
 
+            // DIAGNOSTIC: Log ISR callback status every 100 ticks
+            if (currentTick % 100 == 0) {
+                const uint32_t cb = VdGetGraphicsInterruptCallback();
+                const uint32_t ctx = VdGetGraphicsInterruptContext();
+                fprintf(stderr, "[VBLANK-ISR-STATUS] tick=%u cb=%08X ctx=%08X\n", currentTick, cb, ctx);
+                fflush(stderr);
+            }
+
             // EXPERIMENTAL: Force-trigger video thread initialization after boot completes
             // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
             // MW05 appears to be waiting for a condition that's not being met in our version.
@@ -1850,6 +1866,56 @@ static void Mw05StartVblankPumpOnce() {
                                 fflush(stderr);
                             }
                         }
+                    }
+                }
+
+                // CRITICAL FIX #3: Initialize dword_82A2AC40 (wait loop global)
+                // This global is used by the wait loop at 0x825CEE18/0x825CEE28
+                // It needs to point to a valid object for the wait functions to work
+                static bool s_wait_loop_global_initialized = false;
+                if (!s_wait_loop_global_initialized) {
+                    const uint32_t wait_global_addr = 0x82A2AC40;
+                    uint32_t wait_obj_ptr = LoadBE32_Watched(g_memory.base, wait_global_addr);
+
+                    if (wait_obj_ptr == 0) {
+                        // Check if loop breaker is enabled
+                        static const bool s_break_wait_loop = [](){
+                            if (const char* v = std::getenv("MW05_BREAK_WAIT_LOOP")) {
+                                return !(v[0] == '0' && v[1] == '\0');
+                            }
+                            return false;
+                        }();
+
+                        if (s_break_wait_loop) {
+                            // Allocate a fake wait object (64 bytes should be enough)
+                            extern Heap g_userHeap;
+                            void* wait_obj_host = g_userHeap.Alloc(64);
+                            if (wait_obj_host) {
+                                wait_obj_ptr = g_memory.MapVirtual(wait_obj_host);
+                                fprintf(stderr, "[VBLANK-FORCE] Allocated wait object at %08X (host=%p)\n",
+                                        wait_obj_ptr, wait_obj_host);
+                                fflush(stderr);
+
+                                // Store the wait object pointer in the global
+                                StoreBE32_Watched(g_memory.base, wait_global_addr, wait_obj_ptr);
+
+                                // Initialize the wait object with some reasonable values
+                                // (We don't know the exact structure, so just zero it)
+                                memset(wait_obj_host, 0, 64);
+
+                                fprintf(stderr, "[VBLANK-FORCE] Initialized dword_82A2AC40 = %08X\n", wait_obj_ptr);
+                                fflush(stderr);
+
+                                s_wait_loop_global_initialized = true;
+                            } else {
+                                fprintf(stderr, "[VBLANK-FORCE] ERROR: Failed to allocate wait object!\n");
+                                fflush(stderr);
+                            }
+                        }
+                    } else {
+                        fprintf(stderr, "[VBLANK-FORCE] Wait object already exists at %08X\n", wait_obj_ptr);
+                        fflush(stderr);
+                        s_wait_loop_global_initialized = true;
                     }
                 }
             }

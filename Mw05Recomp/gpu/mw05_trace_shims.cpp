@@ -918,6 +918,15 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 
+    // Check if fake_alloc is enabled first
+    static const bool s_fake_alloc = [](){
+        const char* v = std::getenv("MW05_FAKE_ALLOC_SYSBUF");
+        bool result = (v && v[0] && !(v[0]=='0' && v[1]=='\0'));
+        fprintf(stderr, "[SHIM-INIT] MW05_FAKE_ALLOC_SYSBUF=%s result=%d\n", v ? v : "(null)", result);
+        fflush(stderr);
+        return result;
+    }();
+
     // Check if r3 is valid before accessing memory
     // If invalid, try to seed from environment variable or last known scheduler context
     if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
@@ -941,8 +950,17 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
             }
         }
 
-        // If still invalid, return NULL
+        // If still invalid and fake_alloc is enabled, return fake allocation
         if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
+            if (s_fake_alloc) {
+                // Return a fake allocation from the system command buffer
+                const uint32_t sys_base    = 0x00140400u;
+                const uint32_t sys_payload = sys_base + 0x10u;
+                KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X", sys_payload);
+                ctx.r3.u32 = sys_payload;
+                return;
+            }
+            // Otherwise return NULL
             KernelTraceHostOpF("HOST.825968B0.still_invalid r3=%08X - returning NULL", ctx.r3.u32);
             ctx.r3.u32 = 0;
             return;
@@ -957,17 +975,12 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     uint8_t b10433 = (uint8_t)(f10432w & 0xFF);
     KernelTraceHostOpF("HOST.825968B0.flags10433=%02X", (unsigned)b10433);
     // If the allocator callback is NULL or invalid, optionally fake an allocation into the System Command Buffer payload
-    static const bool s_fake_alloc = [](){
-        const char* v = std::getenv("MW05_FAKE_ALLOC_SYSBUF");
-        bool result = (v && v[0] && !(v[0]=='0' && v[1]=='\0'));
-        fprintf(stderr, "[SHIM-INIT] MW05_FAKE_ALLOC_SYSBUF=%s result=%d\n", v ? v : "(null)", result);
-        fflush(stderr);
-        return result;
-    }();
     KernelTraceHostOpF("HOST.825968B0.fake_alloc=%d", s_fake_alloc);
     // Check if function pointer is NULL or outside valid PPC range
     bool fp_invalid = (fp_ea == 0 || fp_ea < 0x82000000 || fp_ea >= 0x82CD0000);
     if (s_fake_alloc) {
+        // CRITICAL: Always skip calling the original function when fake_alloc is enabled
+        // The original function will try to call through fp_ea, which might be NULL or invalid
         if (fp_invalid) {
             // Known default guest EA for syscmd buffer base from our bridge: 0x00140400
             // Return a pointer just past the 16-byte header we seed (payload begins at +0x10)
@@ -989,12 +1002,16 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
             KernelTraceHostOpF("HOST.825968B0.fake ret=%08X (fp_ea=%08X was invalid)", sys_payload, fp_ea);
             ctx.r3.u32 = sys_payload;
             return;
+        } else {
+            // fp_ea is valid, but we still don't want to call the original function
+            // because it might call through fp_ea which could cause issues
+            // Instead, return a fake allocation
+            const uint32_t sys_base    = 0x00140400u;
+            const uint32_t sys_payload = sys_base + 0x10u;
+            KernelTraceHostOpF("HOST.825968B0.fake ret=%08X (fp_ea=%08X was valid but skipped)", sys_payload, fp_ea);
+            ctx.r3.u32 = sys_payload;
+            return;
         }
-        // Even if fp_ea is valid, don't call the original function - it will try to call through fp_ea
-        // which might be invalid later. Just return NULL to skip the allocation.
-        KernelTraceHostOpF("HOST.825968B0.skip ret=0 (fake_alloc enabled, fp_ea=%08X)", fp_ea);
-        ctx.r3.u32 = 0;
-        return;
     }
     __imp__sub_825968B0(ctx, base);
     KernelTraceHostOpF("HOST.825968B0.ret r3=%08X", ctx.r3.u32);

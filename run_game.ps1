@@ -32,6 +32,8 @@ $env:MW05_FAST_BOOT = "1"
 $env:MW05_FAST_RET = "0"
 $env:MW05_BREAK_82813514 = "1"  # CRITICAL: Break the rendering thread wait loop
 $env:MW05_TRACE_INDIRECT = "1"  # Trace indirect function calls
+$env:MW05_FAKE_ALLOC_SYSBUF = "1"  # CRITICAL: Fake allocations to avoid NULL function pointer calls
+$env:MW05_BREAK_WAIT_LOOP = "1"  # CRITICAL: Break the wait loop at 0x825CEE18/0x825CEE28
 
 # Unblock main thread
 $env:MW05_UNBLOCK_MAIN = "1"
@@ -44,6 +46,9 @@ $env:MW05_FORCE_VIDEO_THREAD_TICK = "300"
 $env:MW05_DEFAULT_VD_ISR = "1"
 $env:MW05_REGISTER_DEFAULT_VD_ISR = "1"
 $env:MW05_PULSE_VD_ON_SLEEP = "1"
+
+# Enable kernel tracing to see ISR calls
+$env:MW05_TRACE_KERNEL = "1"
 
 # Present heartbeat
 $env:MW05_PRESENT_HEARTBEAT_MS = "100"

@@ -243,3 +243,7 @@ void sub_824411E0(PPCContext& ctx, uint8_t* base) {
     __imp__sub_824411E0(ctx, base);
     KernelTraceHostOp("HOST.ThreadEntry.824411E0 complete");
 }
+
+// Register the thread entry point hooks
+// These wrapper functions are registered via g_memory.InsertFunction in main.cpp
+// Do NOT use GUEST_FUNCTION_HOOK here as it causes redefinition errors with the recompiled PPC code

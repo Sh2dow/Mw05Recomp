@@ -93,8 +93,9 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
     env.setdefault("MW05_FORCE_VD_INIT", "1")
     env.setdefault("MW05_VD_POLL_DIAG", "1")
     env.setdefault("MW05_PRESENT_HEARTBEAT_MS", "250")
-    env.setdefault("MW05_FORCE_PRESENT", "0")
+    env.setdefault("MW05_FORCE_PRESENT", "0")  # Disable - let VdSwap drive presents
     env.setdefault("MW05_FORCE_PRESENT_BG", "0")
+    env.setdefault("MW05_VBLANK_VDSWAP", "1")  # Call VdSwap from vblank pump at 60 Hz
     env.setdefault("MW05_SYNTH_VDSWAP_ON_FLIP", "0")
     env.setdefault("MW05_FORCE_VDSWAP_ONCE", "0")
     env.setdefault("MW05_VDSWAP_ACK", "1")
@@ -102,12 +103,14 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
     env.setdefault("MW05_DEFAULT_VD_ISR", "1")
     env.setdefault("MW05_PUMP_EVENTS", "1")
     env.setdefault("MW05_HOST_ISR_TICK_SYSID", "1")
-    # Force-register known-good graphics notify ISR from Xenia capture (safe if guest sets it later)
-    env.setdefault("MW05_FORCE_GFX_NOTIFY_CB", "1")
-    env.setdefault("MW05_FORCE_GFX_NOTIFY_CB_EA", "0x825979A8")
-    env.setdefault("MW05_FORCE_GFX_NOTIFY_CB_CTX", "1")
+    # TEMPORARY: Disable forced registration of guest ISR to let host default ISR run
+    # The guest ISR sub_825979A8 doesn't call VdCallGraphicsNotificationRoutines
+    env.setdefault("MW05_FORCE_GFX_NOTIFY_CB", "0")
+    # env.setdefault("MW05_FORCE_GFX_NOTIFY_CB_EA", "0x825979A8")
+    # env.setdefault("MW05_FORCE_GFX_NOTIFY_CB_CTX", "1")
 
-    env.setdefault("MW05_PM4_SYSBUF_WATCH", "1")
+    # DISABLED: This scans 64 KiB of memory every vblank tick, causing ~170ms per tick instead of 16ms!
+    env.setdefault("MW05_PM4_SYSBUF_WATCH", "0")
     # Heuristics to advance pre-swap state machines some titles expect
     env.setdefault("MW05_VD_TICK_E70", "1")
     env.setdefault("MW05_VD_TOGGLE_E68", "1")
@@ -120,11 +123,12 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
     # Optionally keep ack bit asserted to satisfy heuristics preconditions
     env.setdefault("MW05_PM4_FAKE_SWAP", "0")
     # Aggressive nudge to progress pre-swap and present paths when stuck
-    env["MW05_PM4_FAKE_SWAP"] = "1"          # keep ACK bit asserted (safe pre-render)
-    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
-    env["MW05_FORCE_PRESENT"] = "1"
-    env["MW05_FORCE_PRESENT_BG"] = "1"
-    env["MW05_SYNTH_VDSWAP_ONCE"] = "1"
+    # DISABLED: These prevent the vblank callback from being called at 60 Hz!
+    # env["MW05_PM4_FAKE_SWAP"] = "1"          # keep ACK bit asserted (safe pre-render)
+    # env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
+    # env["MW05_FORCE_PRESENT"] = "1"
+    # env["MW05_FORCE_PRESENT_BG"] = "1"
+    # env["MW05_SYNTH_VDSWAP_ONCE"] = "1"
     # Allow toggles to be overridden for strict mode after defaults are set
     if strict:
         # Disable aggressive present/swap nudges
@@ -148,6 +152,9 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
     # Nudge present-wrapper once after a short grace period, only if a valid context is captured by shims
     env.setdefault("MW05_FORCE_PRESENT_WRAPPER_ONCE", "1")
     env.setdefault("MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS", "240")  # ~4s at 60 Hz
+    # Retry present wrapper multiple times to stimulate guest rendering loop
+    env.setdefault("MW05_FPW_RETRIES", "10")  # Retry 10 times
+    env.setdefault("MW05_FPW_RETRY_TICKS", "60")  # Every ~1s
     env.setdefault("MW05_NOTIFY_IMMEDIATE", "0")
     # Visibility into VD control block and swap-edge detection
     env.setdefault("MW05_VD_READ_TRACE", "1")
@@ -156,6 +163,8 @@ def build_env(from_parent: bool, until_draw: bool, draw_diag: bool, strict: bool
     env.setdefault("MW05_PM4_SWAP_DETECT_MASK", "0x2")
     # Delay guest ISR dispatch a bit to avoid early-boot crashes (60 ticks ~ 1s at 60 Hz)
     env.setdefault("MW05_GUEST_ISR_DELAY_TICKS", "60")
+    # Request a present every 100ms to keep swapchain moving (for testing)
+    env.setdefault("MW05_PRESENT_HEARTBEAT_MS", "100")
 
 
     if draw_diag:

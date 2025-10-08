@@ -8567,6 +8567,7 @@ static void MW05_Probe_sub_8250FC70(PPCContext& ctx, uint8_t* base) {
 struct PPCContext; void MW05Shim_sub_82596978(PPCContext&, uint8_t*);
 struct PPCContext; void MW05Shim_sub_825A97B8(PPCContext&, uint8_t*);
 struct PPCContext; void MW05Shim_sub_825979A8(PPCContext&, uint8_t*);
+struct PPCContext; void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
 
 struct PPCContext; void MW05Shim_sub_82598A20(PPCContext&, uint8_t*);
 

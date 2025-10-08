@@ -4,6 +4,9 @@
 #include "function.h"
 #include <os/logger.h>
 
+// Forward declaration for VD initialization
+extern "C" void Mw05ForceVdInitOnce();
+
 constexpr uint32_t kStatusSuccess = 0;
 constexpr uint32_t kStatusInvalidParameter = 0xC000000D;
 constexpr uint32_t kStatusNoMemory = 0xC0000017;
@@ -406,6 +409,181 @@ uint32_t XamFree(uint32_t flags, uint32_t baseAddress)
 
 GUEST_FUNCTION_STUB(sub_82BD7788); // HeapCreate
 GUEST_FUNCTION_STUB(sub_82BD9250); // HeapDestroy
+
+// Game-specific allocator used by video subsystem
+// This allocator is called 51 times throughout the game, including by sub_82849DE8 (video singleton creator)
+// Shimming it to use the host allocator fixes the video singleton allocation failure
+void MW05Shim_sub_82539870(PPCContext& ctx, uint8_t* base)
+{
+    uint32_t size = ctx.r3.u32;
+    void* ptr = g_userHeap.Alloc(size);
+    if (!ptr) {
+        fprintf(stderr, "[heap] sub_82539870 FAILED to allocate %u bytes\n", size);
+        fflush(stderr);
+        ctx.r3.u32 = 0;
+        return;
+    }
+    uint32_t guestAddr = g_memory.MapVirtual(ptr);
+    fprintf(stderr, "[heap] sub_82539870 allocated %u bytes at guest=%08X\n", size, guestAddr);
+    fflush(stderr);
+    ctx.r3.u32 = guestAddr;
+}
+
+GUEST_FUNCTION_HOOK(__imp__sub_82539870, MW05Shim_sub_82539870);
+
+// CRITICAL FIX: sub_8284A698 is supposed to initialize the object but doesn't set the vtable
+// We need to stub it to properly initialize the object with a vtable
+// Looking at the IDA code, this function allocates 432 bytes and initializes the object
+// But the vtable is not being set, causing NULL vtable pointer issues
+extern "C" void __imp__sub_8284A698(PPCContext& ctx, uint8_t* base);
+
+void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
+{
+    fprintf(stderr, "[heap] MW05Shim_sub_8284A698 ENTRY\n");
+    fflush(stderr);
+
+    uint32_t r3_in = ctx.r3.u32;  // Object pointer (offset +8 from base)
+    uint32_t r4_in = ctx.r4.u32;
+    uint32_t r5_in = ctx.r5.u32;
+
+    fprintf(stderr, "[heap] sub_8284A698 CALLED r3=%08X r4=%08X r5=%08X\n", r3_in, r4_in, r5_in);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_8284A698(ctx, base);
+
+    // After the original function, patch the vtable pointer
+    // Allocate a dummy vtable in guest memory
+    static uint32_t s_vtable_guest_addr = 0;
+
+    if (s_vtable_guest_addr == 0) {
+        // Allocate 128 bytes for the vtable (32 entries * 4 bytes)
+        void* vtable_host = g_userHeap.Alloc(128);
+        if (vtable_host) {
+            s_vtable_guest_addr = g_memory.MapVirtual(vtable_host);
+
+            // Initialize the vtable - all entries NULL except offset 0x34
+            uint32_t* vtable_ptr = reinterpret_cast<uint32_t*>(vtable_host);
+            memset(vtable_ptr, 0, 128);
+
+            // Set entry at offset 0x34 (index 13) to point to our stub
+            vtable_ptr[13] = __builtin_bswap32(0x82849000);
+
+            fprintf(stderr, "[heap] Allocated dummy vtable at guest=%08X with stub at offset 0x34\n", s_vtable_guest_addr);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[heap] FAILED to allocate dummy vtable!\n");
+            fflush(stderr);
+        }
+    }
+
+    // Set the vtable pointer at offset 0 of the object
+    if (s_vtable_guest_addr) {
+        uint32_t obj_addr = r3_in - 8;  // r3 is offset +8, so object base is -8
+        uint32_t* obj_ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(obj_addr));
+        if (obj_ptr) {
+            *obj_ptr = __builtin_bswap32(s_vtable_guest_addr);
+            fprintf(stderr, "[heap] Set vtable pointer at object %08X to %08X\n", obj_addr, s_vtable_guest_addr);
+            fflush(stderr);
+
+            // CRITICAL: Initialize offset 0x60 to non-zero to unblock the video thread
+            // The video thread (sub_82849D40) waits in a loop until offset 0x60 is non-zero
+            // Set it to 2 (the value it sets after the wait loop completes)
+            uint32_t* field_0x60 = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(obj_ptr) + 0x60);
+            *field_0x60 = __builtin_bswap32(2);
+            fprintf(stderr, "[heap] Set object+0x60 to 2 to unblock video thread\n");
+            fflush(stderr);
+        }
+    }
+
+    int32_t result = static_cast<int32_t>(ctx.r3.u32);
+    fprintf(stderr, "[heap] sub_8284A698 RETURNED r3=%08X (%d)\n", ctx.r3.u32, result);
+    fflush(stderr);
+    fprintf(stderr, "[heap] TEST: About to call Mw05ForceVdInitOnce\n");
+    fflush(stderr);
+
+    // CRITICAL: Initialize VD graphics subsystem now that video singleton is created
+    // This ensures ring buffer, system command buffer, and engines are initialized
+    try {
+        Mw05ForceVdInitOnce();
+        fprintf(stderr, "[heap] TEST: Mw05ForceVdInitOnce completed\n");
+        fflush(stderr);
+    } catch (...) {
+        fprintf(stderr, "[heap] ERROR: Exception in Mw05ForceVdInitOnce!\n");
+        fflush(stderr);
+    }
+}
+
+GUEST_FUNCTION_HOOK(sub_8284A698, MW05Shim_sub_8284A698);
+
+// CRITICAL FIX: This function is failing with E_OUTOFMEMORY (0x8007000E)
+// It's trying to initialize D3D resources but failing
+// For now, just stub it out to return success
+// Called by sub_82849DE8 after sub_8284A698 succeeds
+void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
+{
+    uint32_t r3_in = ctx.r3.u32;
+    uint32_t r4_in = ctx.r4.u32;
+    uint32_t r5_in = ctx.r5.u32;
+
+    fprintf(stderr, "[heap] sub_82881020 STUBBED (was failing with E_OUTOFMEMORY) r3=%08X r4=%08X r5=%08X\n", r3_in, r4_in, r5_in);
+    fflush(stderr);
+
+    // Return success instead of calling the failing function
+    ctx.r3.u32 = 0;  // Success
+
+    fprintf(stderr, "[heap] sub_82881020 STUBBED returning SUCCESS\n");
+    fflush(stderr);
+}
+
+GUEST_FUNCTION_HOOK(__imp__sub_82881020, MW05Shim_sub_82881020);
+
+// CRITICAL FIX: Stub for NULL vtable entry at offset 0x34
+// This vtable entry is called by sub_82849BF8 in a loop 4 times
+// The result is shifted and ORed together
+// Looking at the IDA code, the loop calls the vtable function 4 times (r30 = 0..3)
+// and shifts the result left by r30, then ORs it together
+// For now, just return 1 to indicate success/availability
+void MW05Stub_sub_82849000(PPCContext& ctx, uint8_t* base)
+{
+    static int call_count = 0;
+    if (call_count++ < 10) {
+        fprintf(stderr, "[heap] NULL vtable entry stub (sub_82849000) called, returning 1\n");
+        fflush(stderr);
+    }
+    // Return 1 to indicate success
+    ctx.r3.u32 = 1;
+}
+
+// Register the stub at address 0x82849000 (unused area near sub_82849BF8)
+GUEST_FUNCTION_HOOK(sub_82849000, MW05Stub_sub_82849000);
+
+// CRITICAL FIX: sub_82849BF8 is stuck in a loop calling NULL vtable entries
+// Instead of trying to patch the vtable, just stub the entire function
+// Looking at the IDA code, this function:
+// 1. Calls XNotifyGetNext to check for system notifications
+// 2. Calls sub_82849678 and sub_82849718 (helper functions)
+// 3. Calls a vtable function 4 times in a loop (r30 = 0..3)
+// 4. Shifts the result left by r30 and ORs them together
+// 5. Checks if a specific bit is set and sets a flag at offset 0x2C
+// The vtable calls are failing because the vtable is NULL
+// For now, just stub the entire function to allow the video thread to progress
+void MW05Shim_sub_82849BF8(PPCContext& ctx, uint8_t* base)
+{
+    uint32_t r3_in = ctx.r3.u32;  // Object pointer
+
+    static int call_count = 0;
+    if (call_count++ < 3) {
+        fprintf(stderr, "[heap] sub_82849BF8 STUBBED (skipping NULL vtable calls) r3=%08X\n", r3_in);
+        fflush(stderr);
+    }
+
+    // Just return success without calling the original function
+    // The function doesn't return a value, so we don't need to set r3
+    // The important thing is to not call the NULL vtable entries
+}
+
+GUEST_FUNCTION_HOOK(__imp__sub_82849BF8, MW05Shim_sub_82849BF8);
 
 #if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_HOOK(sub_82BD7D30, RtlAllocateHeap);

@@ -177,7 +177,24 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.hdr d0=%08X d1=%08X d2=%08X d3=%08X d4=%08X d5=%08X d6=%08X d7=%08X",
                        d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
 
-    // Two observed layouts:
+    // CRITICAL FIX: Check if d0 is a TYPE3 PM4 packet header (top 2 bits = 11)
+    // If so, this is a self-referential INDIRECT_BUFFER packet - skip the header and process parameters
+    if (((d[0] >> 30) & 0x3u) == 3u) {
+        uint32_t opcode = (d[0] >> 8) & 0xFFu;
+        uint32_t count = (d[0] >> 16) & 0x3FFFu;
+        if (opcode == 0x04) { // PM4_INDIRECT_BUFFER
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.self_ref detected - skipping header, processing %u params", count);
+            // Skip the header and process the parameters as micro-commands
+            p += 1; // Skip header
+            ib_addr += 4; // Adjust address
+            // Re-read the data window starting from parameters
+            for (int i = 0; i < 16; ++i) d[i] = bswap32(p[i]);
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.params d0=%08X d1=%08X d2=%08X d3=%08X d4=%08X d5=%08X d6=%08X d7=%08X",
+                               d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+        }
+    }
+
+    // Three observed layouts:
     // A) Direct MW05 header: d0 == 'MW05' (0x3530574D BE after swap). In this case:
     //    - d1 = EA to another micro list (already swapped to LE)
     //    - d3 BE low16 = signed byte offset to apply
@@ -187,8 +204,15 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     //    - d1 = signed relative offset (appears to be in dwords; e.g., 0xFFFFFFF9 = -7)
     //    - d2 = small size in bytes (e.g., 0x20)
     //    - subsequent pairs repeat (d3=-7, d4=0x20, ...)
+    // C) Parameter list (from INDIRECT_BUFFER packet after header skip):
+    //    - d0 = metadata/magic (0xEFFAFFD9 or 0xFFFAFEFD)
+    //    - d1 = base EA
+    //    - d2 = signed offset in dwords
+    //    - d3 = size in bytes
+    //    - subsequent pairs repeat (d4=offset, d5=size, ...)
 
     bool is_direct_mw = (d[0] == 0x3530574Du);
+    bool is_param_list = (d[0] == 0xEFFAFFD9u || d[0] == 0xFFFAFEFDu);
 
     // Conservatively bind RT/DS once so real draws (when decoded) have a target
     if (IsApplyHostStateEnabled()) {
@@ -205,12 +229,48 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     uint32_t follow_ea = 0;
     int32_t  rel_bytes = 0;
 
-    if (is_direct_mw) {
+    auto fixup_ea = [](uint32_t ea) {
+        if (ea >= 0x00020000u && ea < 0x00060000u) return (ea | 0x00100000u);
+        return ea;
+    };
+
+    if (is_param_list) {
+        // Layout C (parameter list from INDIRECT_BUFFER packet)
+        // d[0] = metadata/magic, d[1] = base EA, then pairs of (offset_dw, size_bytes)
+        uint32_t base_ea = fixup_ea(d[1]);
+        KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C magic=%08X base=%08X", d[0], base_ea);
+
+        // Process pairs starting at d[2]: (offset_dw, size_bytes)
+        for (uint32_t i = 2; i + 1 < 16; i += 2) {
+            int32_t offset_dw = static_cast<int32_t>(d[i]);
+            uint32_t size_bytes = d[i + 1];
+
+            // Skip zero/invalid pairs
+            if (size_bytes == 0 || size_bytes > 0x10000u) continue;
+
+            uint32_t target_ea = base_ea + (offset_dw * 4);
+            target_ea = fixup_ea(target_ea);
+
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.pair[%u] base=%08X off_dw=%d target=%08X size=%u",
+                               (i - 2) / 2, base_ea, offset_dw, target_ea, size_bytes);
+
+            // Scan this target region for PM4 commands
+            if (target_ea && size_bytes) {
+                PM4_ScanLinear(target_ea, size_bytes);
+            }
+        }
+
+        // For the main scan, use the first pair
+        if (d[3] > 0 && d[3] <= 0x4000u) {
+            int32_t offset_dw = static_cast<int32_t>(d[2]);
+            eff = base_ea + (offset_dw * 4);
+            eff = fixup_ea(eff);
+            sz = d[3];
+            follow_ea = base_ea;
+            rel_bytes = offset_dw * 4;
+        }
+    } else if (is_direct_mw) {
         // Layout A
-        auto fixup_ea = [](uint32_t ea) {
-            if (ea >= 0x00020000u && ea < 0x00060000u) return (ea | 0x00100000u);
-            return ea;
-        };
         follow_ea = fixup_ea(d[1]);
         rel_bytes = be_low_s16_from_le(d[3]); // signed byte offset in bytes
         eff = follow_ea + rel_bytes;
@@ -223,11 +283,6 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     } else {
         // Layout B (wrapper): treat d0 as base EA; d1 as signed dword offset; d2 as size in bytes
         uint32_t base_ea = d[0];
-        // Fixup: MW05 often stores syscmd/ring EAs without the 0x00100000 high bits (e.g., 0x00040410 for 0x00140410)
-        auto fixup_ea = [](uint32_t ea) {
-            if (ea >= 0x00020000u && ea < 0x00060000u) return (ea | 0x00100000u);
-            return ea;
-        };
         base_ea = fixup_ea(base_ea);
         int32_t rel_dw = static_cast<int32_t>(d[1]); // already LE; appears to be in dwords
         rel_bytes = rel_dw * 4; // convert to bytes

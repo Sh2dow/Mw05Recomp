@@ -1336,7 +1336,22 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] VdSwap()\n"); fflush(stdout);
     }
-    Video::Present();
+
+    // CRITICAL: Video::Present() manipulates SDL/ImGui state and must run on the main thread.
+    // VdSwap is called from guest threads, so calling Present() here causes hangs.
+    // Instead, request a present from the background and let the main thread handle it.
+    static const bool s_present_on_swap = [](){
+        if (const char* v = std::getenv("MW05_VDSWAP_PRESENT"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // default: OFF (don't call Present from VdSwap)
+    }();
+    if (s_present_on_swap) {
+        Video::Present();
+    } else {
+        // Request present from background; main thread will handle it
+        Video::RequestPresentFromBackground();
+        KernelTraceHostOp("HOST.VdSwap.present_requested");
+    }
 
     // Optional: stimulate guest render scheduler by issuing a notify after swap.
     // Titles often rely on graphics notifications to progress their render loop.
@@ -1622,6 +1637,14 @@ static void Mw05StartVblankPumpOnce() {
     KernelTraceHostOp("HOST.VblankPump.start");
     std::thread([]{
         using namespace std::chrono;
+
+        // Enable high-resolution timers on Windows to ensure accurate 16ms sleep
+        #ifdef _WIN32
+        timeBeginPeriod(1);
+        // Increase thread priority to ensure vblank pump runs at 60 Hz
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        #endif
+
         const auto period = milliseconds(16);
         // Env toggles (latched once)
         // Only force presents from the vblank pump when explicitly requested.
@@ -1640,7 +1663,13 @@ static void Mw05StartVblankPumpOnce() {
                 return !(v[0]=='0' && v[1]=='\0');
             return false; // default OFF: only pump events on main thread
         }();
+        static auto pump_start_time = std::chrono::steady_clock::now();
+        static auto last_iteration_end = std::chrono::steady_clock::now();
         while (g_vblankPumpRun.load(std::memory_order_acquire)) {
+            auto loop_start = std::chrono::steady_clock::now();
+            auto inter_iteration_gap = std::chrono::duration_cast<std::chrono::milliseconds>(loop_start - last_iteration_end);
+            auto elapsed_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(loop_start - pump_start_time);
+
             // Global vblank tick counter for gating guest ISR dispatches
             const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
 
@@ -1650,50 +1679,112 @@ static void Mw05StartVblankPumpOnce() {
                 fflush(stderr);
             }
 
-            // EXPERIMENTAL: Force-create video thread after initialization completes
+            // EXPERIMENTAL: Force-trigger video thread initialization after boot completes
             // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
             // MW05 appears to be waiting for a condition that's not being met in our version.
-            // Force-create the thread to unblock progression to rendering.
+            // Force-call the initialization function to trigger the proper thread creation chain.
             static const bool s_force_video_thread = [](){
                 if (const char* v = std::getenv("MW05_FORCE_VIDEO_THREAD"))
                     return !(v[0]=='0' && v[1]=='\0');
-                return false; // default: disabled (investigating condition check)
+                return true; // default: ENABLED (game doesn't create video thread naturally)
             }();
             static const uint32_t s_force_video_thread_tick = [](){
                 if (const char* v = std::getenv("MW05_FORCE_VIDEO_THREAD_TICK"))
                     return (uint32_t)std::strtoul(v, nullptr, 10);
-                return 250u; // slightly after Xenia's 227 ticks
+                return 300u; // wait longer for natural initialization
             }();
             static std::atomic<bool> s_video_thread_created{false};
+            static bool s_logged_config = false;
+
+            // Log configuration once at tick 0
+            if (currentTick == 0 && !s_logged_config) {
+                fprintf(stderr, "[VBLANK-CONFIG] s_force_video_thread=%d s_force_video_thread_tick=%u\n",
+                    s_force_video_thread, s_force_video_thread_tick);
+                fflush(stderr);
+                s_logged_config = true;
+            }
 
             if (s_force_video_thread && !s_video_thread_created.load(std::memory_order_acquire)) {
+                // Periodically check if singleton was created naturally
+                if ((currentTick % 50) == 0) {
+                    uint32_t singleton_ptr = *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78);
+                    if (singleton_ptr != 0) {
+                        fprintf(stderr, "[VBLANK-NATURAL] Singleton created naturally at tick=%u ptr=%08X\n", currentTick, singleton_ptr);
+                        fflush(stderr);
+                        s_video_thread_created.store(true, std::memory_order_release);
+                    }
+                }
+
+                // Debug: log when we're checking the condition
+                if (currentTick == s_force_video_thread_tick || currentTick == s_force_video_thread_tick - 1) {
+                    fprintf(stderr, "[VBLANK-CHECK] currentTick=%u threshold=%u will_trigger=%d\n",
+                        currentTick, s_force_video_thread_tick, currentTick >= s_force_video_thread_tick);
+                    fflush(stderr);
+                }
                 if (currentTick >= s_force_video_thread_tick) {
                     bool expected = false;
                     if (s_video_thread_created.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                        fprintf(stderr, "[VBLANK-FORCE] Triggering ForceVideoThread at tick=%u\n", currentTick);
+                        fflush(stderr);
                         KernelTraceHostOpF("HOST.ForceVideoThread.trigger tick=%u", currentTick);
 
-                        // Call the thread creation function sub_8284F548 which creates the video thread
-                        // This function is normally called by sub_82885A70 -> sub_8284F548 -> ExCreateThread
-                        // We'll call it directly to bypass the condition check
+                        // Call sub_82849DE8 which is the proper initialization function
+                        // This will set up the correct parameters and call the thread creation chain:
+                        // sub_82849DE8 -> sub_82881020 -> sub_82880FA0 -> sub_82885A70 -> sub_8284F548 -> ExCreateThread
 
                         // Set up a minimal context for the call
-                        // Based on Xenia logs, the function is called with specific parameters
-                        // We'll use default values and let the function set up the thread properly
                         EnsureGuestContextForThisThread("ForceVideoThread");
                         PPCContext ctx{};
-                        SetPPCContext(ctx);
+                        if (auto* cur = GetPPCContext()) ctx = *cur;
 
-                        // Initialize registers to safe defaults
-                        ctx.r3.u64 = 0;  // parameter 1
-                        ctx.r4.u64 = 0;  // parameter 2
-                        ctx.r5.u64 = 0;  // parameter 3
+                        // Based on IDA analysis of sub_82548F18 which calls sub_82849DE8:
+                        // At 0x82548F44: li r3, 3  (before calling sub_82849DE8)
+                        // The function expects r3 to be a count/size parameter
+                        // This is used by sub_8284A698 to calculate allocation size: r5 * 9 * 16 = 3 * 144 = 432 bytes
+                        ctx.r3.u32 = 3;
                         ctx.r1.u64 = 0x00010000;  // stack pointer (safe default)
                         ctx.lr = 0;  // return address
 
-                        KernelTraceHostOp("HOST.ForceVideoThread.call_sub_8284F548");
-                        extern void sub_8284F548(PPCContext& ctx, uint8_t* base);
-                        sub_8284F548(ctx, g_memory.base);
-                        KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
+                        // Read the singleton pointer at dword_82911B78
+                        uint32_t singleton_ptr = *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78);
+                        fprintf(stderr, "[VBLANK-FORCE] dword_82911B78 = %08X\n", singleton_ptr);
+                        fflush(stderr);
+
+                        if (singleton_ptr == 0) {
+                            // Singleton not created yet, create it
+                            fprintf(stderr, "[VBLANK-FORCE] Singleton not created, calling sub_82849DE8\n");
+                            fflush(stderr);
+                            KernelTraceHostOp("HOST.ForceVideoThread.call_sub_82849DE8");
+                            extern void sub_82849DE8(PPCContext& ctx, uint8_t* base);
+                            sub_82849DE8(ctx, g_memory.base);
+                            fprintf(stderr, "[VBLANK-FORCE] sub_82849DE8 returned r3=%08X\n", ctx.r3.u32);
+                            fflush(stderr);
+                            KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
+
+                            // Re-read the singleton pointer
+                            singleton_ptr = *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78);
+                            fprintf(stderr, "[VBLANK-FORCE] After creation, dword_82911B78 = %08X\n", singleton_ptr);
+                            fflush(stderr);
+                        } else {
+                            fprintf(stderr, "[VBLANK-FORCE] Singleton already exists at %08X\n", singleton_ptr);
+                            fflush(stderr);
+                        }
+
+                        // Check if thread handle exists at offset 0x64
+                        if (singleton_ptr != 0) {
+                            uint32_t thread_handle = *reinterpret_cast<uint32_t*>(g_memory.base + (singleton_ptr - 0x80000000) + 0x64);
+                            fprintf(stderr, "[VBLANK-FORCE] Thread handle at +0x64 = %08X\n", thread_handle);
+                            fflush(stderr);
+
+                            if (thread_handle != 0) {
+                                fprintf(stderr, "[VBLANK-FORCE] Video thread exists, handle=%08X\n", thread_handle);
+                                fflush(stderr);
+                                // TODO: Check thread state and potentially resume it
+                            } else {
+                                fprintf(stderr, "[VBLANK-FORCE] WARNING: Singleton exists but no thread handle!\n");
+                                fflush(stderr);
+                            }
+                        }
                     }
                 }
             }
@@ -1839,14 +1930,29 @@ static void Mw05StartVblankPumpOnce() {
                     return !(v[0]=='0' && v[1]=='\0');
                 // When forcing presents or kicking video early, avoid calling guest ISR
                 // to prevent crashes from partially initialized guest state.
-                if (std::getenv("MW05_FORCE_PRESENT") || std::getenv("MW05_FORCE_PRESENT_BG") || std::getenv("MW05_KICK_VIDEO")) {
+                // FIX: Check the VALUE of the env vars, not just their existence!
+                auto is_enabled = [](const char* name) -> bool {
+                    const char* v = std::getenv(name);
+                    return v && !(v[0]=='0' && v[1]=='\0');
+                };
+                bool force_present = is_enabled("MW05_FORCE_PRESENT");
+                bool force_present_bg = is_enabled("MW05_FORCE_PRESENT_BG");
+                bool kick_video = is_enabled("MW05_KICK_VIDEO");
+
+                // DIAGNOSTIC: Log the decision
+                KernelTraceHostOpF("HOST.VblankPump.cb_on_init force_present=%d force_present_bg=%d kick_video=%d",
+                                  (int)force_present, (int)force_present_bg, (int)kick_video);
+
+                if (force_present || force_present_bg || kick_video) {
                     // Normally suppress guest ISR during forced-present bring-up, but allow
                     // the host-side default ISR if explicitly enabled.
                     if (const char* d = std::getenv("MW05_DEFAULT_VD_ISR"))
                         return !(d[0]=='0' && d[1]=='\0');
+                    KernelTraceHostOp("HOST.VblankPump.cb_on_init DISABLED due to force_present/bg/kick");
                     return false;
                 }
                 // Default: enabled only when not in forced-present bring-up paths
+                KernelTraceHostOp("HOST.VblankPump.cb_on_init ENABLED");
                 return true;
             }();
             if (cb_on) {
@@ -1868,8 +1974,29 @@ static void Mw05StartVblankPumpOnce() {
                     if (ticks3 < s_guest_isr_delay3) {
                         KernelTraceHostOpF("HOST.VblankPump.guest_isr.skip.early ticks=%u<%u", (unsigned)ticks3, (unsigned)s_guest_isr_delay3);
                     } else {
+                        static int s_isr_call_count = 0;
+                        if (s_isr_call_count < 5 || s_isr_call_count % 60 == 0) {
+                            KernelTraceHostOpF("HOST.VblankPump.guest_isr.call ticks=%u cb=%08X ctx=%08X count=%d",
+                                              (unsigned)ticks3, cb, ctx, s_isr_call_count);
+                        }
+                        s_isr_call_count++;
                         EnsureGuestContextForThisThread("VblankPump");
-                        GuestToHostFunction<void>(cb, 0u, ctx);
+
+                        // Wrap guest ISR call in SEH to prevent crashes from killing the vblank pump
+                        #if defined(_WIN32)
+                            __try {
+                                GuestToHostFunction<void>(cb, 0u, ctx);
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                static int s_exception_count = 0;
+                                s_exception_count++;
+                                if (s_exception_count <= 5 || s_exception_count % 60 == 0) {
+                                    KernelTraceHostOpF("HOST.VblankPump.guest_isr.seh_abort ticks=%u code=%08X count=%d",
+                                                      (unsigned)ticks3, (unsigned)GetExceptionCode(), s_exception_count);
+                                }
+                            }
+                        #else
+                            GuestToHostFunction<void>(cb, 0u, ctx);
+                        #endif
                     }
                 } else if (const char* d = std::getenv("MW05_DEFAULT_VD_ISR")) {
                     if (!(d[0]=='0' && d[1]=='\0')) {
@@ -1901,8 +2028,38 @@ static void Mw05StartVblankPumpOnce() {
             const uint64_t last_ms = g_lastPresentMs.load(std::memory_order_acquire);
             const uint64_t now_ms  = SDL_GetTicks64();
             const bool stale = s_present_heartbeat_ms && (now_ms - last_ms > s_present_heartbeat_ms);
+
+            // Debug: log heartbeat status every 60 ticks (~1s)
+            static int s_hb_dbg = 0;
+            if (s_present_heartbeat_ms && ((++s_hb_dbg) % 60) == 0) {
+                KernelTraceHostOpF("HOST.PresentHeartbeat.status hb_ms=%llu last_ms=%llu now_ms=%llu delta=%llu stale=%d swapped=%d",
+                    s_present_heartbeat_ms, last_ms, now_ms, (now_ms - last_ms), int(stale), int(Mw05HasGuestSwapped()));
+            }
+
             if (s_force_present || !Mw05HasGuestSwapped() || stale) {
                 Video::RequestPresentFromBackground();
+                if (stale && s_hb_dbg % 10 == 0) {
+                    KernelTraceHostOp("HOST.PresentHeartbeat.request_stale");
+                }
+            }
+
+            // Optional: call VdSwap from vblank pump to drive continuous presents
+            // This simulates the guest calling VdSwap repeatedly at 60 Hz
+            // DISABLED BY DEFAULT - only enable for testing VdSwap infrastructure
+            static const bool s_vblank_vdswap = [](){
+                if (const char* v = std::getenv("MW05_VBLANK_VDSWAP"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false; // DEFAULT: OFF - let guest drive VdSwap
+            }();
+            static bool s_logged_vblank_vdswap = false;
+            if (!s_logged_vblank_vdswap) {
+                fprintf(stderr, "[VBLANK-CONFIG] MW05_VBLANK_VDSWAP=%d (0=guest drives, 1=host drives)\n", s_vblank_vdswap);
+                fflush(stderr);
+                s_logged_vblank_vdswap = true;
+            }
+            if (s_vblank_vdswap) {
+                // Call VdSwap(0, 0, 0) to simulate guest swap
+                VdSwap(0, 0, 0);
             }
 
             // Optional: one-shot nudge into MW05 present-wrapper region to try waking the scheduler
@@ -2879,8 +3036,35 @@ static void Mw05StartVblankPumpOnce() {
             }
             // Also nudge generic waiters relying on generation variable.
             NudgeEventWaiters();
-            std::this_thread::sleep_for(period);
+
+            // DIAGNOSTIC: Log loop timing every 10 ticks
+            auto loop_end = std::chrono::steady_clock::now();
+            auto loop_duration = std::chrono::duration_cast<std::chrono::milliseconds>(loop_end - loop_start);
+
+            // Calculate next target time for precise 60 Hz timing
+            // Use sleep_until instead of sleep_for to avoid accumulating drift
+            static auto next_tick_time = loop_start + period;
+            auto sleep_start = std::chrono::steady_clock::now();
+
+            // Only sleep if we haven't already exceeded the target time
+            if (sleep_start < next_tick_time) {
+                std::this_thread::sleep_until(next_tick_time);
+            }
+
+            auto sleep_end = std::chrono::steady_clock::now();
+            auto sleep_duration = std::chrono::duration_cast<std::chrono::milliseconds>(sleep_end - sleep_start);
+            auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(sleep_end - loop_start);
+
+            // Advance next tick time by one period
+            next_tick_time += period;
+
+            if (currentTick <= 5 || currentTick >= 85 || currentTick % 10 == 0) {
+                KernelTraceHostOpF("HOST.VblankPump.timing tick=%u loop_ms=%lld sleep_ms=%lld total_ms=%lld gap_ms=%lld elapsed_ms=%lld",
+                                  currentTick, (long long)loop_duration.count(), (long long)sleep_duration.count(), (long long)total_duration.count(), (long long)inter_iteration_gap.count(), (long long)elapsed_since_start.count());
+            }
+            last_iteration_end = sleep_end;
         }
+        KernelTraceHostOp("HOST.VblankPump.exit");
     }).detach();
 }
 
@@ -5425,11 +5609,11 @@ static void Mw05ApplyVdPokesOnce() {
     apply_env_poke("MW05_VD_POKE_E70", 0x00060E70u, "e70");
 }
 
-// ---- forced VD bring-up (opt-in via MW05_FORCE_VD_INIT=1) ----
+// ---- forced VD bring-up (enabled by default, disable with MW05_FORCE_VD_INIT=0) ----
 static inline bool Mw05ForceVdInitEnabled() {
     if (const char* v = std::getenv("MW05_FORCE_VD_INIT"))
         return !(v[0]=='0' && v[1]=='\0');
-    return false;
+    return true;  // CHANGED: Enable by default to ensure graphics initialization
 }
 
 static std::atomic<bool> g_forceVdInitDone{false};

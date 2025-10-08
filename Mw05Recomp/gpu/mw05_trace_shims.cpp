@@ -20,12 +20,22 @@ struct GuestDevice;  // Forward declaration
 extern "C" void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount);
 extern "C" void Mw05DebugKickClear();
 extern "C" GuestDevice* Mw05GetGuestDevicePtr();
+
+// Forward declaration for Video::Present()
+namespace Video { void Present(); }
 #include <cstdlib>
 #include <atomic>
 
 static inline bool TitleStateTraceOn() {
     if (const char* v = std::getenv("MW05_TITLE_STATE_TRACE")) return !(v[0]=='0' && v[1]=='\0');
     return false;
+}
+
+// Helper to check if a guest offset is valid
+static inline bool GuestOffsetInRange(uint32_t off, size_t bytes = 1) {
+    if (off == 0) return false;
+    if (off < 4096) return false; // guard page
+    return (size_t)off + bytes <= PPC_MEMORY_SIZE;
 }
 
 static inline void DumpEAWindow(const char* tag, uint32_t ea) {
@@ -313,13 +323,13 @@ extern "C" {
     void __imp__sub_82812E20(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82596978(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825979A8(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_82595FC8(PPCContext& ctx, uint8_t* base);
 
     void __imp__sub_825A97B8(PPCContext& ctx, uint8_t* base);
 
     void __imp__sub_82441CF0(PPCContext& ctx, uint8_t* base);
 
     void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
-
 
 }
 
@@ -516,6 +526,8 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
         }
     }
 
+    // Just call the original guest ISR - no present function workaround
+    // The present function hangs when called from within the vblank ISR
     __imp__sub_825979A8(ctx, base);
 }
 
@@ -609,21 +621,41 @@ void MW05HostAllocCb(PPCContext& ctx, uint8_t* base) {
 
 // Add shims for research helpers used by MW05 during rendering.
 // Specialize 82595FC8/825972B0 to dump more state
+// CRITICAL FIX: sub_82595FC8 is called from the present function and appears to hang
+// This function checks buffer space and calls sub_825972B0 (PM4 builder) and sub_82596978
+// For now, stub it to just return the current buffer pointer (r3 = [r31+0])
 void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOpF("sub_82595FC8.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    static int call_count = 0;
+    call_count++;
+    if (call_count <= 10) {
+        KernelTraceHostOpF("sub_82595FC8.STUB count=%d r3=%08X r4=%08X", call_count, ctx.r3.u32, ctx.r4.u32);
+    }
+
+    // Capture scheduler context
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) {
         MaybeLogSchedCapture(ctx.r3.u32);
         s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release);
         s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
     }
-    uint32_t v13520 = ReadBE32(ctx.r3.u32 + 13520);
-    uint8_t v10432 = (uint8_t)(ReadBE32(ctx.r3.u32 + 10432) & 0xFF);
-    KernelTraceHostOpF("HOST.82595FC8.pre 13520=%08X 10432=%02X", v13520, (unsigned)v10432);
-    DumpEAWindow("82595FC8.r3", ctx.r3.u32);
-    DumpEAWindow("82595FC8.r4", ctx.r4.u32);
-    DumpEAWindow("82595FC8.r5", ctx.r5.u32);
-    DumpSchedState("82595FC8", ctx.r3.u32);
-    __imp__sub_82595FC8(ctx, base);
+
+    // Return the current buffer pointer from [r31+0]
+    uint32_t r31 = ctx.r3.u32;
+    if (r31 >= 0x1000 && r31 < PPC_MEMORY_SIZE - 4) {
+        uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(r31));
+        if (ptr) {
+            ctx.r3.u32 = be<uint32_t>(*ptr);
+            if (call_count <= 10) {
+                KernelTraceHostOpF("sub_82595FC8.STUB.ret r3=%08X", ctx.r3.u32);
+            }
+            return;
+        }
+    }
+
+    // Fallback: return 0
+    ctx.r3.u32 = 0;
+    if (call_count <= 10) {
+        KernelTraceHostOpF("sub_82595FC8.STUB.ret r3=00000000 (fallback)");
+    }
 }
 
 void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base) {
@@ -1223,36 +1255,29 @@ void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
 
 
 // Present wrapper shim: log + dump scheduler block, then forward
+// CRITICAL FIX: The present function hangs after calling VdSwap
+// Stub it completely - don't call the guest function at all
+// Forward declaration for VdSwap (C++ linkage, not extern "C")
+void VdSwap(uint32_t, uint32_t, uint32_t);
+
 void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOpF("sub_82598A20.lr=%08llX r3=%08X r4=%08X r5=%08X",
-                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-    // Record and dump scheduler/context state if present
-    Mw05Trace_ConsiderSchedR3(ctx.r3.u32);
-    DumpEAWindow("82598A20.r3", ctx.r3.u32);
-    DumpSchedState("82598A20", ctx.r3.u32);
-    __imp__sub_82598A20(ctx, base);
-    // Optionally force a PM4 build attempt after present returns, using last known scheduler
-    static const bool s_pres_try_pm4 = [](){ if (const char* v = std::getenv("MW05_PRES_TRY_PM4")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const bool s_pres_try_pm4_deep = [](){ if (const char* v = std::getenv("MW05_PRES_TRY_PM4_DEEP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    if (s_pres_try_pm4) {
-        uint32_t saved_r3 = ctx.r3.u32;
-        uint32_t seed = s_lastSchedR3.load(std::memory_order_acquire);
-        if (seed >= 0x1000 && seed < PPC_MEMORY_SIZE) {
-            ctx.r3.u32 = seed;
-        }
-        KernelTraceHostOpF("HOST.sub_82598A20.post.try_825972B0 r3=%08X", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
-        if (s_pres_try_pm4_deep) {
-            KernelTraceHostOpF("HOST.sub_82598A20.post.try_deep r3=%08X", ctx.r3.u32);
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
-            // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
-        }
-        ctx.r3.u32 = saved_r3;
+    static int call_count = 0;
+    call_count++;
+    if (call_count <= 10) {
+        KernelTraceHostOpF("sub_82598A20.STUB count=%d r3=%08X r4=%08X r5=%08X",
+                          call_count, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     }
 
+    // Record scheduler/context state
+    Mw05Trace_ConsiderSchedR3(ctx.r3.u32);
+
+    // Call VdSwap to signal frame completion to the guest
+    // This allows the guest rendering loop to continue
+    VdSwap(0, 0, 0);
+
+    if (call_count <= 10) {
+        KernelTraceHostOpF("sub_82598A20.STUB.ret count=%d", call_count);
+    }
 }
 
 SHIM(sub_825A6DF0)

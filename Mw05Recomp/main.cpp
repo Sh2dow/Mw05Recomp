@@ -37,6 +37,9 @@
 
 #include <cstdlib>
 
+// Forward declarations for kernel functions
+extern uint32_t KeTlsAlloc();
+
 static void MwSetEnv(const char* k, const char* v) {
 #ifdef _WIN32
     _putenv_s(k, v ? v : "");
@@ -181,7 +184,9 @@ void KiSystemStartup()
     {
         const uint32_t unblock_flag_ea = 0x82A2CF40;
         uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(unblock_flag_ea));
-        KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X ptr=%p", unblock_flag_ea, flag_ptr);
+        // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+        // KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X ptr=%p", unblock_flag_ea, flag_ptr);
+        KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X", unblock_flag_ea);
         if (flag_ptr) {
             *flag_ptr = __builtin_bswap32(1);  // Set to 1 (big-endian)
             KernelTraceHostOpF("HOST.Init.UnblockMainThread DONE value=1");
@@ -675,51 +680,77 @@ int main(int argc, char *argv[])
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
-    KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_8243B618),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x8243B618)));
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_8243B618),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x8243B618)));
 
     g_memory.InsertFunction(0x82621640, sub_82621640);
-    KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_82621640),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
+    // TEMP: Commenting out this log line as it causes a hang
+    // KernelTraceHostOpF("HOST.sub_82621640.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_82621640),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
+
+    KernelTraceHostOp("HOST.main.after_sub_82621640_install");
 
     g_memory.InsertFunction(0x8284E658, sub_8284E658);
-    KernelTraceHostOpF("HOST.sub_8284E658.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_8284E658),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x8284E658)));
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.sub_8284E658.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_8284E658),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x8284E658)));
+
+    KernelTraceHostOp("HOST.main.after_sub_8284E658_install");
+    fprintf(stderr, "[MAIN] after_sub_8284E658_install\n"); fflush(stderr);
 
     // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
-    extern uint32_t KeTlsAlloc();
+    fprintf(stderr, "[MAIN] before_KeTlsAlloc_install\n"); fflush(stderr);
+    KernelTraceHostOp("HOST.main.before_KeTlsAlloc_install");
+    fprintf(stderr, "[MAIN] calling_InsertFunction_KeTlsAlloc\n"); fflush(stderr);
     g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
-    KernelTraceHostOpF("HOST.KeTlsAlloc.install host=%p entry=%p",
-        reinterpret_cast<const void*>(KeTlsAlloc),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x826BE2A8)));
+    fprintf(stderr, "[MAIN] after_KeTlsAlloc_install\n"); fflush(stderr);
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.KeTlsAlloc.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(KeTlsAlloc),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x826BE2A8)));
 
+    fprintf(stderr, "[MAIN] before_sub_826346A8_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x826346A8, sub_826346A8);
-    KernelTraceHostOpF("HOST.sub_826346A8.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_826346A8),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
+    fprintf(stderr, "[MAIN] after_sub_826346A8_install\n"); fflush(stderr);
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.sub_826346A8.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_826346A8),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
 
+    fprintf(stderr, "[MAIN] before_sub_82812ED0_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x82812ED0, sub_82812ED0);
-    KernelTraceHostOpF("HOST.sub_82812ED0.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_82812ED0),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x82812ED0)));
+    fprintf(stderr, "[MAIN] after_sub_82812ED0_install\n"); fflush(stderr);
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.sub_82812ED0.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_82812ED0),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x82812ED0)));
 
+    fprintf(stderr, "[MAIN] before_sub_828134E0_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x828134E0, sub_828134E0);
-    KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
-        reinterpret_cast<const void*>(sub_828134E0),
-        reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
+    fprintf(stderr, "[MAIN] after_sub_828134E0_install\n"); fflush(stderr);
+    // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
+    // KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
+    //     reinterpret_cast<const void*>(sub_828134E0),
+    //     reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
 
+    fprintf(stderr, "[MAIN] before_unblock\n"); fflush(stderr);
     KernelTraceHostOp("HOST.main.before_unblock");
 
     // Workaround: Set the flag that the main thread will wait for
+    fprintf(stderr, "[MAIN] before_UnblockMainThreadEarly\n"); fflush(stderr);
     UnblockMainThreadEarly();
+    fprintf(stderr, "[MAIN] after_UnblockMainThreadEarly\n"); fflush(stderr);
 
+    fprintf(stderr, "[MAIN] before_guest_start\n"); fflush(stderr);
     KernelTraceHostOp("HOST.main.before_guest_start");
 
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events
+    fprintf(stderr, "[MAIN] calling_GuestThread_Start entry=0x%08X\n", entry); fflush(stderr);
     KernelTraceHostOpF("HOST.GuestThread.Start entry=0x%08X", entry);
     uint32_t mainThreadId = 0;
     GuestThread::Start({ entry, 0, 0 }, &mainThreadId);

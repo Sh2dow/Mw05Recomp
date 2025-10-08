@@ -4909,6 +4909,8 @@ uint32_t NtFreeVirtualMemory(
     if (!is_valid_guest_ptr(BaseAddress, sizeof(*BaseAddress)))
         return 0xC000000DL; // STATUS_INVALID_PARAMETER
 
+    InitVmArenaOnce(); // Ensure VmArena is initialized before use
+
     const uint32_t base = static_cast<uint32_t>(*BaseAddress);
     // VmArena-based release path (decoupled from o1heap)
     {

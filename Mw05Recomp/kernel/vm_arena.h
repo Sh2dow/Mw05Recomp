@@ -149,6 +149,7 @@ private:
     {
         std::sort(freeList.begin(), freeList.end(), [](auto& a, auto& b){ return a.base < b.base; });
         std::vector<Range> merged;
+        merged.reserve(freeList.size()); // Pre-allocate to avoid reallocation during iteration
         for (auto& r : freeList)
         {
             if (!merged.empty() && uint64_t(merged.back().base) + merged.back().size == r.base)

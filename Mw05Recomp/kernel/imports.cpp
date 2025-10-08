@@ -1761,10 +1761,75 @@ static void Mw05StartVblankPumpOnce() {
                             fflush(stderr);
                             KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
 
-                            // Re-read the singleton pointer
-                            singleton_ptr = *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78);
+                            // Re-read the singleton pointer using byte-swapped read for correct byte order
+                            singleton_ptr = __builtin_bswap32(*reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78));
                             fprintf(stderr, "[VBLANK-FORCE] After creation, dword_82911B78 = %08X\n", singleton_ptr);
                             fflush(stderr);
+
+                            // CRITICAL FIX: sub_82849DE8 is not setting the singleton pointer for some reason
+                            // Manually set it to the returned object pointer
+                            if (singleton_ptr == 0 && ctx.r3.u32 != 0) {
+                                fprintf(stderr, "[VBLANK-FORCE] MANUALLY setting singleton to r3=%08X\n", ctx.r3.u32);
+                                fflush(stderr);
+                                *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78) = __builtin_bswap32(ctx.r3.u32);  // Write in big-endian format
+                                singleton_ptr = ctx.r3.u32;
+                                fprintf(stderr, "[VBLANK-FORCE] Singleton now set to %08X\n", singleton_ptr);
+                                fflush(stderr);
+
+                                // CRITICAL FIX #2: The singleton is a wrapper that contains a pointer to the actual video object
+                                // We need to allocate the video object and store its pointer in the singleton
+                                extern uint32_t GetVideoVtableGuestAddr();  // Defined in heap.cpp
+                                extern Heap g_userHeap;  // Defined in heap.cpp
+                                uint32_t vtable_addr = GetVideoVtableGuestAddr();
+                                if (vtable_addr != 0) {
+                                    // Read the pointer to the actual video object from singleton+0
+                                    uint32_t video_obj_ptr = LoadBE32_Watched(g_memory.base, singleton_ptr + 0x00);
+                                    fprintf(stderr, "[VBLANK-FORCE] Singleton wrapper at %08X, actual video object at %08X\n",
+                                            singleton_ptr, video_obj_ptr);
+                                    fflush(stderr);
+
+                                    if (video_obj_ptr == 0) {
+                                        // Allocate the video object (256 bytes should be enough)
+                                        void* video_obj_host = g_userHeap.Alloc(256);
+                                        if (video_obj_host) {
+                                            video_obj_ptr = g_memory.MapVirtual(video_obj_host);
+                                            fprintf(stderr, "[VBLANK-FORCE] Allocated video object at %08X (host=%p)\n",
+                                                    video_obj_ptr, video_obj_host);
+                                            fflush(stderr);
+
+                                            // Store the video object pointer in the singleton
+                                            StoreBE32_Watched(g_memory.base, singleton_ptr + 0x00, video_obj_ptr);
+                                        } else {
+                                            fprintf(stderr, "[VBLANK-FORCE] ERROR: Failed to allocate video object!\n");
+                                            fflush(stderr);
+                                        }
+                                    }
+
+                                    if (video_obj_ptr != 0) {
+                                        fprintf(stderr, "[VBLANK-FORCE] Initializing video object at %08X with vtable %08X\n",
+                                                video_obj_ptr, vtable_addr);
+                                        fflush(stderr);
+
+                                        // Write vtable pointer at video_obj+0
+                                        StoreBE32_Watched(g_memory.base, video_obj_ptr + 0x00, vtable_addr);
+
+                                        // Write fake thread handle at video_obj+0x64
+                                        StoreBE32_Watched(g_memory.base, video_obj_ptr + 0x64, 0x00000001);
+
+                                        // Write ready flag at video_obj+0x60
+                                        StoreBE32_Watched(g_memory.base, video_obj_ptr + 0x60, 0x00000002);
+
+                                        // Verify
+                                        uint32_t vptr = LoadBE32_Watched(g_memory.base, video_obj_ptr + 0x00);
+                                        uint32_t thr = LoadBE32_Watched(g_memory.base, video_obj_ptr + 0x64);
+                                        fprintf(stderr, "[VBLANK-FORCE] Video object initialized: vptr=%08X thr=%08X\n", vptr, thr);
+                                        fflush(stderr);
+                                    }
+                                } else {
+                                    fprintf(stderr, "[VBLANK-FORCE] ERROR: Vtable not allocated yet!\n");
+                                    fflush(stderr);
+                                }
+                            }
                         } else {
                             fprintf(stderr, "[VBLANK-FORCE] Singleton already exists at %08X\n", singleton_ptr);
                             fflush(stderr);
@@ -1772,7 +1837,7 @@ static void Mw05StartVblankPumpOnce() {
 
                         // Check if thread handle exists at offset 0x64
                         if (singleton_ptr != 0) {
-                            uint32_t thread_handle = *reinterpret_cast<uint32_t*>(g_memory.base + (singleton_ptr - 0x80000000) + 0x64);
+                            uint32_t thread_handle = LoadBE32_Watched(g_memory.base, singleton_ptr + 0x64);
                             fprintf(stderr, "[VBLANK-FORCE] Thread handle at +0x64 = %08X\n", thread_handle);
                             fflush(stderr);
 

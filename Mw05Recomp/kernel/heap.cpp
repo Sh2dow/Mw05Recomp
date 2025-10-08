@@ -442,7 +442,7 @@ void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
     fprintf(stderr, "[heap] MW05Shim_sub_8284A698 ENTRY\n");
     fflush(stderr);
 
-    uint32_t r3_in = ctx.r3.u32;  // Object pointer (offset +8 from base)
+    uint32_t r3_in = ctx.r3.u32;
     uint32_t r4_in = ctx.r4.u32;
     uint32_t r5_in = ctx.r5.u32;
 
@@ -452,61 +452,26 @@ void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
     // Call the original function
     __imp__sub_8284A698(ctx, base);
 
-    // After the original function, patch the vtable pointer
-    // Allocate a dummy vtable in guest memory
-    static uint32_t s_vtable_guest_addr = 0;
-
-    if (s_vtable_guest_addr == 0) {
-        // Allocate 128 bytes for the vtable (32 entries * 4 bytes)
-        void* vtable_host = g_userHeap.Alloc(128);
-        if (vtable_host) {
-            s_vtable_guest_addr = g_memory.MapVirtual(vtable_host);
-
-            // Initialize the vtable - all entries NULL except offset 0x34
-            uint32_t* vtable_ptr = reinterpret_cast<uint32_t*>(vtable_host);
-            memset(vtable_ptr, 0, 128);
-
-            // Set entry at offset 0x34 (index 13) to point to our stub
-            vtable_ptr[13] = __builtin_bswap32(0x82849000);
-
-            fprintf(stderr, "[heap] Allocated dummy vtable at guest=%08X with stub at offset 0x34\n", s_vtable_guest_addr);
-            fflush(stderr);
-        } else {
-            fprintf(stderr, "[heap] FAILED to allocate dummy vtable!\n");
-            fflush(stderr);
-        }
-    }
-
-    // Set the vtable pointer at offset 0 of the object
-    if (s_vtable_guest_addr) {
-        uint32_t obj_addr = r3_in - 8;  // r3 is offset +8, so object base is -8
-        uint32_t* obj_ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(obj_addr));
-        if (obj_ptr) {
-            *obj_ptr = __builtin_bswap32(s_vtable_guest_addr);
-            fprintf(stderr, "[heap] Set vtable pointer at object %08X to %08X\n", obj_addr, s_vtable_guest_addr);
-            fflush(stderr);
-
-            // CRITICAL: Initialize offset 0x60 to non-zero to unblock the video thread
-            // The video thread (sub_82849D40) waits in a loop until offset 0x60 is non-zero
-            // Set it to 2 (the value it sets after the wait loop completes)
-            uint32_t* field_0x60 = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(obj_ptr) + 0x60);
-            *field_0x60 = __builtin_bswap32(2);
-            fprintf(stderr, "[heap] Set object+0x60 to 2 to unblock video thread\n");
-            fflush(stderr);
-        }
-    }
-
     int32_t result = static_cast<int32_t>(ctx.r3.u32);
-    fprintf(stderr, "[heap] sub_8284A698 RETURNED r3=%08X (%d)\n", ctx.r3.u32, result);
+    uint32_t r3_out = ctx.r3.u32;
+    fprintf(stderr, "[heap] sub_8284A698 RETURNED r3=%08X (%d)\n", r3_out, result);
     fflush(stderr);
-    fprintf(stderr, "[heap] TEST: About to call Mw05ForceVdInitOnce\n");
-    fflush(stderr);
+
+    // PROBE: Dump memory around the returned object
+    if (r3_out != 0 && result == 0) {
+        fprintf(stderr, "[heap] PROBE: Dumping 32 bytes at r3=%08X:\n", r3_out);
+        for (int i = 0; i < 32; i += 4) {
+            uint32_t val = LoadBE32_Watched(base, r3_out + i);
+            fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
+        }
+        fflush(stderr);
+    }
 
     // CRITICAL: Initialize VD graphics subsystem now that video singleton is created
     // This ensures ring buffer, system command buffer, and engines are initialized
     try {
         Mw05ForceVdInitOnce();
-        fprintf(stderr, "[heap] TEST: Mw05ForceVdInitOnce completed\n");
+        fprintf(stderr, "[heap] Mw05ForceVdInitOnce completed\n");
         fflush(stderr);
     } catch (...) {
         fprintf(stderr, "[heap] ERROR: Exception in Mw05ForceVdInitOnce!\n");
@@ -516,27 +481,102 @@ void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
 
 GUEST_FUNCTION_HOOK(sub_8284A698, MW05Shim_sub_8284A698);
 
-// CRITICAL FIX: This function is failing with E_OUTOFMEMORY (0x8007000E)
-// It's trying to initialize D3D resources but failing
-// For now, just stub it out to return success
+// Static variable to hold the vtable guest address (allocated once)
+static uint32_t s_vtable_guest_addr = 0;
+
+// Accessor function for other modules to get the vtable address
+uint32_t GetVideoVtableGuestAddr() {
+    return s_vtable_guest_addr;
+}
+
+// CRITICAL FIX: This is the constructor for the video object
+// It must initialize the object including writing the vtable pointer at object+0
 // Called by sub_82849DE8 after sub_8284A698 succeeds
 void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
 {
-    uint32_t r3_in = ctx.r3.u32;
-    uint32_t r4_in = ctx.r4.u32;
-    uint32_t r5_in = ctx.r5.u32;
+    // r3 = object pointer
+    uint32_t obj = ctx.r3.u32;
 
-    fprintf(stderr, "[heap] sub_82881020 STUBBED (was failing with E_OUTOFMEMORY) r3=%08X r4=%08X r5=%08X\n", r3_in, r4_in, r5_in);
+    // HACK: Detect if this is being called as a vtable method (r4 = 0..3, r5 = specific value)
+    // The vtable method is called 4 times with r4 = 0, 1, 2, 3
+    // If so, just return 1 to indicate "available" without re-initializing the object
+    if (ctx.r4.u32 <= 3 && ctx.r5.u32 == 0x00221438) {
+        static int vtable_call_count = 0;
+        if (vtable_call_count++ < 5) {
+            fprintf(stderr, "[heap] sub_82881020 called as VTABLE METHOD r4=%08X, returning 1\n", ctx.r4.u32);
+            fflush(stderr);
+        }
+        ctx.r3.u32 = 1;  // Return "available"
+        return;
+    }
+
+    fprintf(stderr, "[heap] sub_82881020 CONSTRUCTOR obj=%08X r4=%08X r5=%08X\n",
+            obj, ctx.r4.u32, ctx.r5.u32);
     fflush(stderr);
 
-    // Return success instead of calling the failing function
-    ctx.r3.u32 = 0;  // Success
-
-    fprintf(stderr, "[heap] sub_82881020 STUBBED returning SUCCESS\n");
+    // PROBE: Dump memory at obj and obj-8 BEFORE initialization
+    fprintf(stderr, "[heap] PROBE BEFORE: Dumping 32 bytes at obj=%08X:\n", obj);
+    for (int i = 0; i < 32; i += 4) {
+        uint32_t val = LoadBE32_Watched(base, obj + i);
+        fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
+    }
+    fprintf(stderr, "[heap] PROBE BEFORE: Dumping 32 bytes at obj-8=%08X:\n", obj - 8);
+    for (int i = 0; i < 32; i += 4) {
+        uint32_t val = LoadBE32_Watched(base, (obj - 8) + i);
+        fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
+    }
     fflush(stderr);
+
+    // One-time vtable allocation
+    if (s_vtable_guest_addr == 0) {
+        // Allocate 128 bytes for the vtable (32 entries * 4 bytes)
+        void* vtable_host = g_userHeap.Alloc(128);
+        if (vtable_host) {
+            // MapVirtual returns a physical address (offset from base)
+            uint32_t vtable_phys = g_memory.MapVirtual(vtable_host);
+            s_vtable_guest_addr = vtable_phys;  // Use physical address directly
+
+            // Initialize the vtable - all entries NULL except offset 0x34
+            // Write directly to host memory since it's already mapped
+            uint32_t* vtable_ptr = reinterpret_cast<uint32_t*>(vtable_host);
+            memset(vtable_ptr, 0, 128);
+
+            // Set entry at offset 0x34 (index 13) to point to the constructor (which returns success)
+            // Using 0x82881020 (the constructor) as a placeholder since it's a real PPC function
+            vtable_ptr[13] = __builtin_bswap32(0x82881020);
+
+            fprintf(stderr, "[heap] Allocated vtable at guest=%08X (host=%p)\n", s_vtable_guest_addr, vtable_host);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[heap] FAILED to allocate vtable!\n");
+            fflush(stderr);
+            ctx.r3.u32 = 0x8007000E;  // E_OUTOFMEMORY
+            return;
+        }
+    }
+
+    // Install vtable pointer at object+0
+    StoreBE32_Watched(base, obj + 0x00, s_vtable_guest_addr);
+
+    // Initialize critical fields
+    StoreBE32_Watched(base, obj + 0x64, 0x00000001);  // Fake non-zero thread handle
+    StoreBE32_Watched(base, obj + 0x60, 0x00000002);  // Set ready flag (from earlier analysis)
+
+    // Verify the vtable was written correctly
+    uint32_t vptr = LoadBE32_Watched(base, obj + 0x00);
+    uint32_t slot13 = LoadBE32_Watched(base, s_vtable_guest_addr + 0x34);
+    uint32_t thread_handle = LoadBE32_Watched(base, obj + 0x64);
+
+    fprintf(stderr, "[heap] sub_82881020: obj=%08X vptr=%08X slot[0x34]=%08X thr@+0x64=%08X\n",
+            obj, vptr, slot13, thread_handle);
+    fflush(stderr);
+
+    // Return success (0)
+    ctx.r3.u32 = 0;
 }
 
 GUEST_FUNCTION_HOOK(__imp__sub_82881020, MW05Shim_sub_82881020);
+GUEST_FUNCTION_HOOK(sub_82881020, MW05Shim_sub_82881020);  // Also hook the non-import version
 
 // CRITICAL FIX: Stub for NULL vtable entry at offset 0x34
 // This vtable entry is called by sub_82849BF8 in a loop 4 times
@@ -548,7 +588,8 @@ void MW05Stub_sub_82849000(PPCContext& ctx, uint8_t* base)
 {
     static int call_count = 0;
     if (call_count++ < 10) {
-        fprintf(stderr, "[heap] NULL vtable entry stub (sub_82849000) called, returning 1\n");
+        fprintf(stderr, "[VTABLE-STUB] sub_82849000 called! count=%d r3=%08X r4=%08X\n",
+                call_count, ctx.r3.u32, ctx.r4.u32);
         fflush(stderr);
     }
     // Return 1 to indicate success

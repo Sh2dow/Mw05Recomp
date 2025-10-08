@@ -166,6 +166,56 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("HOST.sub_826346A8.wait handle=%08X block=%08X timeout=%08X",
                        handleEA, blockEA, timeoutEA);
 
+    // ALWAYS log to verify this code path executes
+    KernelTraceHostOp("HOST.sub_826346A8.ALWAYS_LOG");
+
+    // CRITICAL: Check loop breaker FIRST before any early returns
+    // This allows us to break out of infinite wait loops during initialization
+    const bool fastBootEnabled = FastBootEnabled();
+    const bool breakLoopEnabled = BreakLoop82813514Enabled();
+    KernelTraceHostOpF("HOST.sub_826346A8.loop_breaker_check fastBoot=%d breakLoop=%d lr=%08llX",
+                       fastBootEnabled, breakLoopEnabled, ctx.lr);
+
+    if(fastBootEnabled || breakLoopEnabled) {
+        // Targeted break for the tight loop at lr=0x82813514
+        // Caller is sub_828134E0 pump; it loops until [blockEA+8] becomes 0.
+        // We proactively zero that field to let it exit early during fast boot.
+        if(ctx.lr == 0x82813514ull) {
+            // blockEA is in r29 (0x828F1F90 in the logs)
+            // We need to zero [blockEA+8] to break the loop
+            if(blockEA != 0) {
+                const uint64_t addr64 = static_cast<uint64_t>(blockEA) + 8ull;
+                if(addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
+                    const uint32_t addr = static_cast<uint32_t>(addr64);
+                    KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 blockEA=%08X addr=%08X", blockEA, addr);
+                    *reinterpret_cast<uint64_t*>(base + addr) = 0ull;
+                }
+            } else {
+                KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 SKIP blockEA=00000000");
+            }
+        }
+        if(FastBootEnabled()) {
+            // Mark the dispatcher header as signaled if r3 is a guest pointer
+            const uint32_t handle = ctx.r3.u32;
+            if(handle != 0) {
+                struct XDISPATCHER_HEADER {
+                    int8_t Type;
+                    int8_t Absolute;
+                    int16_t Size;
+                    int32_t SignalState;
+                };
+                const uint64_t h64 = static_cast<uint64_t>(handle);
+                if(h64 + sizeof(XDISPATCHER_HEADER) <= kPpcMemLimit) {
+                    auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(base + handle);
+                    hdr->SignalState = 1;
+                }
+            }
+            // Return success to break the caller's wait loop cleanly
+            ctx.r3.u64 = 0;
+            return;
+        }
+    }
+
     if(!blockEA) {
         KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X (null)", blockEA);
     } else {
@@ -313,41 +363,7 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
         }
     }
 
-    if(FastBootEnabled() || BreakLoop82813514Enabled()) {
-        // Targeted break for the tight loop at lr=0x82813514
-        // Caller is sub_828134E0 pump; it loops until [r29+8] becomes 0.
-        // We proactively zero that field to let it exit early during fast boot.
-        if(ctx.lr == 0x82813514ull) {
-            // Use the live r29 value rather than a compiled-in constant; MW05 variants differ.
-            const uint32_t r29  = ctx.r29.u32;
-            const uint64_t addr64 = static_cast<uint64_t>(r29) + 8ull;
-            if(addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
-                const uint32_t addr = static_cast<uint32_t>(addr64); // for logging / pointer math
-                KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 addr=%08X", addr);
-                *reinterpret_cast<uint64_t*>(base + addr) = 0ull;
-            }
-        }
-        if(FastBootEnabled()) {
-            // Mark the dispatcher header as signaled if r3 is a guest pointer
-            const uint32_t handle = ctx.r3.u32;
-            if(handle != 0) {
-                struct XDISPATCHER_HEADER {
-                    int8_t Type;
-                    int8_t Absolute;
-                    int16_t Size;
-                    int32_t SignalState;
-                };
-                const uint64_t h64 = static_cast<uint64_t>(handle);
-                if(h64 + sizeof(XDISPATCHER_HEADER) <= kPpcMemLimit) {
-                    auto* hdr = reinterpret_cast<XDISPATCHER_HEADER*>(base + handle);
-                    hdr->SignalState = 1;
-                }
-            }
-            // Return success to break the caller's wait loop cleanly
-            ctx.r3.u64 = 0;
-            return;
-        }
-    }
+    // Loop breaker already handled at the top of the function - removed duplicate
     __imp__sub_826346A8(ctx, base);
 }
 

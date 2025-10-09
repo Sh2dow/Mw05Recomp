@@ -153,6 +153,8 @@ extern "C"
 // Forward declarations for VD bridge helpers used across this file
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
+void VdInitializeEDRAM();
+void VdInitializeEngines();
 
 
 #ifdef _WIN32
@@ -1652,6 +1654,9 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
     (void)Mw05SignalVdInterruptEvent();
 }
 
+// Forward declaration for use in VBLANK handler
+static void Mw05ForceRegisterGfxNotifyIfRequested();
+
 static void Mw05StartVblankPumpOnce() {
     if (!Mw05VblankPumpEnabled()) return;
     bool expected = false;
@@ -1697,7 +1702,17 @@ static void Mw05StartVblankPumpOnce() {
             const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
 
             // Debug: log tick count every 10 ticks AND always log tick 0
-            if (currentTick == 0 || currentTick % 10 == 0) {
+            // Also log every tick after 350 to track crash
+            static bool s_detailed_logging = false;
+            if (currentTick >= 350 && currentTick <= 450) {
+                if (!s_detailed_logging) {
+                    fprintf(stderr, "[VBLANK-DETAILED] Enabling detailed logging from tick 350-450\n");
+                    fflush(stderr);
+                    s_detailed_logging = true;
+                }
+                fprintf(stderr, "[VBLANK-TICK] count=%u (detailed mode)\n", currentTick);
+                fflush(stderr);
+            } else if (currentTick == 0 || currentTick % 10 == 0) {
                 fprintf(stderr, "[VBLANK-TICK] count=%u\n", currentTick);
                 fflush(stderr);
             }
@@ -1710,15 +1725,56 @@ static void Mw05StartVblankPumpOnce() {
                 fflush(stderr);
             }
 
-            // MW05 FIX: Disabled for now while testing initialization path
-            // if (currentTick >= 300) {
-            //     static uint32_t s_vdcall_count = 0;
-            //     if ((++s_vdcall_count) % 100 == 1) {
-            //         fprintf(stderr, "[MW05_FIX] Calling VdCallGraphicsNotificationRoutines tick=%u count=%u\n", currentTick, s_vdcall_count);
-            //         fflush(stderr);
-            //     }
-            //     VdCallGraphicsNotificationRoutines(0u);
-            // }
+            // MW05 FIX: Call VdCallGraphicsNotificationRoutines periodically to invoke registered callbacks
+            // Only do this if a real callback is registered (not the host magic value)
+            const uint32_t cb_check = VdGetGraphicsInterruptCallback();
+            if (cb_check && cb_check != kHostDefaultVdIsrMagic && currentTick >= 350) {
+                // Configurable frequency for callback invocation
+                static const uint32_t s_callback_frequency = [](){
+                    if (const char* v = std::getenv("MW05_GFX_CALLBACK_FREQUENCY"))
+                        return (uint32_t)std::strtoul(v, nullptr, 10);
+                    return 1u; // default: every tick (60Hz)
+                }();
+
+                // Configurable max invocations (0 = unlimited)
+                static const uint32_t s_max_invocations = [](){
+                    if (const char* v = std::getenv("MW05_GFX_CALLBACK_MAX_INVOCATIONS"))
+                        return (uint32_t)std::strtoul(v, nullptr, 10);
+                    return 0u; // default: unlimited
+                }();
+
+                static uint32_t s_vdcall_count = 0;
+
+                // Check if we've reached the max invocations limit
+                if (s_max_invocations > 0 && s_vdcall_count >= s_max_invocations) {
+                    static bool s_logged_limit = false;
+                    if (!s_logged_limit) {
+                        fprintf(stderr, "[MW05_FIX] Reached max invocations limit (%u), stopping callback invocations\n", s_max_invocations);
+                        fflush(stderr);
+                        s_logged_limit = true;
+                    }
+                    return; // Stop invoking the callback
+                }
+
+                if (currentTick % s_callback_frequency == 0) {
+                    s_vdcall_count++;
+                    if (s_vdcall_count % 10 == 1) {  // Log every 10 calls
+                        fprintf(stderr, "[MW05_FIX] Calling VdCallGraphicsNotificationRoutines tick=%u count=%u cb=%08X freq=%u max=%u\n",
+                                currentTick, s_vdcall_count, cb_check, s_callback_frequency, s_max_invocations);
+                        fflush(stderr);
+                    }
+                    // EXPERIMENT: Disable callback invocation to test if registration alone causes the crash
+                    static bool s_disable_invocation = Mw05EnvEnabled("MW05_DISABLE_CALLBACK_INVOCATION");
+                    if (!s_disable_invocation) {
+                        // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
+                        VdCallGraphicsNotificationRoutines(0u);
+                        VdCallGraphicsNotificationRoutines(1u);
+                    } else {
+                        fprintf(stderr, "[MW05_FIX] Callback invocation DISABLED (registration only)\n");
+                        fflush(stderr);
+                    }
+                }
+            }
 
             // EXPERIMENTAL: Force-trigger video thread initialization after boot completes
             // In Xenia, MW05 creates the video thread (F800000C) after ~227 vblank ticks.
@@ -1748,11 +1804,23 @@ static void Mw05StartVblankPumpOnce() {
             if (s_force_video_thread && !s_video_thread_created.load(std::memory_order_acquire)) {
                 // Periodically check if singleton was created naturally
                 if ((currentTick % 50) == 0) {
-                    uint32_t singleton_ptr = *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78);
-                    if (singleton_ptr != 0) {
-                        fprintf(stderr, "[VBLANK-NATURAL] Singleton created naturally at tick=%u ptr=%08X\n", currentTick, singleton_ptr);
-                        fflush(stderr);
-                        s_video_thread_created.store(true, std::memory_order_release);
+                    // Check if the singleton pointer address is valid before accessing it
+                    constexpr uint32_t SINGLETON_ADDR = 0x82911B78;  // Absolute guest address
+                    if (void* ptr = g_memory.Translate(SINGLETON_ADDR)) {
+                        uint32_t singleton_ptr = *reinterpret_cast<uint32_t*>(ptr);
+                        if (singleton_ptr != 0) {
+                            fprintf(stderr, "[VBLANK-NATURAL] Singleton created naturally at tick=%u ptr=%08X\n", currentTick, singleton_ptr);
+                            fflush(stderr);
+                            s_video_thread_created.store(true, std::memory_order_release);
+                        }
+                    } else {
+                        // Address not mapped - skip check
+                        static bool logged_once = false;
+                        if (!logged_once) {
+                            fprintf(stderr, "[VBLANK-NATURAL] Singleton address 0x%08X not mapped, skipping checks\n", SINGLETON_ADDR);
+                            fflush(stderr);
+                            logged_once = true;
+                        }
                     }
                 }
 
@@ -1947,6 +2015,14 @@ static void Mw05StartVblankPumpOnce() {
                         s_wait_loop_global_initialized = true;
                     }
                 }
+            }
+
+            // Try to register graphics callback if requested (will check delay internally)
+            Mw05ForceRegisterGfxNotifyIfRequested();
+
+            if (currentTick >= 340 && currentTick <= 360) {
+                fprintf(stderr, "[VBLANK-POST-REG] After Mw05ForceRegisterGfxNotifyIfRequested tick=%u\n", currentTick);
+                fflush(stderr);
             }
 
             // Keep a pending interrupt flowing; if event not yet registered,
@@ -5872,8 +5948,11 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 
 
-    // If requested, force-register the graphics notify ISR known from Xenia
-    Mw05ForceRegisterGfxNotifyIfRequested();
+    // DISABLED: Forced callback registration causes crashes (see ITERATION_18_REGISTRATION_CRASH.md)
+    // The game doesn't naturally register a callback at this stage.
+    // Forcing it causes the game to enter uninitialized code paths and crash.
+    // Let the game register callbacks naturally when it's ready.
+    // Mw05ForceRegisterGfxNotifyIfRequested();
 
     KernelTraceHostOp("HOST.ForceVD.init.done");
 
@@ -5881,29 +5960,226 @@ void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 
 
 // Optional: force-register a graphics notify/ISR callback from env (for bring-up)
+// Forward declaration for MmAllocatePhysicalMemoryEx (defined later in this file)
+uint32_t MmAllocatePhysicalMemoryEx(uint32_t flags, uint32_t size, uint32_t protect,
+                                     uint32_t minAddress, uint32_t maxAddress, uint32_t alignment);
+
+// Allocate and zero-initialize the graphics context structure at 0x40007180
+// This is a static global variable in the game's BSS section that must exist
+// before the graphics callback can be invoked.
+static void Mw05EnsureGraphicsContextAllocated() {
+    constexpr uint32_t CTX_ADDR = 0x40007180;
+    constexpr uint32_t CTX_SIZE = 0x4000;  // 16KB (minimum is 0x3CF0 based on callback access at +0x3CEC)
+
+    KernelTraceHostOpF("HOST.GfxContext.check ea=%08X size=%08X", CTX_ADDR, CTX_SIZE);
+    fprintf(stderr, "[GFX-CTX] Checking context at 0x%08X...\n", CTX_ADDR);
+
+    // Check if memory is already accessible (it should be in the game's BSS/data section)
+    if (void* ctx_ptr = g_memory.Translate(CTX_ADDR)) {
+        // Memory is already mapped - just zero-initialize it
+        std::memset(ctx_ptr, 0, CTX_SIZE);
+        fprintf(stderr, "[GFX-CTX] SUCCESS: Memory already mapped, zeroed %u bytes at 0x%08X\n",
+                CTX_SIZE, CTX_ADDR);
+        KernelTraceHostOpF("HOST.GfxContext.zeroed ea=%08X size=%08X", CTX_ADDR, CTX_SIZE);
+
+        // CRITICAL: Allocate and initialize the structure at context+0x2894
+        // The graphics callback accesses this pointer and expects a valid 32-byte structure
+        // At offset +0x10 of this structure, it checks for magic value 0xBADF00D
+        // If the magic value matches, it will crash with an error
+        constexpr uint32_t STRUCT_OFFSET = 0x2894;
+        constexpr uint32_t STRUCT_SIZE = 0x20;  // 32 bytes
+
+        // Allocate the structure using the game's allocator
+        void* struct_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
+        if (struct_host) {
+            // Zero-initialize to ensure +0x10 is NOT 0xBADF00D
+            std::memset(struct_host, 0, STRUCT_SIZE);
+
+            // Convert to guest address
+            const uint32_t struct_guest = g_memory.MapVirtual(struct_host);
+
+            // Store the pointer at context+0x2894
+            uint32_t* ctx_struct_ptr = reinterpret_cast<uint32_t*>(
+                static_cast<uint8_t*>(ctx_ptr) + STRUCT_OFFSET);
+            *ctx_struct_ptr = struct_guest;
+
+            fprintf(stderr, "[GFX-CTX] Allocated structure at 0x%08X, stored pointer at context+0x%04X\n",
+                    struct_guest, STRUCT_OFFSET);
+            KernelTraceHostOpF("HOST.GfxContext.struct_allocated ea=%08X offset=%04X",
+                             struct_guest, STRUCT_OFFSET);
+        } else {
+            fprintf(stderr, "[GFX-CTX] WARNING: Failed to allocate structure for context+0x%04X\n",
+                    STRUCT_OFFSET);
+            KernelTraceHostOpF("HOST.GfxContext.struct_alloc_failed offset=%04X", STRUCT_OFFSET);
+        }
+
+        // CRITICAL: Initialize the spinlock at context+0x2898
+        // The graphics callback acquires this spinlock via KeAcquireSpinLockAtRaisedIrql
+        // If not initialized, it will corrupt memory or crash
+        constexpr uint32_t SPINLOCK_OFFSET = 0x2898;
+        uint32_t* spinlock_ptr = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + SPINLOCK_OFFSET);
+        *spinlock_ptr = 0;  // Initialize to unlocked state
+
+        fprintf(stderr, "[GFX-CTX] Initialized spinlock at context+0x%04X\n", SPINLOCK_OFFSET);
+        KernelTraceHostOpF("HOST.GfxContext.spinlock_initialized offset=%04X", SPINLOCK_OFFSET);
+
+        // CRITICAL: Initialize other context members accessed by the callback
+        // The callback accesses these members after acquiring the spinlock
+        // If not initialized, the callback will behave unpredictably
+
+        // Counter at +0x3CF0: Incremented by callback each invocation
+        uint32_t* ctx_3CF0 = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + 0x3CF0);
+        *ctx_3CF0 = 0;
+
+        // Counter at +0x3CF8: Decremented by callback, triggers logic when zero
+        uint32_t* ctx_3CF8 = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + 0x3CF8);
+        *ctx_3CF8 = 0;  // Start at 0 (won't decrement, won't trigger special logic)
+
+        // Value at +0x3CEC: If non-zero, triggers additional processing
+        uint32_t* ctx_3CEC = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + 0x3CEC);
+        *ctx_3CEC = 0;  // No pending work
+
+        // Value at +0x3CF4: Written by callback
+        uint32_t* ctx_3CF4 = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + 0x3CF4);
+        *ctx_3CF4 = 0;
+
+        // Value at +0x3CFC: Read by callback when +0x3CEC is non-zero
+        uint32_t* ctx_3CFC = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_ptr) + 0x3CFC);
+        *ctx_3CFC = 0;
+
+        fprintf(stderr, "[GFX-CTX] Initialized context members: +0x3CEC, +0x3CF0, +0x3CF4, +0x3CF8, +0x3CFC\n");
+        KernelTraceHostOpF("HOST.GfxContext.members_initialized count=5");
+
+        return;
+    }
+
+    // Memory not mapped - this shouldn't happen for a static global, but handle it anyway
+    fprintf(stderr, "[GFX-CTX] WARNING: Memory at 0x%08X not mapped! This is unexpected.\n", CTX_ADDR);
+    KernelTraceHostOpF("HOST.GfxContext.not_mapped ea=%08X", CTX_ADDR);
+
+    // Try to allocate memory and hope it gets mapped at the right address
+    // Note: MmAllocatePhysicalMemoryEx ignores min/max address, so this likely won't work
+    uint32_t allocated = MmAllocatePhysicalMemoryEx(
+        0,                  // flags
+        CTX_SIZE,           // size
+        PAGE_READWRITE,     // protect
+        CTX_ADDR,           // minAddress (ignored by current implementation)
+        CTX_ADDR,           // maxAddress (ignored by current implementation)
+        0x1000              // alignment (4KB page)
+    );
+
+    fprintf(stderr, "[GFX-CTX] Allocated at 0x%08X (wanted 0x%08X)\n", allocated, CTX_ADDR);
+    KernelTraceHostOpF("HOST.GfxContext.allocated ea=%08X wanted=%08X", allocated, CTX_ADDR);
+
+    if (allocated != CTX_ADDR) {
+        fprintf(stderr, "[GFX-CTX] ERROR: Cannot allocate at exact address 0x%08X\n", CTX_ADDR);
+        fprintf(stderr, "[GFX-CTX] The game will likely crash when the callback is invoked.\n");
+        KernelTraceHostOpF("HOST.GfxContext.alloc_wrong_addr got=%08X wanted=%08X", allocated, CTX_ADDR);
+    }
+}
+
 static void Mw05ForceRegisterGfxNotifyIfRequested() {
     const char* en = std::getenv("MW05_FORCE_GFX_NOTIFY_CB");
     if (!en || (en[0]=='0' && en[1]=='\0')) return;
+
+    // Check if we should delay registration until after video init
+    static const uint32_t s_register_delay_ticks = [](){
+        if (const char* v = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"))
+            return (uint32_t)std::strtoul(v, nullptr, 10);
+        return 0u; // default: no delay
+    }();
+
+    const uint32_t current_tick = g_vblankTicks.load(std::memory_order_acquire);
+    if (current_tick < s_register_delay_ticks) {
+        // Too early - skip registration for now
+        static uint32_t s_last_log_tick = 0;
+        if (current_tick == 0 || (current_tick - s_last_log_tick) >= 100) {
+            KernelTraceHostOpF("HOST.VdISR.force_register.delayed tick=%u<%u", current_tick, s_register_delay_ticks);
+            s_last_log_tick = current_tick;
+        }
+        return;
+    }
+
+    // Check if already registered (one-time registration)
+    static std::atomic<bool> s_registered{false};
+    if (s_registered.load(std::memory_order_acquire)) return;
+
+    // CRITICAL: Ensure the graphics context structure is allocated BEFORE registering the callback
+    // The callback at 0x825979A8 accesses memory at context+0x3CEC, which will crash if not allocated
+    Mw05EnsureGraphicsContextAllocated();
+
+    // CRITICAL: Call VD initialization functions before registering the callback
+    // The game's natural flow calls these before VdSetGraphicsInterruptCallback
+    fprintf(stderr, "[GFX-REG] Calling VdInitializeEDRAM before callback registration\n");
+    fflush(stderr);
+    VdInitializeEDRAM();
+    fprintf(stderr, "[GFX-REG] VdInitializeEDRAM completed\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[GFX-REG] Calling VdInitializeEngines before callback registration\n");
+    fflush(stderr);
+    VdInitializeEngines();
+    fprintf(stderr, "[GFX-REG] VdInitializeEngines completed\n");
+    fflush(stderr);
+
     // Default EA from known-good Xenia capture if not provided via MW05_FORCE_GFX_NOTIFY_CB_EA
     uint32_t cb_ea = 0x825979A8u;
     if (const char* s = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_EA")) {
         cb_ea = (uint32_t)std::strtoul(s, nullptr, 0);
     }
-    uint32_t ctx = 1u;
+    uint32_t ctx = 0x40007180u;  // Changed default from 1 to the actual context address
     if (const char* c = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_CTX")) {
         ctx = (uint32_t)std::strtoul(c, nullptr, 0);
     }
     // Only install if caller hasn't already set a real ISR (avoid overriding guest)
     if (auto cur = VdGetGraphicsInterruptCallback(); cur == 0 || cur == kHostDefaultVdIsrMagic) {
-        KernelTraceHostOpF("HOST.VdISR.force_register cb=%08X ctx=%08X", cb_ea, ctx);
+        fprintf(stderr, "[GFX-REG] About to register callback cb=0x%08X ctx=0x%08X tick=%u\n", cb_ea, ctx, current_tick);
+        fflush(stderr);
+
+        KernelTraceHostOpF("HOST.VdISR.force_register cb=%08X ctx=%08X tick=%u", cb_ea, ctx, current_tick);
         VdSetGraphicsInterruptCallback(cb_ea, ctx);
+
+        fprintf(stderr, "[GFX-REG] VdSetGraphicsInterruptCallback completed\n");
+        fflush(stderr);
+
         // Also register into notification list so VdCallGraphicsNotificationRoutines hits it
         VdRegisterGraphicsNotificationRoutine(cb_ea, ctx);
+
+        fprintf(stderr, "[GFX-REG] VdRegisterGraphicsNotificationRoutine completed\n");
+        fflush(stderr);
+
         Mw05LogIsrIfRegisteredOnce();
-        // Immediately drive one notify so the newly registered ISR runs right away
-        VdCallGraphicsNotificationRoutines(0u);
+
+        fprintf(stderr, "[GFX-REG] Registration complete, returning to VBLANK handler\n");
+        fflush(stderr);
+
+        // EXPERIMENTAL: Don't immediately invoke the callback - let it be called naturally
+        // by the VBLANK pump or other mechanisms. This gives the game more time to initialize.
+        static const bool s_immediate_invoke = [](){
+            if (const char* v = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_IMMEDIATE"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false; // default: don't invoke immediately
+        }();
+
+        if (s_immediate_invoke) {
+            fprintf(stderr, "[GFX-CALLBACK] Immediately invoking callback after registration\n");
+            fflush(stderr);
+            VdCallGraphicsNotificationRoutines(0u);
+        } else {
+            fprintf(stderr, "[GFX-CALLBACK] Callback registered, will be invoked naturally by VBLANK pump\n");
+            fflush(stderr);
+        }
+
+        s_registered.store(true, std::memory_order_release);
     } else {
         KernelTraceHostOp("HOST.VdISR.force_register.skipped (already set)\n");
+        s_registered.store(true, std::memory_order_release);
     }
 }
 
@@ -6019,6 +6295,22 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 {
     g_VdGraphicsCallback = callback;
     g_VdGraphicsCallbackCtx = context;
+
+    // Monitor when the game NATURALLY registers a callback (not forced by us)
+    static bool s_first_natural_registration = true;
+    if (s_first_natural_registration) {
+        s_first_natural_registration = false;
+        fprintf(stderr, "\n");
+        fprintf(stderr, "========================================\n");
+        fprintf(stderr, "[NATURAL-REG] Game naturally registered graphics callback!\n");
+        fprintf(stderr, "[NATURAL-REG]   Callback: 0x%08X\n", callback);
+        fprintf(stderr, "[NATURAL-REG]   Context:  0x%08X\n", context);
+        fprintf(stderr, "[NATURAL-REG]   Tick:     %u\n", g_vblankTicks.load());
+        fprintf(stderr, "========================================\n");
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+
     LOGFN("[vd] SetGraphicsInterruptCallback cb=0x{:08X} ctx=0x{:08X}", callback, context);
     KernelTraceHostOpF("HOST.VdSetGraphicsInterruptCallback cb=%08X ctx=%08X", callback, context);
 }
@@ -6199,6 +6491,52 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                 KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch.skip.early ticks=%u<%u (via VdCallGraphicsNotificationRoutines)", (unsigned)ticks2, (unsigned)s_guest_isr_delay2);
             } else {
                 KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X (via VdCallGraphicsNotificationRoutines)", cb, ctx);
+
+                // Monitor context structure to see what the callback is doing
+                static uint32_t s_callback_count = 0;
+                static const bool s_monitor_context = [](){
+                    if (const char* v = std::getenv("MW05_MONITOR_GFX_CONTEXT"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return true; // ENABLED BY DEFAULT for debugging
+                }();
+
+                // Monitor ALL context members that the callback accesses
+                struct ContextSnapshot {
+                    uint32_t offset_2894;  // Structure pointer
+                    uint32_t offset_2898;  // Spinlock
+                    uint32_t offset_3CEC;  // Pending work flag
+                    uint32_t offset_3CF0;  // Invocation counter
+                    uint32_t offset_3CF4;  // Written by callback
+                    uint32_t offset_3CF8;  // Decrement counter
+                    uint32_t offset_3CFC;  // Read by callback
+                };
+
+                ContextSnapshot ctx_before = {};
+                if (s_monitor_context && ctx) {
+                    if (void* ctx_base = g_memory.Translate(ctx)) {
+                        auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
+                        ctx_before.offset_2894 = ctx_u32[0x2894 / 4];
+                        ctx_before.offset_2898 = ctx_u32[0x2898 / 4];
+                        ctx_before.offset_3CEC = ctx_u32[0x3CEC / 4];
+                        ctx_before.offset_3CF0 = ctx_u32[0x3CF0 / 4];
+                        ctx_before.offset_3CF4 = ctx_u32[0x3CF4 / 4];
+                        ctx_before.offset_3CF8 = ctx_u32[0x3CF8 / 4];
+                        ctx_before.offset_3CFC = ctx_u32[0x3CFC / 4];
+
+                        fprintf(stderr, "[GFX-MONITOR] BEFORE callback #%u:\n", s_callback_count);
+                        fprintf(stderr, "  +0x2894 = 0x%08X (structure pointer)\n", ctx_before.offset_2894);
+                        fprintf(stderr, "  +0x2898 = 0x%08X (spinlock)\n", ctx_before.offset_2898);
+                        fprintf(stderr, "  +0x3CEC = 0x%08X (pending work)\n", ctx_before.offset_3CEC);
+                        fprintf(stderr, "  +0x3CF0 = 0x%08X (invocation counter)\n", ctx_before.offset_3CF0);
+                        fprintf(stderr, "  +0x3CF4 = 0x%08X\n", ctx_before.offset_3CF4);
+                        fprintf(stderr, "  +0x3CF8 = 0x%08X (decrement counter)\n", ctx_before.offset_3CF8);
+                        fprintf(stderr, "  +0x3CFC = 0x%08X\n", ctx_before.offset_3CFC);
+                        fflush(stderr);
+                    }
+                }
+
+                fprintf(stderr, "[GFX-CALLBACK] About to call graphics callback cb=0x%08X ctx=0x%08X source=0 (invocation #%u)\n", cb, ctx, s_callback_count);
+                fflush(stderr);
                 EnsureGuestContextForThisThread("VdCallGraphicsNotificationRoutines");
                 static const bool s_isr_swap2 = [](){
                     if (const char* v = std::getenv("MW05_VD_ISR_SWAP_PARAMS")) return !(v[0]=='0' && v[1]=='\0');
@@ -6210,6 +6548,71 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                 } else {
                     GuestToHostFunction<void>(cb, 0u, ctx);
                 }
+
+                s_callback_count++;
+
+                if (s_monitor_context && ctx) {
+                    // Read all values after callback and compare
+                    if (void* ctx_base = g_memory.Translate(ctx)) {
+                        auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
+                        ContextSnapshot ctx_after = {};
+                        ctx_after.offset_2894 = ctx_u32[0x2894 / 4];
+                        ctx_after.offset_2898 = ctx_u32[0x2898 / 4];
+                        ctx_after.offset_3CEC = ctx_u32[0x3CEC / 4];
+                        ctx_after.offset_3CF0 = ctx_u32[0x3CF0 / 4];
+                        ctx_after.offset_3CF4 = ctx_u32[0x3CF4 / 4];
+                        ctx_after.offset_3CF8 = ctx_u32[0x3CF8 / 4];
+                        ctx_after.offset_3CFC = ctx_u32[0x3CFC / 4];
+
+                        fprintf(stderr, "[GFX-MONITOR] AFTER callback #%u:\n", s_callback_count - 1);
+
+                        // Show changes
+                        bool any_changed = false;
+                        if (ctx_before.offset_2894 != ctx_after.offset_2894) {
+                            fprintf(stderr, "  +0x2894: 0x%08X -> 0x%08X (structure pointer CHANGED)\n",
+                                    ctx_before.offset_2894, ctx_after.offset_2894);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_2898 != ctx_after.offset_2898) {
+                            fprintf(stderr, "  +0x2898: 0x%08X -> 0x%08X (spinlock CHANGED)\n",
+                                    ctx_before.offset_2898, ctx_after.offset_2898);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_3CEC != ctx_after.offset_3CEC) {
+                            fprintf(stderr, "  +0x3CEC: 0x%08X -> 0x%08X (pending work CHANGED)\n",
+                                    ctx_before.offset_3CEC, ctx_after.offset_3CEC);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_3CF0 != ctx_after.offset_3CF0) {
+                            fprintf(stderr, "  +0x3CF0: 0x%08X -> 0x%08X (invocation counter CHANGED)\n",
+                                    ctx_before.offset_3CF0, ctx_after.offset_3CF0);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_3CF4 != ctx_after.offset_3CF4) {
+                            fprintf(stderr, "  +0x3CF4: 0x%08X -> 0x%08X (CHANGED)\n",
+                                    ctx_before.offset_3CF4, ctx_after.offset_3CF4);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_3CF8 != ctx_after.offset_3CF8) {
+                            fprintf(stderr, "  +0x3CF8: 0x%08X -> 0x%08X (decrement counter CHANGED)\n",
+                                    ctx_before.offset_3CF8, ctx_after.offset_3CF8);
+                            any_changed = true;
+                        }
+                        if (ctx_before.offset_3CFC != ctx_after.offset_3CFC) {
+                            fprintf(stderr, "  +0x3CFC: 0x%08X -> 0x%08X (CHANGED)\n",
+                                    ctx_before.offset_3CFC, ctx_after.offset_3CFC);
+                            any_changed = true;
+                        }
+
+                        if (!any_changed) {
+                            fprintf(stderr, "  (No changes detected)\n");
+                        }
+                        fflush(stderr);
+                    }
+                }
+
+                fprintf(stderr, "[GFX-CALLBACK] Graphics callback returned successfully (invocation #%u)\n", s_callback_count - 1);
+                fflush(stderr);
 
                 // Optional: try the one-shot present-wrapper nudge from within the ISR
                 // thread context. This more closely matches the title's expected calling
@@ -7272,9 +7675,19 @@ void XMAReleaseContext()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-void XMACreateContext()
+void XMACreateContext(PPCContext& ctx, uint8_t* /*base*/)
 {
-    LOG_UTILITY("!!! STUB !!!");
+    // XMACreateContext returns 0 on success, negative on failure
+    // The game checks: cmpwi cr6,r3,0 then bge cr6 (branch if r3 >= 0)
+    // Return success to allow audio initialization to proceed
+    ctx.r3.s32 = 0;  // Success
+
+    static int call_count = 0;
+    if (call_count++ < 3) {
+        fprintf(stderr, "[XMACreateContext] STUB - returning success (r3=0)\n");
+        fflush(stderr);
+    }
+    LOG_UTILITY("!!! STUB !!! - returning success");
 }
 
 // uint32_t XAudioRegisterRenderDriverClient(be<uint32_t>* callback, be<uint32_t>* driver)

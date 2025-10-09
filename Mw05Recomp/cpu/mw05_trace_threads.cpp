@@ -56,6 +56,8 @@ static std::thread g_unblockThread;
 
 static void UnblockThreadFunc() {
 	const uint32_t flag_ea = 0x82A2CF40;
+	fprintf(stderr, "[UNBLOCK-DEBUG] UnblockThread started, flag_ea=%08X\n", flag_ea);
+	fflush(stderr);
 	KernelTraceHostOpF("HOST.UnblockThread.start flag_ea=%08X", flag_ea);
 
 	// Throttle logging: env-configurable interval (ms) and max lines
@@ -67,8 +69,8 @@ static void UnblockThreadFunc() {
 		}
 		return defv;
 	};
-	const uint32_t log_ms  = read_env_u32("MW05_UNBLOCK_LOG_MS", 2000);
-	const uint32_t log_max = read_env_u32("MW05_UNBLOCK_LOG_MAX", 20);
+	const uint32_t log_ms  = read_env_u32("MW05_UNBLOCK_LOG_MS", 500);  // Log every 500ms
+	const uint32_t log_max = read_env_u32("MW05_UNBLOCK_LOG_MAX", 10);  // Max 10 logs
 
 	int iteration = 0;
 	uint32_t logged = 0;
@@ -90,6 +92,8 @@ static void UnblockThreadFunc() {
 				uint64_t elapsed = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
 				if (elapsed >= log_ms) {
 					uint32_t readback = __builtin_bswap32(*vol_ptr);
+					fprintf(stderr, "[UNBLOCK-DEBUG] UnblockThread iter=%d current=%u readback=%u\n", iteration, current, readback);
+					fflush(stderr);
 					KernelTraceHostOpF("HOST.UnblockThread.set iter=%d current=%u readback=%u", iteration, current, readback);
 					last = now;
 					logged++;
@@ -100,6 +104,8 @@ static void UnblockThreadFunc() {
 		// NO SLEEP - keep the flag set continuously
 	}
 
+	fprintf(stderr, "[UNBLOCK-DEBUG] UnblockThread exiting, iterations=%d\n", iteration);
+	fflush(stderr);
 	KernelTraceHostOpF("HOST.UnblockThread.exit iterations=%d", iteration);
 }
 
@@ -107,11 +113,16 @@ static void UnblockThreadFunc() {
 // The main thread at sub_82441CF0 waits for dword_82A2CF40 to become non-zero.
 // This flag should be set by sub_82442080, but the initialization chain is never triggered.
 extern "C" void UnblockMainThreadEarly() {
+	fprintf(stderr, "[UNBLOCK-DEBUG] UnblockMainThreadEarly called, enabled=%d\n", UnblockMainThreadEnabled());
+	fflush(stderr);
+
 	if(!UnblockMainThreadEnabled()) return;
 
 	const uint32_t flag_ea = 0x82A2CF40;
 	uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(flag_ea));
 	if(!flag_ptr) {
+		fprintf(stderr, "[UNBLOCK-DEBUG] FAILED to translate ea=%08X\n", flag_ea);
+		fflush(stderr);
 		KernelTraceHostOpF("HOST.UnblockMainThreadEarly FAILED: could not translate ea=%08X", flag_ea);
 		return;
 	}
@@ -121,11 +132,15 @@ extern "C" void UnblockMainThreadEarly() {
 
 	// Read it back to verify
 	uint32_t readback = __builtin_bswap32(*flag_ptr);
+	fprintf(stderr, "[UNBLOCK-DEBUG] Set flag ea=%08X to 1, readback=%u ptr=%p\n", flag_ea, readback, flag_ptr);
+	fflush(stderr);
 	KernelTraceHostOpF("HOST.UnblockMainThreadEarly set flag ea=%08X to 1, readback=%u ptr=%p", flag_ea, readback, flag_ptr);
 
 	// Start background thread to keep setting the flag
 	if (!g_unblockThreadRunning.exchange(true, std::memory_order_acq_rel)) {
 		g_unblockThread = std::thread(UnblockThreadFunc);
+		fprintf(stderr, "[UNBLOCK-DEBUG] Started background thread\n");
+		fflush(stderr);
 		KernelTraceHostOp("HOST.UnblockMainThreadEarly started background thread");
 	}
 }

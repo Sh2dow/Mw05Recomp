@@ -275,6 +275,15 @@ static void ParsePM4Indirect(uint32_t ib_addr, uint32_t ib_dword_count) {
 // Scan a linear buffer of PM4 packets starting at addr for up to `bytes`
 void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
     if (!addr || bytes == 0) return;
+
+    // DEBUG: Log PM4 scan calls
+    static int s_scanLogCount = 0;
+    if (s_scanLogCount < 10) {
+        fprintf(stderr, "[RENDER-DEBUG] PM4_ScanLinear called: addr=%08X bytes=%u count=%d\n", addr, bytes, s_scanLogCount);
+        fflush(stderr);
+        s_scanLogCount++;
+    }
+
     KernelTraceHostOpF("HOST.PM4.ScanLinear.begin addr=%08X bytes=%u", addr, bytes);
     uint32_t consumed = 0;
     uint32_t safety = 0;
@@ -288,6 +297,14 @@ void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
     }
     KernelTraceHostOpF("HOST.PM4.ScanLinear.end consumed=%u draws=%llu", consumed,
                        (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed));
+
+    // DEBUG: Log scan results
+    if (s_scanLogCount <= 10) {
+        uint64_t draws = g_pm4DrawCount.load(std::memory_order_relaxed);
+        fprintf(stderr, "[RENDER-DEBUG] PM4_ScanLinear result: consumed=%u draws=%llu\n", consumed, (unsigned long long)draws);
+        fflush(stderr);
+    }
+
     // Also report packet type composition and opcode presence for linear scans
     {
         uint64_t t0 = g_typeCounts[0].load(std::memory_order_relaxed);
@@ -370,6 +387,17 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
             uint32_t p0 = (count >= 0 && params[0]) ? __builtin_bswap32(params[0]) : 0;
             uint32_t p1 = (count >= 1 && params[1]) ? __builtin_bswap32(params[1]) : 0;
             uint32_t p2 = (count >= 2 && params[2]) ? __builtin_bswap32(params[2]) : 0;
+
+            // DEBUG: Log PM4 draw commands
+            static int s_pm4DrawLogCount = 0;
+            if (s_pm4DrawLogCount < 5) {
+                fprintf(stderr, "[RENDER-DEBUG] PM4 DRAW command detected: opcode=%s count=%u total_draws=%llu emit_enabled=%d\n",
+                        (opcode == PM4_DRAW_INDX) ? "DRAW_INDX" : "DRAW_INDX_2",
+                        count, (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed),
+                        IsEmitDrawsEnabled());
+                fflush(stderr);
+                s_pm4DrawLogCount++;
+            }
 
             if (IsPM4TracingEnabled()) {
                 KernelTraceHostOpF("HOST.PM4.DRAW_%s addr=%08X count=%u p0=%08X p1=%08X p2=%08X total_draws=%llu",

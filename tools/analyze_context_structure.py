@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""
+Analyze the context structure at 0x40007180 by examining the graphics callback function.
+"""
+
+import re
+import sys
+
+def analyze_callback_function():
+    """
+    Analyze sub_825979A8 to understand what fields it accesses in the context structure.
+    
+    From CONTEXT_CODE_SNIPPETS.md:
+    - Context is at 0x40007180
+    - Callback checks flag at 0x7FE86544
+    - Loads function pointer from context + 15596 (0x3CEC)
+    - Calls that function
+    """
+    
+    print("=" * 80)
+    print("CONTEXT STRUCTURE ANALYSIS FOR 0x40007180")
+    print("=" * 80)
+    print()
+    
+    print("Based on graphics callback function sub_825979A8:")
+    print()
+    print("  void sub_825979A8(uint32_t source, uint32_t context) {")
+    print("      // source = r3 (0 for vblank, 1 for other)")
+    print("      // context = r4 (0x40007180)")
+    print()
+    print("      uint32_t flag = *(uint32_t*)(0x7FE86544);")
+    print("      if (flag != 0) {")
+    print("          uint32_t func_ptr = *(uint32_t*)(context + 0x3CEC);  // offset 15596")
+    print("          if (func_ptr != 0) {")
+    print("              call_function(func_ptr);")
+    print("          }")
+    print("      }")
+    print("  }")
+    print()
+    
+    print("=" * 80)
+    print("CONTEXT STRUCTURE LAYOUT")
+    print("=" * 80)
+    print()
+    print(f"  Base address: 0x40007180")
+    print(f"  Minimum size: 0x3CEC + 4 = 0x3CF0 ({15600} bytes)")
+    print()
+    print("  Known fields:")
+    print(f"    +0x0000: Unknown (likely header/flags)")
+    print(f"    +0x3CEC: Function pointer for rendering work")
+    print()
+    
+    print("=" * 80)
+    print("SOLUTION APPROACH")
+    print("=" * 80)
+    print()
+    print("Since 0x40007180 is a static global variable in the game's BSS section,")
+    print("we have two options:")
+    print()
+    print("1. ALLOCATE MANUALLY:")
+    print("   - Allocate ~16KB at 0x40007180 using MmAllocatePhysicalMemory")
+    print("   - Zero-initialize the structure")
+    print("   - Let the game populate it naturally")
+    print()
+    print("2. WAIT FOR NATURAL ALLOCATION:")
+    print("   - The game should allocate/initialize this during startup")
+    print("   - We need to ensure the initialization chain completes")
+    print("   - sub_821BB4D0 → sub_82216088 → ... → sub_825A85E0")
+    print()
+    
+    print("=" * 80)
+    print("RECOMMENDED IMPLEMENTATION")
+    print("=" * 80)
+    print()
+    print("Add to Mw05Recomp/kernel/imports.cpp:")
+    print()
+    print("```cpp")
+    print("// Allocate and zero-initialize the graphics context structure")
+    print("static void Mw05EnsureGraphicsContextAllocated() {")
+    print("    constexpr uint32_t CTX_ADDR = 0x40007180;")
+    print("    constexpr uint32_t CTX_SIZE = 0x4000;  // 16KB, rounded up")
+    print("    ")
+    print("    // Check if already allocated")
+    print("    if (GuestOffsetInRange(CTX_ADDR, CTX_SIZE)) {")
+    print("        return;  // Already allocated")
+    print("    }")
+    print("    ")
+    print("    // Allocate at specific address")
+    print("    uint32_t allocated = MmAllocatePhysicalMemoryEx(")
+    print("        CTX_SIZE,")
+    print("        CTX_ADDR,  // Lowest acceptable address")
+    print("        CTX_ADDR + CTX_SIZE,  // Highest acceptable address")
+    print("        0,  // Alignment")
+    print("        0   // Flags")
+    print("    );")
+    print("    ")
+    print("    if (allocated != CTX_ADDR) {")
+    print("        fprintf(stderr, \"[GFX-CTX] Failed to allocate at 0x%08X, got 0x%08X\\n\",")
+    print("                CTX_ADDR, allocated);")
+    print("        return;")
+    print("    }")
+    print("    ")
+    print("    // Zero-initialize")
+    print("    uint8_t* ctx_ptr = GetGuestMemoryPointer(CTX_ADDR);")
+    print("    if (ctx_ptr) {")
+    print("        memset(ctx_ptr, 0, CTX_SIZE);")
+    print("        fprintf(stderr, \"[GFX-CTX] Allocated and zeroed %u bytes at 0x%08X\\n\",")
+    print("                CTX_SIZE, CTX_ADDR);")
+    print("    }")
+    print("}")
+    print("```")
+    print()
+    print("Call this before forcing callback registration:")
+    print()
+    print("```cpp")
+    print("void Mw05ForceRegisterGfxNotifyIfRequested() {")
+    print("    if (!Mw05EnvEnabled(\"MW05_FORCE_GFX_NOTIFY_CB\")) return;")
+    print("    ")
+    print("    // Ensure context is allocated FIRST")
+    print("    Mw05EnsureGraphicsContextAllocated();")
+    print("    ")
+    print("    // Then register callback...")
+    print("    uint32_t cb_ea = 0x825979A8;")
+    print("    uint32_t ctx = Mw05EnvU32(\"MW05_FORCE_GFX_NOTIFY_CB_CTX\", 0x40007180);")
+    print("    // ...")
+    print("}")
+    print("```")
+    print()
+
+if __name__ == '__main__':
+    analyze_callback_function()
+

@@ -1117,6 +1117,15 @@ extern "C" void Mw05HostSetViewport(float x, float y, float width, float height,
 extern "C" void Mw05HostApplyColorSurface(uint32_t rbSurfaceInfo, uint32_t rbColorInfo)
 {
     KernelTraceHostOpF("HOST.PM4.RT.apply RB_SURFACE_INFO=%08X RB_COLOR_INFO=%08X", rbSurfaceInfo, rbColorInfo);
+
+    // DEBUG: Log when color surface is applied
+    static int s_applyCount = 0;
+    if (s_applyCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] ApplyColorSurface called: count=%d backBuffer=%p\n", s_applyCount, g_backBuffer);
+        fflush(stderr);
+        s_applyCount++;
+    }
+
     // For now, bind the backbuffer as the render target when title sets a non-zero color surface.
     // This does not synthesize draws; it only ensures we have a target bound when real draws arrive.
     RenderCommand cmd;
@@ -1148,6 +1157,13 @@ extern "C" void Mw05HostSetScissor(int32_t left, int32_t top, int32_t right, int
 
 extern "C" void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount)
 {
+    static int s_drawCount = 0;
+    if (s_drawCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] Mw05HostDrawIndexed called: count=%d primCount=%u\n", s_drawCount, primCount);
+        fflush(stderr);
+        s_drawCount++;
+    }
+
     if (auto* dev = Mw05GetGuestDevicePtr()) {
         DrawIndexedPrimitive(dev, primitiveType, baseVertexIndex, startIndex, primCount);
     }
@@ -1155,6 +1171,13 @@ extern "C" void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIn
 
 extern "C" void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount)
 {
+    static int s_drawCount = 0;
+    if (s_drawCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] Mw05HostDraw called: count=%d primitiveCount=%u\n", s_drawCount, primitiveCount);
+        fflush(stderr);
+        s_drawCount++;
+    }
+
     if (auto* dev = Mw05GetGuestDevicePtr()) {
         DrawPrimitive(dev, primitiveType, startVertex, primitiveCount);
     }
@@ -1728,6 +1751,14 @@ static void CheckSwapChain()
 
 static void BeginCommandList()
 {
+    // DEBUG: Log when BeginCommandList is called
+    static int s_beginCount = 0;
+    if (s_beginCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] BeginCommandList called: count=%d backBuffer=%p\n", s_beginCount, g_backBuffer);
+        fflush(stderr);
+        s_beginCount++;
+    }
+
     g_renderTarget = g_backBuffer;
     g_depthStencil = nullptr;
     g_framebuffer = nullptr;
@@ -3812,6 +3843,14 @@ static void ProcExecuteCommandList(const RenderCommand& cmd)
 
 static void ProcBeginCommandList(const RenderCommand& cmd)
 {
+    // DEBUG: Log when ProcBeginCommandList is called
+    static int s_procBeginCount = 0;
+    if (s_procBeginCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] ProcBeginCommandList called: count=%d\n", s_procBeginCount);
+        fflush(stderr);
+        s_procBeginCount++;
+    }
+
     DestructTempResources();
     BeginCommandList();
 
@@ -5302,6 +5341,15 @@ static void FlushRenderStateForRenderThread()
 {
     auto renderTarget = g_pipelineState.colorWriteEnable ? g_renderTarget : nullptr;
     auto depthStencil = g_pipelineState.zEnable ? g_depthStencil : nullptr;
+
+    // DEBUG: Log render target state
+    static int s_logCount = 0;
+    if (s_logCount < 5) {
+        fprintf(stderr, "[RENDER-DEBUG] FlushRenderState: colorWriteEnable=%d zEnable=%d g_renderTarget=%p g_depthStencil=%p final_renderTarget=%p final_depthStencil=%p\n",
+                g_pipelineState.colorWriteEnable, g_pipelineState.zEnable, g_renderTarget, g_depthStencil, renderTarget, depthStencil);
+        fflush(stderr);
+        s_logCount++;
+    }
 
     bool foundAny = PopulateBarriersForStretchRect(renderTarget, depthStencil);
 

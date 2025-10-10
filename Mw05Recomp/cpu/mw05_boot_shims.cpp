@@ -31,6 +31,7 @@ extern "C"
     void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
 
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
@@ -105,6 +106,13 @@ static inline bool FastBootEnabled() {
 
 static inline bool BreakLoop82813514Enabled() {
     if(const char* v = std::getenv("MW05_BREAK_82813514")) {
+        return !(v[0] == '0' && v[1] == '\0');
+    }
+    return false;
+}
+
+static inline bool BreakCRTInitLoopEnabled() {
+    if(const char* v = std::getenv("MW05_BREAK_CRT_INIT")) {
         return !(v[0] == '0' && v[1] == '\0');
     }
     return false;

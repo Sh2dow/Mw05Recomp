@@ -732,6 +732,18 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] before_sub_828134E0_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x828134E0, sub_828134E0);
     fprintf(stderr, "[MAIN] after_sub_828134E0_install\n"); fflush(stderr);
+
+    // Install wrapper for string formatting function to detect infinite loops
+    extern void sub_8262DD80(PPCContext&, uint8_t*);
+    fprintf(stderr, "[MAIN] before_sub_8262DD80_install\n"); fflush(stderr);
+    g_memory.InsertFunction(0x8262DD80, sub_8262DD80);
+    fprintf(stderr, "[MAIN] after_sub_8262DD80_install\n"); fflush(stderr);
+
+    // Install wrapper for CRT init function that calls sub_8262DD80 in a loop
+    extern void sub_8262DE60(PPCContext&, uint8_t*);
+    fprintf(stderr, "[MAIN] before_sub_8262DE60_install\n"); fflush(stderr);
+    g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
+    fprintf(stderr, "[MAIN] after_sub_8262DE60_install\n"); fflush(stderr);
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
     // KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
     //     reinterpret_cast<const void*>(sub_828134E0),

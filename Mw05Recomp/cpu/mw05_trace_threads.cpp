@@ -18,6 +18,9 @@ extern "C" {
     void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_824411E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82442080(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
+    void __imp__sub_8262F2A0(PPCContext& ctx, uint8_t* base);
+
     uint32_t Mw05PeekSchedulerBlockEA();
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
     void Mw05ForceVdInitOnce();
@@ -59,6 +62,38 @@ static void UnblockThreadFunc() {
 	fprintf(stderr, "[UNBLOCK-DEBUG] UnblockThread started, flag_ea=%08X\n", flag_ea);
 	fflush(stderr);
 	KernelTraceHostOpF("HOST.UnblockThread.start flag_ea=%08X", flag_ea);
+
+	// Set the VD callback render thread creation flag
+	// Address: 0x7FE86544 (from lis r11,32712; lwz r11,25924(r11) in sub_825979A8)
+	const uint32_t vd_flag_ea = 0x7FE86544;
+	uint32_t* vd_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(vd_flag_ea));
+	if (vd_flag_ptr) {
+		*vd_flag_ptr = 1;  // Enable render thread creation
+		fprintf(stderr, "[UNBLOCK-DEBUG] Set VD render flag at %08X to 1\n", vd_flag_ea);
+		fflush(stderr);
+		KernelTraceHostOpF("HOST.UnblockThread.set_vd_flag addr=%08X value=1", vd_flag_ea);
+	}
+
+	// Check the VD callback function pointer that creates the render thread
+	// Graphics context is at 0x40007180
+	// r10 = *(0x40007180 + 10388) = *(0x40009994)
+	// r30 = *(r10 + 16) - this is the function pointer
+	const uint32_t gfx_ctx_ea = 0x40007180;
+	uint32_t* gfx_ctx_ptr = static_cast<uint32_t*>(g_memory.Translate(gfx_ctx_ea + 10388));
+	if (gfx_ctx_ptr) {
+		uint32_t r10_value = __builtin_bswap32(*gfx_ctx_ptr);  // Big-endian
+		fprintf(stderr, "[UNBLOCK-DEBUG] GFX context+10388 = %08X\n", r10_value);
+		fflush(stderr);
+
+		if (r10_value != 0) {
+			uint32_t* func_ptr_ptr = static_cast<uint32_t*>(g_memory.Translate(r10_value + 16));
+			if (func_ptr_ptr) {
+				uint32_t func_ptr = __builtin_bswap32(*func_ptr_ptr);  // Big-endian
+				fprintf(stderr, "[UNBLOCK-DEBUG] VD callback function pointer at %08X+16 = %08X\n", r10_value, func_ptr);
+				fflush(stderr);
+			}
+		}
+	}
 
 	// Throttle logging: env-configurable interval (ms) and max lines
 	auto read_env_u32 = [](const char* name, uint32_t defv) -> uint32_t {
@@ -108,6 +143,12 @@ static void UnblockThreadFunc() {
 	fflush(stderr);
 	KernelTraceHostOpF("HOST.UnblockThread.exit iterations=%d", iteration);
 }
+
+// String formatting function that main thread gets stuck in
+extern "C" void __imp__sub_8262DD80(PPCContext& ctx, uint8_t* base);
+
+// CRT initialization function that calls sub_8262DD80 in a loop
+extern "C" void __imp__sub_8262DE60(PPCContext& ctx, uint8_t* base);
 
 // Workaround: Start a background thread that continuously sets the flag.
 // The main thread at sub_82441CF0 waits for dword_82A2CF40 to become non-zero.
@@ -171,12 +212,56 @@ void KickMinimalVideo() {
     VdInitializeEngines();
 }
 
+static std::atomic<bool> g_forcedGraphicsInit{false};
+
 void sub_828508A8(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOp("HOST.ThreadEntry.828508A8");
+    KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
+    fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx\n", GetCurrentThreadId());
+    fflush(stderr);
+
     if(KickVideoInitEnabled()) KickMinimalVideo();
 	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
+
+    fprintf(stderr, "[THREAD_828508A8] Calling __imp__sub_828508A8 tid=%lx\n", GetCurrentThreadId());
+    fflush(stderr);
     __imp__sub_828508A8(ctx, base);
+
+    fprintf(stderr, "[THREAD_828508A8] __imp__sub_828508A8 returned tid=%lx\n", GetCurrentThreadId());
+    fflush(stderr);
+    KernelTraceHostOp("HOST.ThreadEntry.828508A8.returned");
+
+    // After the first thread completes, try forcing graphics init
+    if (!g_forcedGraphicsInit.exchange(true, std::memory_order_acq_rel)) {
+        fprintf(stderr, "[THREAD_828508A8] Checking MW05_FORCE_GRAPHICS_INIT tid=%lx\n", GetCurrentThreadId());
+        fflush(stderr);
+
+        if (const char* force = std::getenv("MW05_FORCE_GRAPHICS_INIT")) {
+            fprintf(stderr, "[THREAD_828508A8] MW05_FORCE_GRAPHICS_INIT=%s tid=%lx\n", force, GetCurrentThreadId());
+            fflush(stderr);
+
+            if (!(force[0]=='0' && force[1]=='\0')) {
+                KernelTraceHostOp("HOST.sub_828508A8.FORCE_GRAPHICS_INIT calling sub_823AF590");
+                fprintf(stderr, "[FORCE_GFX_INIT] Calling sub_823AF590 from thread %lx\n", GetCurrentThreadId());
+                fflush(stderr);
+
+                // Call the graphics init function
+                __imp__sub_823AF590(ctx, base);
+
+                KernelTraceHostOp("HOST.sub_828508A8.FORCE_GRAPHICS_INIT sub_823AF590 returned");
+                fprintf(stderr, "[FORCE_GFX_INIT] sub_823AF590 returned\n");
+                fflush(stderr);
+            }
+        } else {
+            fprintf(stderr, "[THREAD_828508A8] MW05_FORCE_GRAPHICS_INIT not set tid=%lx\n", GetCurrentThreadId());
+            fflush(stderr);
+        }
+    }
+
+    fprintf(stderr, "[THREAD_828508A8] EXIT tid=%lx\n", GetCurrentThreadId());
+    fflush(stderr);
+    KernelTraceHostOp("HOST.ThreadEntry.828508A8.exit");
 }
+
 
 void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
     SetPPCContext(ctx);
@@ -257,6 +342,74 @@ void sub_824411E0(PPCContext& ctx, uint8_t* base) {
 
     __imp__sub_824411E0(ctx, base);
     KernelTraceHostOp("HOST.ThreadEntry.824411E0 complete");
+}
+
+// Helper to check if CRT init loop breaking is enabled
+static inline bool BreakCRTInitLoopEnabled() {
+    if(const char* v = std::getenv("MW05_BREAK_CRT_INIT")) {
+        return !(v[0] == '0' && v[1] == '\0');
+    }
+    return false;
+}
+
+// Wrapper for sub_8262DD80 to detect and break infinite string formatting loops
+void sub_8262DD80(PPCContext& ctx, uint8_t* base) {
+    static std::atomic<uint64_t> s_callCount{0};
+    static std::atomic<uint64_t> s_lastLogTime{0};
+
+    uint64_t count = s_callCount.fetch_add(1);
+
+    // Log every 10M calls
+    if (count % 10000000 == 0) {
+        uint64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+        fprintf(stderr, "[STRING-LOOP] sub_8262DD80 called %llu times (infinite loop?)\n", count);
+        fflush(stderr);
+    }
+
+    // Check if CRT init loop breaking is enabled
+    if (BreakCRTInitLoopEnabled()) {
+        KernelTraceHostOpF("HOST.sub_8262DD80.break_crt_init lr=%08llX count=%llu", ctx.lr, count);
+
+        // The function is supposed to format a string and call callbacks.
+        // During early init, the callback table at 0x820009FC is not initialized.
+        // Initialize the pointer to NULL so the loop is skipped.
+        constexpr uint32_t callback_table_ptr_addr = 0x820009FC;
+        uint8_t* ptr = static_cast<uint8_t*>(g_memory.Translate(callback_table_ptr_addr));
+        if (ptr) {
+            // Write NULL (big-endian)
+            *reinterpret_cast<uint32_t*>(ptr) = 0;
+            KernelTraceHostOpF("HOST.sub_8262DD80.init_callback_table addr=%08X val=0", callback_table_ptr_addr);
+        }
+
+        // Return early - the function's purpose is to format and output debug strings,
+        // which we don't need during early init
+        return;
+    }
+
+    // Call original
+    __imp__sub_8262DD80(ctx, base);
+}
+
+// Wrapper for sub_8262DE60 - the CRT initialization function that calls sub_8262DD80 in a loop
+void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu", ctx.lr, count);
+
+    // Check if CRT init loop breaking is enabled
+    if (BreakCRTInitLoopEnabled()) {
+        // Only skip after a certain number of calls to allow some initialization
+        constexpr uint64_t kMaxCalls = 1000;  // Increased from 100 to allow more init
+        if (count >= kMaxCalls) {
+            KernelTraceHostOpF("HOST.sub_8262DE60.skip_after_limit lr=%08llX count=%llu", ctx.lr, count);
+            // Skip after limit - the game is stuck in a loop
+            return;
+        }
+    }
+
+    // Call original
+    __imp__sub_8262DE60(ctx, base);
 }
 
 // Register the thread entry point hooks

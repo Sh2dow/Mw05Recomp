@@ -15,6 +15,8 @@ extern void MW05Shim_sub_8262F330(PPCContext&, uint8_t*);
 extern void MW05Shim_sub_82812E20(PPCContext&, uint8_t*);
 extern void MW05Shim_sub_82880FA0(PPCContext&, uint8_t*);
 extern void MW05Shim_sub_82885A70(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_825979A8(PPCContext&, uint8_t*);
+extern void MW05Shim_sub_82598A20(PPCContext&, uint8_t*);
 
 // Guard for guest function at 0x82625D60 which repeatedly AVs while booting.
 // Behavior is unknown; until we understand it, stub it to a no-op that returns 0.
@@ -75,6 +77,7 @@ static void sub_825CEE28_stub(PPCContext& ctx, uint8_t* /*base*/) {
 }
 
 static void RegisterHookOverridesManual() {
+    KernelTraceHostOp("HOST.ManualOverridesCtor");
     // Safety guard
     g_memory.InsertFunction(0x82625D60, sub_82625D60_guard);
 
@@ -85,6 +88,10 @@ static void RegisterHookOverridesManual() {
     g_memory.InsertFunction(0x8262F2A0, MW05Shim_sub_8262F2A0);
     g_memory.InsertFunction(0x8262F330, MW05Shim_sub_8262F330);
     g_memory.InsertFunction(0x82812E20, MW05Shim_sub_82812E20);
+
+    // CRITICAL: Graphics ISR and Present - force hook shims even if auto-gen is empty
+    g_memory.InsertFunction(0x825979A8, MW05Shim_sub_825979A8);
+    g_memory.InsertFunction(0x82598A20, MW05Shim_sub_82598A20);
 
     // CRITICAL: Wait loop breakers - these code snippets are called in an infinite loop
     g_memory.InsertFunction(0x825CEE18, sub_825CEE18_stub);
@@ -104,12 +111,24 @@ static void RegisterHookOverridesManual() {
     g_memory.InsertFunction(0x82FF1000, MW05HostAllocCb);
 }
 
+// Ensure registration runs exactly once regardless of toolchain constructor quirks
+static void RegisterHookOverridesManualOnce() {
+    static bool s_done = false;
+    if (!s_done) { RegisterHookOverridesManual(); s_done = true; }
+}
+
 #if defined(_MSC_VER)
 #  pragma section(".CRT$XCU",read)
     static void __cdecl ppc_hook_overrides_manual_ctor();
     __declspec(allocate(".CRT$XCU")) void (*ppc_hook_overrides_manual_ctor_)(void) = ppc_hook_overrides_manual_ctor;
-    static void __cdecl ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManual(); }
+    static void __cdecl ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
 #else
-    __attribute__((constructor)) static void ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManual(); }
+    __attribute__((constructor)) static void ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
 #endif
+
+// Fallback: a global object to trigger registration via C++ static initialization
+struct ManualHookInit {
+    ManualHookInit() { RegisterHookOverridesManualOnce(); }
+};
+static ManualHookInit g_manual_hook_init;
 

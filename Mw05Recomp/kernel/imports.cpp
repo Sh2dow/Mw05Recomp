@@ -13,6 +13,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <atomic>
 #include "xam.h"
 #include "xdm.h"
 #include <user/config.h>
@@ -111,7 +112,13 @@ extern "C"
 	uint32_t Mw05GetSchedulerTimeoutEA();
 	void Mw05ForceVdInitOnce();
 	void Mw05LogIsrIfRegisteredOnce();
-	void VdInitializeEngines();
+	void VdInitializeEngines(uint32_t callback_ea = 0, uint32_t arg1 = 0, uint32_t arg2 = 0, uint32_t arg3 = 0, uint32_t arg4 = 0);
+
+// Global variables for VdInitializeEngines callback workaround
+uint32_t g_vd_init_callback_ea = 0;
+uint32_t g_vd_init_callback_arg1 = 0;
+uint32_t g_vd_init_callback_arg2 = 0;
+uint32_t g_vd_init_callback_arg3 = 0;
 
     bool Mw05FastBootEnabled() {
         static const bool enabled = []() -> bool {
@@ -154,7 +161,7 @@ extern "C"
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 void VdInitializeEDRAM();
-void VdInitializeEngines();
+void VdInitializeEngines(uint32_t callback_ea, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4);
 
 
 #ifdef _WIN32
@@ -1724,6 +1731,10 @@ static void Mw05StartVblankPumpOnce() {
                 fprintf(stderr, "[VBLANK-ISR-STATUS] tick=%u cb=%08X ctx=%08X\n", currentTick, cb, ctx);
                 fflush(stderr);
             }
+
+            // DISABLED: Event signaling workaround - g_memory.Translate doesn't exist
+            // The real issue is that threads are stuck in sleep loops instead of waiting on events
+            // Need to find what sets r31 to 0 in the sleep function to allow threads to exit
 
             // MW05 FIX: Call VdCallGraphicsNotificationRoutines periodically to invoke registered callbacks
             // Only do this if a real callback is registered (not the host magic value)
@@ -6003,10 +6014,26 @@ static void Mw05EnsureGraphicsContextAllocated() {
                 static_cast<uint8_t*>(ctx_ptr) + STRUCT_OFFSET);
             *ctx_struct_ptr = struct_guest;
 
-            fprintf(stderr, "[GFX-CTX] Allocated structure at 0x%08X, stored pointer at context+0x%04X\n",
+            fprintf(stderr, "[GFX-CTX] Allocated structure at 0x%08X, stored pointer at context+0x%04X (expects ctx+0x2894)\n",
                     struct_guest, STRUCT_OFFSET);
             KernelTraceHostOpF("HOST.GfxContext.struct_allocated ea=%08X offset=%04X",
                              struct_guest, STRUCT_OFFSET);
+            // Initialize important members inside the inner structure that ISR uses
+            {
+                auto* inner_u32 = reinterpret_cast<uint32_t*>(struct_host);
+                // Ensure the source==1 function pointer (+0x10) is NULL to avoid bogus indirect calls
+                inner_u32[0x10 / 4] = 0;
+                // Present function pointer (+0x3CEC) initially 0; will be set before first call
+                inner_u32[0x3CEC / 4] = 0;
+                // Invocation counter (+0x3CF0)
+                inner_u32[0x3CF0 / 4] = 0;
+                // Decrement counter (+0x3CF8)
+                inner_u32[0x3CF8 / 4] = 0;
+                // Scratch (+0x3CF4, +0x3CFC)
+                inner_u32[0x3CF4 / 4] = 0;
+                inner_u32[0x3CFC / 4] = 0;
+            }
+
         } else {
             fprintf(stderr, "[GFX-CTX] WARNING: Failed to allocate structure for context+0x%04X\n",
                     STRUCT_OFFSET);
@@ -6352,14 +6379,89 @@ void VdUnregisterGraphicsNotificationRoutine(uint32_t callback)
 }
 
 
-void VdInitializeEngines()
+void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_arg, uint32_t pfp_ptr, uint32_t me_ptr)
 {
-    KernelTraceHostOp("HOST.VdInitializeEngines");
+    static int call_count = 0;
+    call_count++;
+
+    // Log to both stderr and trace file (matching Xenia's parameter names)
+    // Log ALL calls to see if the function is being called multiple times
+    fprintf(stderr, "[VdInitEngines #%d] ENTRY: unk0=%08X cb=%08X arg=%08X pfp_ptr=%08X me_ptr=%08X tid=%lx\n",
+            call_count, unk0, callback_ea, callback_arg, pfp_ptr, me_ptr, GetCurrentThreadId());
+    fflush(stderr);
+
+    KernelTraceHostOpF("HOST.VdInitializeEngines.CALL#%d unk0=%08X cb=%08X arg=%08X pfp_ptr=%08X me_ptr=%08X",
+                       call_count, unk0, callback_ea, callback_arg, pfp_ptr, me_ptr);
+
     Mw05ApplyVdPokesOnce();
     // Consider engines initialized; also start the vblank pump to ensure
     // display-related waiters can make progress during bring-up.
     Mw05AutoVideoInitIfNeeded();
     Mw05StartVblankPumpOnce();
+
+    // Call the callback if provided (this initializes the graphics context structure)
+    if (callback_ea != 0) {
+        fprintf(stderr, "[VdInitEngines #%d] Calling callback at 0x%08X with arg=%08X\n",
+                call_count, callback_ea, callback_arg);
+        fflush(stderr);
+
+        // Check if the callback address is valid
+        if (!GuestOffsetInRange(callback_ea, 4)) {
+            fprintf(stderr, "[VdInitEngines #%d] ERROR: Callback address 0x%08X is out of range!\n", call_count, callback_ea);
+            fflush(stderr);
+            return;
+        }
+
+        // Dump first 16 bytes at callback address to see if it's code
+        if (uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(callback_ea))) {
+            uint32_t word0 = _byteswap_ulong(ptr[0]);
+            uint32_t word1 = _byteswap_ulong(ptr[1]);
+            uint32_t word2 = _byteswap_ulong(ptr[2]);
+            uint32_t word3 = _byteswap_ulong(ptr[3]);
+            fprintf(stderr, "[VdInitEngines #%d] Callback memory at 0x%08X: %08X %08X %08X %08X\n",
+                    call_count, callback_ea, word0, word1, word2, word3);
+            fflush(stderr);
+
+            // Check if it looks like PowerPC code (most instructions have high bits set)
+            if ((word0 & 0xFC000000) == 0) {
+                fprintf(stderr, "[VdInitEngines #%d] WARNING: Callback at 0x%08X doesn't look like code (first word=%08X)\n",
+                        call_count, callback_ea, word0);
+                fflush(stderr);
+            }
+        }
+
+        // Get current PPC context to call the callback
+        PPCContext* ctx_ptr = GetPPCContext();
+        if (ctx_ptr) {
+            fprintf(stderr, "[VdInitEngines #%d] Got context, calling callback...\n", call_count);
+            fflush(stderr);
+
+            // Save original context
+            PPCContext saved_ctx = *ctx_ptr;
+
+            // Set up parameter for the callback (r3 = callback_arg)
+            ctx_ptr->r3.u32 = callback_arg;
+
+            // Call the callback - need to dereference ctx_ptr and get base pointer
+            PPCContext& ctx = *ctx_ptr;
+            uint8_t* base = g_memory.base;
+            PPC_CALL_INDIRECT_FUNC(callback_ea);
+
+            // Restore context (except return value in r3)
+            uint32_t return_value = ctx_ptr->r3.u32;
+            *ctx_ptr = saved_ctx;
+            ctx_ptr->r3.u32 = return_value;
+
+            fprintf(stderr, "[VdInitEngines #%d] Callback returned r3=0x%08X\n", call_count, return_value);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[VdInitEngines #%d] ERROR: No current thread context!\n", call_count);
+            fflush(stderr);
+        }
+    } else {
+        fprintf(stderr, "[VdInitEngines #%d] No callback (cb=0), call_count=%d\n", call_count, call_count);
+        fflush(stderr);
+    }
 }
 
 uint32_t VdIsHSIOTrainingSucceeded()
@@ -6502,13 +6604,27 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
 
                 // Monitor ALL context members that the callback accesses
                 struct ContextSnapshot {
-                    uint32_t offset_2894;  // Structure pointer
-                    uint32_t offset_2898;  // Spinlock
-                    uint32_t offset_3CEC;  // Pending work flag
-                    uint32_t offset_3CF0;  // Invocation counter
-                    uint32_t offset_3CF4;  // Written by callback
-                    uint32_t offset_3CF8;  // Decrement counter
-                    uint32_t offset_3CFC;  // Read by callback
+                    uint32_t offset_2894;      // Structure pointer (ctx+0x2894)
+                    uint32_t offset_2898;      // Spinlock (ctx+0x2898)
+                    uint32_t offset_ctx_3CEC;  // Direct present fp (ctx+0x3CEC)
+                    // Outer (ctx-relative) fields used by source==0 path
+                    uint32_t ctx_15596_fp;     // ctx+0x3CEC (15596): function pointer
+                    uint32_t ctx_15600_cnt;    // ctx+0x3D10 (15600): frame counter
+                    uint32_t ctx_15604_copy;   // ctx+0x3D14 (15604): copy of frame counter
+                    uint32_t ctx_15608_down;   // ctx+0x3D18 (15608): countdown
+                    uint32_t ctx_15612_arg;    // ctx+0x3D1C (15612): function argument
+                    // Inner structure fields (observed on some paths)
+                    uint32_t offset_3CEC;      // Pending work flag (inner+0x3CEC)
+                    uint32_t offset_3CF0;      // Invocation counter (inner+0x3CF0)
+                    uint32_t offset_3CF4;      // Written by callback (inner+0x3CF4)
+                    uint32_t offset_3CF8;      // Decrement counter (inner+0x3CF8)
+                    uint32_t offset_3CFC;      // Read by callback (inner+0x3CFC)
+                    // Inner fields mirroring source==0 path (if used)
+                    uint32_t offs_15596_fp;    // inner+0x3CEC (15596): function pointer
+                    uint32_t offs_15600_cnt;   // inner+0x3D10 (15600): frame counter
+                    uint32_t offs_15604_copy;  // inner+0x3D14 (15604): copy of frame counter
+                    uint32_t offs_15608_down;  // inner+0x3D18 (15608): countdown
+                    uint32_t offs_15612_arg;   // inner+0x3D1C (15612): function argument
                 };
 
                 ContextSnapshot ctx_before = {};
@@ -6517,36 +6633,171 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                         auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
                         ctx_before.offset_2894 = ctx_u32[0x2894 / 4];
                         ctx_before.offset_2898 = ctx_u32[0x2898 / 4];
-                        ctx_before.offset_3CEC = ctx_u32[0x3CEC / 4];
-                        ctx_before.offset_3CF0 = ctx_u32[0x3CF0 / 4];
-                        ctx_before.offset_3CF4 = ctx_u32[0x3CF4 / 4];
-                        ctx_before.offset_3CF8 = ctx_u32[0x3CF8 / 4];
-                        ctx_before.offset_3CFC = ctx_u32[0x3CFC / 4];
+                        // Also read the direct (outer) present pointer at ctx+0x3CEC
+                        ctx_before.offset_ctx_3CEC = ctx_u32[0x3CEC / 4];
+                        // And read outer ctx fields used by source==0 path
+                        ctx_before.ctx_15596_fp  = ctx_u32[15596 / 4];
+                        ctx_before.ctx_15600_cnt = ctx_u32[15600 / 4];
+                        ctx_before.ctx_15604_copy= ctx_u32[15604 / 4];
+                        ctx_before.ctx_15608_down= ctx_u32[15608 / 4];
+                        ctx_before.ctx_15612_arg = ctx_u32[15612 / 4];
+                        // Read inner structure fields if pointer is valid
+                        if (GuestOffsetInRange(ctx_before.offset_2894, 4)) {
+                            if (void* inner_base = g_memory.Translate(ctx_before.offset_2894)) {
+                                auto* inner_u32 = reinterpret_cast<uint32_t*>(inner_base);
+                                ctx_before.offset_3CEC = inner_u32[0x3CEC / 4];
+                                ctx_before.offset_3CF0 = inner_u32[0x3CF0 / 4];
+                                ctx_before.offset_3CF4 = inner_u32[0x3CF4 / 4];
+                                ctx_before.offset_3CF8 = inner_u32[0x3CF8 / 4];
+                                ctx_before.offset_3CFC = inner_u32[0x3CFC / 4];
+                                // Source==0 path fields
+                                ctx_before.offs_15596_fp   = inner_u32[15596 / 4];
+                                ctx_before.offs_15600_cnt  = inner_u32[15600 / 4];
+                                ctx_before.offs_15604_copy = inner_u32[15604 / 4];
+                                ctx_before.offs_15608_down = inner_u32[15608 / 4];
+                                ctx_before.offs_15612_arg  = inner_u32[15612 / 4];
+                            }
+                        }
 
                         fprintf(stderr, "[GFX-MONITOR] BEFORE callback #%u:\n", s_callback_count);
                         fprintf(stderr, "  +0x2894 = 0x%08X (structure pointer)\n", ctx_before.offset_2894);
                         fprintf(stderr, "  +0x2898 = 0x%08X (spinlock)\n", ctx_before.offset_2898);
-                        fprintf(stderr, "  +0x3CEC = 0x%08X (pending work)\n", ctx_before.offset_3CEC);
-                        fprintf(stderr, "  +0x3CF0 = 0x%08X (invocation counter)\n", ctx_before.offset_3CF0);
-                        fprintf(stderr, "  +0x3CF4 = 0x%08X\n", ctx_before.offset_3CF4);
-                        fprintf(stderr, "  +0x3CF8 = 0x%08X (decrement counter)\n", ctx_before.offset_3CF8);
-                        fprintf(stderr, "  +0x3CFC = 0x%08X\n", ctx_before.offset_3CFC);
+                        fprintf(stderr, "  ctx+0x3CEC = 0x%08X (direct present fp)\n", ctx_before.offset_ctx_3CEC);
+                        fprintf(stderr, "  ctx+15596(fp) = 0x%08X\n", ctx_before.ctx_15596_fp);
+                        fprintf(stderr, "  ctx+15600(cnt) = 0x%08X\n", ctx_before.ctx_15600_cnt);
+                        fprintf(stderr, "  ctx+15604(copy) = 0x%08X\n", ctx_before.ctx_15604_copy);
+                        fprintf(stderr, "  ctx+15608(down) = 0x%08X\n", ctx_before.ctx_15608_down);
+                        fprintf(stderr, "  ctx+15612(arg) = 0x%08X\n", ctx_before.ctx_15612_arg);
+                        fprintf(stderr, "  inner+0x3CEC = 0x%08X (pending work)\n", ctx_before.offset_3CEC);
+                        fprintf(stderr, "  inner+0x3CF0 = 0x%08X (invocation counter)\n", ctx_before.offset_3CF0);
+                        fprintf(stderr, "  inner+0x3CF4 = 0x%08X\n", ctx_before.offset_3CF4);
+                        fprintf(stderr, "  inner+0x3CF8 = 0x%08X (decrement counter)\n", ctx_before.offset_3CF8);
+                        fprintf(stderr, "  inner+0x3CFC = 0x%08X\n", ctx_before.offset_3CFC);
+                        fprintf(stderr, "  inner+15596(fp) = 0x%08X\n", ctx_before.offs_15596_fp);
+                        fprintf(stderr, "  inner+15600(cnt) = 0x%08X\n", ctx_before.offs_15600_cnt);
+                        fprintf(stderr, "  inner+15604(copy) = 0x%08X\n", ctx_before.offs_15604_copy);
+                        fprintf(stderr, "  inner+15608(down) = 0x%08X\n", ctx_before.offs_15608_down);
+                        fprintf(stderr, "  inner+15612(arg) = 0x%08X\n", ctx_before.offs_15612_arg);
                         fflush(stderr);
                     }
                 }
 
-                fprintf(stderr, "[GFX-CALLBACK] About to call graphics callback cb=0x%08X ctx=0x%08X source=0 (invocation #%u)\n", cb, ctx, s_callback_count);
+                fprintf(stderr, "[GFX-CALLBACK] About to call graphics callback cb=0x%08X ctx=0x%08X source=%u (invocation #%u)\n", cb, ctx, source, s_callback_count);
                 fflush(stderr);
                 EnsureGuestContextForThisThread("VdCallGraphicsNotificationRoutines");
+                // Optional: ensure present callback pointer is set before invoking guest ISR
+                static const bool s_force_present_cb = [](){
+                    if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                {
+                    static bool s_env_logged = false;
+                    if (!s_env_logged) {
+                        s_env_logged = true;
+                        const char* envv = std::getenv("MW05_SET_PRESENT_CB");
+                        fprintf(stderr, "[GFX-CALLBACK] MW05_SET_PRESENT_CB env=%s s_force_present_cb=%d\n", envv ? envv : "<null>", (int)s_force_present_cb);
+                        fflush(stderr);
+                    }
+                }
+                // One-time: log other present-related env flags for visibility
+                {
+                    static bool s_env_logged2 = false;
+                    if (!s_env_logged2) {
+                        s_env_logged2 = true;
+                        const char* env_on_zero = std::getenv("MW05_FORCE_PRESENT_ON_ZERO");
+                        const char* env_every_zero = std::getenv("MW05_FORCE_PRESENT_EVERY_ZERO");
+                        const char* env_fpw_once = std::getenv("MW05_FORCE_PRESENT_WRAPPER_ONCE");
+                        fprintf(stderr,
+                                "[GFX-CALLBACK] ENV: ON_ZERO=%s EVERY_ZERO=%s FPW_ONCE=%s\n",
+                                env_on_zero ? env_on_zero : "<null>",
+                                env_every_zero ? env_every_zero : "<null>",
+                                env_fpw_once ? env_fpw_once : "<null>");
+                        fflush(stderr);
+                    }
+                }
+
+
+                if (s_force_present_cb && ctx) {
+                    // Write present function pointer to BOTH the inner and direct ctx locations.
+                    // Case A: inner = *(ctx + 0x2894); inner + 0x3CEC holds present fp (observed on some paths)
+                    // Case B: ctx + 0x3CEC holds present fp directly (observed in other disassemblies)
+                    if (void* ctx_base2 = g_memory.Translate(ctx)) {
+                        auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base2);
+                        const uint32_t kPresentEA = 0x82598A20u;
+                        // Direct write to ctx+0x3CEC if empty
+                        if (ctx_u32[0x3CEC / 4] == 0u) {
+                            ctx_u32[0x3CEC / 4] = kPresentEA;
+
+
+                            fprintf(stderr, "[GFX-CALLBACK] Forcing ctx present fp @+0x3CEC = %08X (pre-call)\n", kPresentEA);
+                            fflush(stderr);
+                        }
+                        // Inner write if inner pointer valid and empty
+                        const uint32_t inner_ea = ctx_u32[0x2894 / 4];
+                        if (GuestOffsetInRange(inner_ea, 4)) {
+                            if (void* inner_base = g_memory.Translate(inner_ea)) {
+                                auto* b32 = reinterpret_cast<uint32_t*>(inner_base);
+                                if (b32[0x3CEC / 4] == 0u) {
+                                    b32[0x3CEC / 4] = kPresentEA;
+                                    fprintf(stderr, "[GFX-CALLBACK] Forcing inner present fp @+0x3CEC = %08X (pre-call)\n", kPresentEA);
+                                    fflush(stderr);
+                                }
+                                // Ensure argument at inner+0x3D1C (15612) is set if missing
+                                if (b32[15612 / 4] == 0u) {
+                                    uint32_t r3_ea = Mw05Trace_LastSchedR3();
+                                    if (!GuestOffsetInRange(r3_ea, 4)) {
+                                        if (const char* seed = std::getenv("MW05_SCHED_R3_EA"))
+                                            r3_ea = (uint32_t)std::strtoul(seed, nullptr, 0);
+                                    }
+                                    if (GuestOffsetInRange(r3_ea, 4)) {
+                                        b32[15612 / 4] = r3_ea;
+                                        fprintf(stderr, "[GFX-CALLBACK] Forcing inner arg @+0x3D1C = %08X (pre-call)\n", r3_ea);
+                                        fflush(stderr);
+                                    }
+                                }
+
+                            }
+                        }
+                    }
+                }
+
+                // Emulate global render flag that ISR tests at 0x7FE86544 (bit0 must be set)
+                static const bool s_set_render_flag = [](){
+                    if (const char* v = std::getenv("MW05_SET_RENDER_FLAG")) return !(v[0]=='0' && v[1]=='\0');
+                    return true; // default ON during bring-up
+                }();
+                if (s_set_render_flag && source == 0) {
+                    uint32_t ea_flag = [](){
+                        if (const char* v = std::getenv("MW05_RENDER_FLAG_ADDR"))
+                            return (uint32_t)std::strtoul(v, nullptr, 0);
+                        return 0x7FE86544u; // from ISR disasm: lis r11,0x7FE8; lwz 25924(r11)
+                    }();
+                    if (GuestOffsetInRange(ea_flag, 4)) {
+                        if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(ea_flag))) {
+                            uint32_t prev = *p;
+                            *p = prev | 1u; // set bit0
+                            fprintf(stderr, "[GFX-MONITOR] Set render flag @%08X: %08X -> %08X\n", ea_flag, prev, *p);
+                            fflush(stderr);
+                        } else {
+                            fprintf(stderr, "[GFX-MONITOR] WARN: render flag @%08X not mapped (translate failed)\n", ea_flag);
+                            fflush(stderr);
+                        }
+                    } else {
+                        fprintf(stderr, "[GFX-MONITOR] WARN: render flag @%08X out of guest range\n", ea_flag);
+                        fflush(stderr);
+                    }
+                }
+
+
                 static const bool s_isr_swap2 = [](){
                     if (const char* v = std::getenv("MW05_VD_ISR_SWAP_PARAMS")) return !(v[0]=='0' && v[1]=='\0');
                     return false;
                 }();
                 if (s_isr_swap2) {
                     KernelTraceHostOp("HOST.VdInterruptEvent.dispatch.swap r3<->r4");
-                    GuestToHostFunction<void>(cb, ctx, 0u);
+                    GuestToHostFunction<void>(cb, ctx, source);
                 } else {
-                    GuestToHostFunction<void>(cb, 0u, ctx);
+                    GuestToHostFunction<void>(cb, source, ctx);
                 }
 
                 s_callback_count++;
@@ -6558,11 +6809,31 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                         ContextSnapshot ctx_after = {};
                         ctx_after.offset_2894 = ctx_u32[0x2894 / 4];
                         ctx_after.offset_2898 = ctx_u32[0x2898 / 4];
-                        ctx_after.offset_3CEC = ctx_u32[0x3CEC / 4];
-                        ctx_after.offset_3CF0 = ctx_u32[0x3CF0 / 4];
-                        ctx_after.offset_3CF4 = ctx_u32[0x3CF4 / 4];
-                        ctx_after.offset_3CF8 = ctx_u32[0x3CF8 / 4];
-                        ctx_after.offset_3CFC = ctx_u32[0x3CFC / 4];
+                        ctx_after.offset_ctx_3CEC = ctx_u32[0x3CEC / 4];
+                            // Outer ctx source==0 fields
+                            ctx_after.ctx_15596_fp  = ctx_u32[15596 / 4];
+                            ctx_after.ctx_15600_cnt = ctx_u32[15600 / 4];
+                            ctx_after.ctx_15604_copy= ctx_u32[15604 / 4];
+                            ctx_after.ctx_15608_down= ctx_u32[15608 / 4];
+                            ctx_after.ctx_15612_arg = ctx_u32[15612 / 4];
+                        if (GuestOffsetInRange(ctx_after.offset_2894, 4)) {
+                            if (void* inner_base = g_memory.Translate(ctx_after.offset_2894)) {
+                                auto* inner_u32 = reinterpret_cast<uint32_t*>(inner_base);
+                                ctx_after.offset_3CEC = inner_u32[0x3CEC / 4];
+
+
+                                ctx_after.offset_3CF0 = inner_u32[0x3CF0 / 4];
+                                ctx_after.offset_3CF4 = inner_u32[0x3CF4 / 4];
+                                ctx_after.offset_3CF8 = inner_u32[0x3CF8 / 4];
+                                ctx_after.offset_3CFC = inner_u32[0x3CFC / 4];
+                                // Source==0 path fields
+                                ctx_after.offs_15596_fp   = inner_u32[15596 / 4];
+                                ctx_after.offs_15600_cnt  = inner_u32[15600 / 4];
+                                ctx_after.offs_15604_copy = inner_u32[15604 / 4];
+                                ctx_after.offs_15608_down = inner_u32[15608 / 4];
+                                ctx_after.offs_15612_arg  = inner_u32[15612 / 4];
+                            }
+                        }
 
                         fprintf(stderr, "[GFX-MONITOR] AFTER callback #%u:\n", s_callback_count - 1);
 
@@ -6578,8 +6849,33 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                                     ctx_before.offset_2898, ctx_after.offset_2898);
                             any_changed = true;
                         }
+                        if (ctx_before.offset_ctx_3CEC != ctx_after.offset_ctx_3CEC) {
+                            fprintf(stderr, "  ctx+0x3CEC: 0x%08X -> 0x%08X (outer present fp CHANGED)\n",
+                                    ctx_before.offset_ctx_3CEC, ctx_after.offset_ctx_3CEC);
+                            any_changed = true;
+                        }
+                        if (ctx_before.ctx_15596_fp != ctx_after.ctx_15596_fp) {
+                            fprintf(stderr, "  ctx+15596(fp): 0x%08X -> 0x%08X\n", ctx_before.ctx_15596_fp, ctx_after.ctx_15596_fp);
+                            any_changed = true;
+                        }
+                        if (ctx_before.ctx_15600_cnt != ctx_after.ctx_15600_cnt) {
+                            fprintf(stderr, "  ctx+15600(cnt): 0x%08X -> 0x%08X\n", ctx_before.ctx_15600_cnt, ctx_after.ctx_15600_cnt);
+                            any_changed = true;
+                        }
+                        if (ctx_before.ctx_15604_copy != ctx_after.ctx_15604_copy) {
+                            fprintf(stderr, "  ctx+15604(copy): 0x%08X -> 0x%08X\n", ctx_before.ctx_15604_copy, ctx_after.ctx_15604_copy);
+                            any_changed = true;
+                        }
+                        if (ctx_before.ctx_15608_down != ctx_after.ctx_15608_down) {
+                            fprintf(stderr, "  ctx+15608(down): 0x%08X -> 0x%08X\n", ctx_before.ctx_15608_down, ctx_after.ctx_15608_down);
+                            any_changed = true;
+                        }
+                        if (ctx_before.ctx_15612_arg != ctx_after.ctx_15612_arg) {
+                            fprintf(stderr, "  ctx+15612(arg): 0x%08X -> 0x%08X\n", ctx_before.ctx_15612_arg, ctx_after.ctx_15612_arg);
+                            any_changed = true;
+                        }
                         if (ctx_before.offset_3CEC != ctx_after.offset_3CEC) {
-                            fprintf(stderr, "  +0x3CEC: 0x%08X -> 0x%08X (pending work CHANGED)\n",
+                            fprintf(stderr, "  inner+0x3CEC: 0x%08X -> 0x%08X (pending work CHANGED)\n",
                                     ctx_before.offset_3CEC, ctx_after.offset_3CEC);
                             any_changed = true;
                         }
@@ -6603,6 +6899,20 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                                     ctx_before.offset_3CFC, ctx_after.offset_3CFC);
                             any_changed = true;
                         }
+                        if (ctx_before.offs_15596_fp != ctx_after.offs_15596_fp ||
+                            ctx_before.offs_15600_cnt != ctx_after.offs_15600_cnt ||
+                            ctx_before.offs_15604_copy != ctx_after.offs_15604_copy ||
+                            ctx_before.offs_15608_down != ctx_after.offs_15608_down ||
+                            ctx_before.offs_15612_arg != ctx_after.offs_15612_arg) {
+                            fprintf(stderr,
+                                    "  inner+{15596,15600,15604,15608,15612}: %08X,%08X,%08X,%08X,%08X -> %08X,%08X,%08X,%08X,%08X\n",
+                                    ctx_before.offs_15596_fp, ctx_before.offs_15600_cnt, ctx_before.offs_15604_copy,
+                                    ctx_before.offs_15608_down, ctx_before.offs_15612_arg,
+                                    ctx_after.offs_15596_fp, ctx_after.offs_15600_cnt, ctx_after.offs_15604_copy,
+                                    ctx_after.offs_15608_down, ctx_after.offs_15612_arg);
+                            any_changed = true;
+                            any_changed = true;
+                        }
 
                         if (!any_changed) {
                             fprintf(stderr, "  (No changes detected)\n");
@@ -6613,6 +6923,134 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
 
                 fprintf(stderr, "[GFX-CALLBACK] Graphics callback returned successfully (invocation #%u)\n", s_callback_count - 1);
                 fflush(stderr);
+
+                // Fallback: if source==0 path shows no state changes for many calls, try invoking present directly
+                static const bool s_force_present_on_zero = [](){
+                    if (const char* v = std::getenv("MW05_FORCE_PRESENT_ON_ZERO"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return true; // default ON in bring-up
+                }();
+                static unsigned s_zero_seen = 0;
+                if (s_force_present_on_zero && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    if (source == 0) ++s_zero_seen; // accumulate across alternations
+                    // Heuristic: every 60 zero-source callbacks, poke present
+                    if (s_zero_seen != 0 && (s_zero_seen % 60u) == 0u) {
+                        uint32_t ctx_fp = 0;
+                        uint32_t ctx_arg = 0;
+                        if (void* ctx_base = g_memory.Translate(ctx)) {
+                            auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
+                            ctx_fp  = ctx_u32[15596 / 4];   // ctx+0x3CEC
+                            ctx_arg = ctx_u32[15612 / 4];   // ctx+0x3D1C
+                        }
+                        // If arg not set, fall back to tracer/env r3
+                        if (!GuestOffsetInRange(ctx_arg, 4)) {
+                            ctx_arg = Mw05Trace_LastSchedR3();
+                            if (!GuestOffsetInRange(ctx_arg, 4)) {
+                                if (const char* seed = std::getenv("MW05_SCHED_R3_EA"))
+                                    ctx_arg = (uint32_t)std::strtoul(seed, nullptr, 0);
+                            }
+                        }
+                        if (GuestOffsetInRange(ctx_arg, 4) && (ctx_fp != 0)) {
+                            // ctx_fp may be byte-swapped depending on storage; detect and fix if needed
+                            auto looks_code = [](uint32_t ea){ return (ea & 0xFF000000u) == 0x82000000u || (ea & 0x00F00000u) == 0x00900000u; };
+                            uint32_t fp = ctx_fp;
+
+                // Optional: one-shot present on the first source==0 callback to validate pipeline
+                static const bool s_force_present_on_first_zero = [](){
+                    if (const char* v = std::getenv("MW05_FORCE_PRESENT_ON_FIRST_ZERO"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                static bool s_present_first_zero_fired = false;
+                if (s_force_present_on_first_zero && source == 0 && !s_present_first_zero_fired && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    uint32_t r3_ea = ctx; // default to ISR context, seems valid in our traces
+                    // Prefer tracer/env if available
+                    uint32_t tr = Mw05Trace_LastSchedR3();
+                    if (GuestOffsetInRange(tr, 4)) r3_ea = tr;
+                    if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+                        uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+                        if (GuestOffsetInRange(env_r3, 4)) r3_ea = env_r3;
+                    }
+                    fprintf(stderr, "[GFX-FORCE] present first-zero fp=%08X r3=%08X\n", 0x82598A20u, r3_ea);
+                    fflush(stderr);
+                #if defined(_WIN32)
+                    __try {
+                        GuestToHostFunction<void>(0x82598A20u, r3_ea, 0x40u);
+                        KernelTraceHostOp("HOST.ForcePresent.first_zero.ret");
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        KernelTraceHostOpF("HOST.ForcePresent.first_zero.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                    }
+                #else
+                    GuestToHostFunction<void>(0x82598A20u, r3_ea, 0x40u);
+                    KernelTraceHostOp("HOST.ForcePresent.first_zero.ret");
+                #endif
+                    s_present_first_zero_fired = true;
+                }
+
+                            if (!looks_code(fp)) {
+                                // try byte-swap
+                                fp = ((ctx_fp & 0xFF) << 24) | ((ctx_fp & 0xFF00) << 8) | ((ctx_fp & 0xFF0000) >> 8) | ((ctx_fp >> 24) & 0xFF);
+                            }
+                            fprintf(stderr, "[GFX-FORCE] present poke fp=%08X arg=%08X (zero_seen=%u)\n", fp, ctx_arg, s_zero_seen);
+                            fflush(stderr);
+                        #if defined(_WIN32)
+                            __try {
+                                GuestToHostFunction<void>(fp, ctx_arg, 0x40u);
+                                KernelTraceHostOp("HOST.ForcePresent.zero.poked");
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                KernelTraceHostOpF("HOST.ForcePresent.zero.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                            }
+                        #else
+                            GuestToHostFunction<void>(fp, ctx_arg, 0x40u);
+                            KernelTraceHostOp("HOST.ForcePresent.zero.poked");
+                        #endif
+                    }
+                }
+
+
+                // Optional: aggressively call present on every source==0 if requested
+                static const bool s_force_present_every_zero = [](){
+                    if (const char* v = std::getenv("MW05_FORCE_PRESENT_EVERY_ZERO"))
+                        return !(v[0]=='0' && v[1]=='\0');
+                    return false;
+                }();
+                if (s_force_present_every_zero && source == 0 && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
+                    uint32_t ctx_fp = 0;
+                    uint32_t ctx_arg = 0;
+                    if (void* ctx_base = g_memory.Translate(ctx)) {
+                        auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
+                        ctx_fp  = ctx_u32[15596 / 4];   // ctx+0x3CEC
+                        ctx_arg = ctx_u32[15612 / 4];   // ctx+0x3D1C
+                    }
+                    if (!GuestOffsetInRange(ctx_arg, 4)) {
+                        ctx_arg = Mw05Trace_LastSchedR3();
+                        if (!GuestOffsetInRange(ctx_arg, 4)) {
+                            if (const char* seed = std::getenv("MW05_SCHED_R3_EA"))
+                                ctx_arg = (uint32_t)std::strtoul(seed, nullptr, 0);
+                        }
+                    }
+                    if (GuestOffsetInRange(ctx_arg, 4)) {
+                        auto looks_code = [](uint32_t ea){ return (ea & 0xFF000000u) == 0x82000000u || (ea & 0x00F00000u) == 0x00900000u; };
+                        uint32_t fp = ctx_fp;
+                        if (!looks_code(fp)) {
+                            fp = ((ctx_fp & 0xFF) << 24) | ((ctx_fp & 0xFF00) << 8) | ((ctx_fp & 0xFF0000) >> 8) | ((ctx_fp >> 24) & 0xFF);
+                        }
+                        if (!looks_code(fp)) fp = 0x82598A20u; // last resort: known present EA
+                        fprintf(stderr, "[GFX-FORCE] present every-zero fp=%08X arg=%08X\n", fp, ctx_arg);
+                        fflush(stderr);
+                    #if defined(_WIN32)
+                        __try {
+                            GuestToHostFunction<void>(fp, ctx_arg, 0x40u);
+                            KernelTraceHostOp("HOST.ForcePresent.every_zero.ret");
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            KernelTraceHostOpF("HOST.ForcePresent.every_zero.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                        }
+                    #else
+                        GuestToHostFunction<void>(fp, ctx_arg, 0x40u);
+                        KernelTraceHostOp("HOST.ForcePresent.every_zero.ret");
+                    #endif
+                    }
+                }
 
                 // Optional: try the one-shot present-wrapper nudge from within the ISR
                 // thread context. This more closely matches the title's expected calling
@@ -6625,82 +7063,85 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                 static bool s_present_wrapper_fired_vd = false;
                 if (s_force_present_wrapper_once_vd && !s_present_wrapper_fired_vd && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
                     const uint32_t seen = Mw05Trace_SchedR3SeenCount();
-                    if (seen >= 3u) {
-                        uint32_t r3_ea = Mw05Trace_LastSchedR3();
-                        if (!GuestOffsetInRange(r3_ea, 4)) {
-                            if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
-                                uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
-                                if (GuestOffsetInRange(env_r3, 4)) r3_ea = env_r3;
-                            }
+                    // Derive r3 from tracer if available, otherwise allow explicit env override
+                    uint32_t r3_ea = Mw05Trace_LastSchedR3();
+                    if (!GuestOffsetInRange(r3_ea, 4)) {
+                        if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
+                            uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
+                            if (GuestOffsetInRange(env_r3, 4)) r3_ea = env_r3;
                         }
-                        if (GuestOffsetInRange(r3_ea, 4)) {
-                            KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.enter r3=%08X", r3_ea);
-                            EnsureGuestContextForThisThread("FPWOnce.vdcall");
-                            bool use_inner_vd = false;
-                            if (const char* v = std::getenv("MW05_FORCE_PRESENT_INNER"))
-                                use_inner_vd = !(v[0]=='0' && v[1]=='\0');
-                            const uint32_t vd_target = use_inner_vd ? 0x825A54F0u : 0x82598A20u;
-                        #if defined(_WIN32)
-                            __try {
-                                GuestToHostFunction<void>(vd_target, r3_ea, 0x40u);
-                                KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
-                                // Optional: kick PM4 builder even if the wrapper returned, to see if it produces draws
+                    }
+                    if (GuestOffsetInRange(r3_ea, 4)) {
+                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.enter r3=%08X seen=%u", r3_ea, seen);
+                        fprintf(stderr, "[FPW] enter r3=%08X seen=%u\n", r3_ea, seen);
+                        fflush(stderr);
+                        EnsureGuestContextForThisThread("FPWOnce.vdcall");
+                        bool use_inner_vd = false;
+                        if (const char* v = std::getenv("MW05_FORCE_PRESENT_INNER"))
+                            use_inner_vd = !(v[0]=='0' && v[1]=='\0');
+                        const uint32_t vd_target = use_inner_vd ? 0x825A54F0u : 0x82598A20u;
+                    #if defined(_WIN32)
+                        __try {
+                            GuestToHostFunction<void>(vd_target, r3_ea, 0x40u);
+                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
+                            // Optional: kick PM4 builder even if the wrapper returned, to see if it produces draws
+                            if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
+                                if (!(k[0]=='0' && k[1]=='\0')) {
+                                    __try {
+                                        GuestToHostFunction<void>(0x82595FC8u, r3_ea, 64u);
+                                        KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4 r3=%08X", r3_ea);
+                                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                        KernelTraceHostOpF("HOST.FPW.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                    }
+                                    // Also try the sibling PM4 path sub_825972B0
+                                    __try {
+                                        GuestToHostFunction<void>(0x825972B0u, r3_ea, 64u);
+                                        KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4b r3=%08X", r3_ea);
+                                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                        KernelTraceHostOpF("HOST.FPW.kick.pm4b.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                    }
+                                }
+                            }
+                            s_present_wrapper_fired_vd = true;
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                            // Fallback on vdcall fault: try inner present-manager and PM4 kick
+                            if (GuestOffsetInRange(r3_ea, 4)) {
+                                __try {
+                                    GuestToHostFunction<void>(0x825A54F0u, r3_ea, 0x40u);
+                                    KernelTraceHostOp("HOST.FPW.vdcall.fallback.inner.ret");
+                                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                    KernelTraceHostOpF("HOST.FPW.vdcall.fallback.inner.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                }
                                 if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
                                     if (!(k[0]=='0' && k[1]=='\0')) {
                                         __try {
                                             GuestToHostFunction<void>(0x82595FC8u, r3_ea, 64u);
                                             KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4 r3=%08X", r3_ea);
                                         } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                            KernelTraceHostOpF("HOST.FPW.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
-                                        }
-                                        // Also try the sibling PM4 path sub_825972B0
-                                        __try {
-                                            GuestToHostFunction<void>(0x825972B0u, r3_ea, 64u);
-                                            KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4b r3=%08X", r3_ea);
-                                        } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                            KernelTraceHostOpF("HOST.FPW.kick.pm4b.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                                            KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
                                         }
                                     }
                                 }
-                                s_present_wrapper_fired_vd = true;
-                            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.seh_abort code=%08X", (unsigned)GetExceptionCode());
-                                // Fallback on vdcall fault: try inner present-manager and PM4 kick
-                                if (GuestOffsetInRange(r3_ea, 4)) {
-                                    __try {
-                                        GuestToHostFunction<void>(0x825A54F0u, r3_ea, 0x40u);
-                                        KernelTraceHostOp("HOST.FPW.vdcall.fallback.inner.ret");
-                                    } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                        KernelTraceHostOpF("HOST.FPW.vdcall.fallback.inner.seh_abort code=%08X", (unsigned)GetExceptionCode());
-                                    }
-                                    if (const char* k = std::getenv("MW05_FPW_KICK_PM4")) {
-                                        if (!(k[0]=='0' && k[1]=='\0')) {
-                                            __try {
-                                                GuestToHostFunction<void>(0x82595FC8u, r3_ea, 64u);
-                                                KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4 r3=%08X", r3_ea);
-                                            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                                KernelTraceHostOpF("HOST.FPW.vdcall.kick.pm4.seh_abort code=%08X", (unsigned)GetExceptionCode());
-                                            }
-                                        }
-                                    }
-                                }
-                                s_present_wrapper_fired_vd = true; // avoid repeated faults
                             }
-                        #else
-                            GuestToHostFunction<void>(0x82598A20u, r3_ea, 0x40u);
-                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
-                            s_present_wrapper_fired_vd = true;
-                        #endif
-                        } else {
-                            KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.defer r3_unsuitable");
+                            s_present_wrapper_fired_vd = true; // avoid repeated faults
                         }
+                    #else
+                        GuestToHostFunction<void>(0x82598A20u, r3_ea, 0x40u);
+                        KernelTraceHostOp("HOST.ForcePresentWrapperOnce.vdcall.ret");
+                        s_present_wrapper_fired_vd = true;
+                    #endif
                     } else {
-                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.defer r3_unstable seen=%u", seen);
+                        KernelTraceHostOpF("HOST.ForcePresentWrapperOnce.vdcall.defer r3_unsuitable seen=%u", seen);
+                        fprintf(stderr, "[FPW] defer r3_unsuitable seen=%u env_r3=%s\n", seen, std::getenv("MW05_SCHED_R3_EA"));
+                        fflush(stderr);
                     }
                 }
             }
         }
-    } else {
+    }
+    // If no callback is registered, emit a trace for visibility.
+    if (!cb) {
         const char* f = std::getenv("MW05_FORCE_VD_ISR");
         if (f && !(f[0]=='0' && f[1]=='\0')) {
             KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines.forced.no_cb");
@@ -6709,6 +7150,10 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
         }
     }
 }
+
+// Ensure function scope is closed (balance safety)
+}
+
 
 void VdInitializeScalerCommandBuffer()
 {

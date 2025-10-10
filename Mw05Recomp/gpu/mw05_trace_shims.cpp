@@ -393,6 +393,23 @@ void MW05Shim_sub_8262F2A0(PPCContext& ctx, uint8_t* base) {
     DumpEAWindow("8262F2A0.r5", ctx.r5.u32);
     DumpSchedState("8262F2A0", seed);
 
+    // Optional: break the sleep loop after a few iterations to unblock threads (env: MW05_BREAK_SLEEP_LOOP[=1], MW05_BREAK_SLEEP_AFTER=N)
+    static thread_local uint32_t s_sleep_calls = 0;
+    static const bool s_break_sleep = [](){ if (const char* v = std::getenv("MW05_BREAK_SLEEP_LOOP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    static const uint32_t s_break_after = [](){ if (const char* v = std::getenv("MW05_BREAK_SLEEP_AFTER")) return (uint32_t)std::strtoul(v, nullptr, 0); return 5u; }();
+    if (s_break_sleep) {
+        ++s_sleep_calls;
+        if (s_sleep_calls > s_break_after) {
+            const uint32_t orig_r4 = ctx.r4.u32;
+            ctx.r4.u32 = 0; // Force exit condition in guest sleep loop (r31 == 0)
+            if (s_sleep_calls == s_break_after + 1) {
+                KernelTraceHostOpF("HOST.sub_8262F2A0.break_sleep after=%u orig_r4=%08X", (unsigned)s_break_after, orig_r4);
+                fprintf(stderr, "[BREAK_SLEEP] Forcing exit from sleep loop (after=%u, orig_r4=%08X)\n", (unsigned)s_break_after, orig_r4);
+                fflush(stderr);
+            }
+        }
+    }
+
     static const bool s_loop_try_pm4_pre = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_PRE")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
     static const bool s_loop_try_pm4 = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
     static const bool s_loop_try_pm4_deep = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_DEEP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
@@ -512,14 +529,28 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
     }
 
     // Record scheduler/context sighting so host gates can proceed
-    Mw05Trace_ConsiderSchedR3(ctx.r3.u32);
+    Mw05Trace_ConsiderSchedR3(ctx.r4.u32);
 
     DumpEAWindow("825979A8.r3", ctx.r3.u32);
     DumpEAWindow("825979A8.r4", ctx.r4.u32);
-    DumpSchedState("825979A8", ctx.r3.u32);
+    DumpSchedState("825979A8", ctx.r4.u32);
 
-    // Register this scheduler context
-    RegisterSchedulerContext(ctx.r3.u32);
+    // Optional: host-side workaround to set present callback pointer if the game left it null
+    static const bool s_set_present_cb = [](){ if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    if (s_set_present_cb) {
+        // Context (r4) + 0x3CEC holds the function pointer the ISR calls to present/do work
+        const uint32_t ctx_ea = ctx.r4.u32;
+        const uint32_t present_fp_ea = ctx_ea ? (ctx_ea + 0x3CECu) : 0u;
+        if (present_fp_ea && ReadBE32(present_fp_ea) == 0u) {
+            // Known-good present function address from investigation: sub_82598A20
+            const uint32_t kPresentFuncEA = 0x82598A20u;
+            WriteBE32(present_fp_ea, kPresentFuncEA);
+            KernelTraceHostOpF("HOST.sub_825979A8.set_present_cb ptr@%08X=%08X", present_fp_ea, kPresentFuncEA);
+        }
+    }
+
+    // Register this scheduler context (r4 holds context/scheduler base)
+    RegisterSchedulerContext(ctx.r4.u32);
 
     // CRITICAL: Process any pending commands in ALL MW05 scheduler queues
     // MW05 uses multiple scheduler contexts, so we need to process all of them
@@ -531,8 +562,28 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
         }
     }
 
+    // Force expected entry state: r30 must be zero for the source==0/1 paths to run
+    // If non-zero, the guest ISR takes an early path and skips the present scheduler logic.
+    ctx.r30.u32 = 0;
+
+    // The ISR's source==0 path uses r31 as the base pointer to the "inner" structure.
+    // IMPORTANT: The field at ctx+0x2894 is stored in guest big-endian memory, but the
+    // effective address value we want here must match how g_memory.Translate expects EAs
+    // (as seen in our monitor prints, e.g., 0x00260370). Therefore, read it WITHOUT
+    // byte-swapping (raw host order), which yields the correct EA for subsequent loads/stores.
+    if (looks_ptr(ctx.r4.u32)) {
+        uint32_t inner_raw = 0;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(ctx.r4.u32 + 0x2894))) {
+            inner_raw = *p; // no swap on purpose
+        }
+        if (looks_ptr(inner_raw)) {
+            ctx.r31.u32 = inner_raw;
+        }
+    }
+
     // Just call the original guest ISR - no present function workaround
     // The present function hangs when called from within the vblank ISR
+    fprintf(stderr, "[GFX-SHIM] 825979A8 entry r3(source)=%u r4(ctx)=%08X r30=%08X r31=%08X\n", ctx.r3.u32, ctx.r4.u32, ctx.r30.u32, ctx.r31.u32);
     __imp__sub_825979A8(ctx, base);
 }
 
@@ -908,6 +959,60 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
     }
 }
 
+// ---- Present function trace shim -------------------------------------------------
+void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base);
+
+
+void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
+    // Lightweight entry trace. Keep stderr + trace consistent with other shims.
+    KernelTraceHostOpF("sub_82598A20.PRESENT enter lr=%08llX r3=%08X r4=%08X r5=%08X r31=%08X",
+                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r31.u32);
+
+    // Optional stub mode to force progress: call VdSwap directly and return.
+    static const bool s_present_stub = [](){
+        if (const char* v = std::getenv("MW05_PRESENT_STUB")) return !(v[0]=='0' && v[1]=='\0');
+        return false; // default OFF: trace and forward to guest present
+    }();
+    if (s_present_stub) {
+        static int stub_count = 0;
+        if (stub_count < 8) KernelTraceHostOpF("sub_82598A20.STUB calling VdSwap() (count=%d)", stub_count);
+        ++stub_count;
+        extern void VdSwap(uint32_t, uint32_t, uint32_t);
+        VdSwap(0, 0, 0);
+        return;
+    }
+
+    // Probe likely gating fields observed in research notes (context anchored at r31)
+    auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000 && ea < PPC_MEMORY_SIZE; };
+    if (looks_ptr(ctx.r31.u32)) {
+        uint32_t v5030 = ReadBE32(ctx.r31.u32 + 0x5030);
+        uint32_t v5034 = ReadBE32(ctx.r31.u32 + 0x5034);
+        uint32_t v5038 = ReadBE32(ctx.r31.u32 + 0x5038);
+        int32_t diff = (int32_t)(v5034 - v5030);
+        KernelTraceHostOpF("sub_82598A20.PRESENT gates +5030=%08X +5034=%08X +5038=%08X diff=%d",
+                           v5030, v5034, v5038, diff);
+    }
+
+    // Correlate with system command buffer availability
+    if (looks_ptr(ctx.r3.u32)) {
+        DumpSchedState("82598A20.pre", ctx.r3.u32);
+        uint32_t sysPtr = ReadBE32(ctx.r3.u32 + 13520);
+        KernelTraceHostOpF("sub_82598A20.PRESENT pre.syscmd ptr13520=%08X", sysPtr);
+    }
+
+    // Forward to original present implementation
+    __imp__sub_82598A20(ctx, base);
+
+    // Post-call breadcrumbs
+    KernelTraceHostOpF("sub_82598A20.PRESENT ret r3=%08X", ctx.r3.u32);
+    if (looks_ptr(ctx.r3.u32)) {
+        uint32_t post_sys = ReadBE32(ctx.r3.u32 + 13520);
+        KernelTraceHostOpF("sub_82598A20.PRESENT post.syscmd ptr13520=%08X", post_sys);
+        DumpSchedState("82598A20.post", ctx.r3.u32);
+    }
+}
+
+
 
 // Declare the original recompiled function
 PPC_FUNC_IMPL(__imp__sub_825968B0);
@@ -1276,31 +1381,6 @@ void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
 }
 
 
-// Present wrapper shim: log + dump scheduler block, then forward
-// CRITICAL FIX: The present function hangs after calling VdSwap
-// Stub it completely - don't call the guest function at all
-// Forward declaration for VdSwap (C++ linkage, not extern "C")
-void VdSwap(uint32_t, uint32_t, uint32_t);
-
-void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
-    static int call_count = 0;
-    call_count++;
-    if (call_count <= 10) {
-        KernelTraceHostOpF("sub_82598A20.STUB count=%d r3=%08X r4=%08X r5=%08X",
-                          call_count, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-    }
-
-    // Record scheduler/context state
-    Mw05Trace_ConsiderSchedR3(ctx.r3.u32);
-
-    // Call VdSwap to signal frame completion to the guest
-    // This allows the guest rendering loop to continue
-    VdSwap(0, 0, 0);
-
-    if (call_count <= 10) {
-        KernelTraceHostOpF("sub_82598A20.STUB.ret count=%d", call_count);
-    }
-}
 
 SHIM(sub_825A6DF0)
 SHIM(sub_825A65A8)

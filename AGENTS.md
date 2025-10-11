@@ -40,13 +40,14 @@
 
 ## Critical Debugging Information
 
-### Current Status: ROOT CAUSE IDENTIFIED - Initialization Chain Never Triggered
-**ISSUE**: Game is running but stuck in initialization, not progressing to file I/O or rendering. 388/719 imports (54%) patched.
-**KEY FINDING**: In Xenia, the game sleeps 149,148 times before issuing first draw command - sleep loop is NORMAL.
-**CRITICAL FIX**: Removed unconditional flag manipulation and disabled MW05_UNBLOCK_MAIN by default - game now runs naturally.
-**ROOT CAUSE FOUND**: Initialization chain never triggered! Function `sub_82216398` (init gate) is never called.
-**INIT CHAIN**: `sub_82216398` → `sub_82440220` → `sub_825A16A0` → `sub_82598230` (CreateDevice) → `sub_825AAE58` (creates threads)
-**NEXT STEP**: Find what should call `sub_82216398` and why it's not being called.
+### Current Status: THREADS WORKING - Game Calls NtResumeThread Correctly
+**DISCOVERY**: Game DOES call NtResumeThread to resume suspended threads! CREATE_SUSPENDED flag is honored correctly.
+**THREADS CREATED**: Thread #1 (0x828508A8), Thread #2 (0x82812ED0), Thread #3 (0x82849D40) - all created and resumed.
+**THREAD #1**: Running, allocating memory, creating other threads.
+**THREAD #2**: Created, resumed by NtResumeThread, completes immediately (expected behavior for worker thread).
+**THREAD #3**: Created at tick 300 (video thread).
+**LOGGING ADDED**: Comprehensive thread lifecycle logging in ExCreateThread, NtResumeThread, GuestThreadFunc.
+**NEXT STEP**: Monitor for additional thread creation and draw commands. Check if Thread #3 executes and creates render threads.
 
 ### Key Findings
 1. **VBlank pump working** - Fixed in previous iteration, VBlank ticks are happening

@@ -118,7 +118,6 @@ set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/guest_thread.cpp"
     "cpu/mw05_boot_shims.cpp"
     "cpu/mw05_trace_threads.cpp"
-    "cpu/mw05_init_trace.cpp"
     "cpu/ppc_list_shims.cpp"
     "cpu/mw05_scheduler_shims.cpp"
     "cpu/mw05_loader_shims.cpp"

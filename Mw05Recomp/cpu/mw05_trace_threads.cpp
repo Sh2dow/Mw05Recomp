@@ -282,6 +282,9 @@ void sub_828508A8(PPCContext& ctx, uint8_t* base) {
 
 
 void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called!\n");
+    fflush(stderr);
+
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.ThreadEntry.82812ED0");
 

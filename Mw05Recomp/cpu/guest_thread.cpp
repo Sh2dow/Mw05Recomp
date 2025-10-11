@@ -77,15 +77,34 @@ static void* GuestThreadFunc(void* arg)
 static void GuestThreadFunc(GuestThreadHandle* hThread)
 {
 #endif
+    const bool was_suspended = hThread->suspended.load();
+    if (was_suspended) {
+        fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X WAITING for resume...\n",
+            hThread->GetThreadId(), hThread->params.function);
+        fflush(stderr);
+    }
+
     hThread->suspended.wait(true);
+
+    if (was_suspended) {
+        fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X RESUMED, starting execution\n",
+            hThread->GetThreadId(), hThread->params.function);
+        fflush(stderr);
+    }
+
     GuestThread::Start(hThread->params);
+
+    fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X COMPLETED\n",
+        hThread->GetThreadId(), hThread->params.function);
+    fflush(stderr);
+
 #ifdef USE_PTHREAD
     return nullptr;
 #endif
 }
 
 GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
-    : params(params), suspended((params.flags & 0x1) != 0)
+    : params(params), suspended((params.flags & 0x1) != 0)  // Honor CREATE_SUSPENDED flag - game calls NtResumeThread to resume
 #ifdef USE_PTHREAD
 {
     pthread_attr_t attr;

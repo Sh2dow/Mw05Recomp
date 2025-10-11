@@ -8014,8 +8014,18 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE));
 
+    fprintf(stderr, "[MW05_FIX] NtResumeThread called: handle=%p tid=%08X\n",
+        (void*)hThread, hThread ? hThread->GetThreadId() : 0);
+    fflush(stderr);
+
+    KernelTraceHostOpF("HOST.NtResumeThread tid=%08X", hThread ? hThread->GetThreadId() : 0);
+
     hThread->suspended = false;
     hThread->suspended.notify_all();
+
+    fprintf(stderr, "[MW05_FIX] NtResumeThread: thread resumed, tid=%08X\n",
+        hThread->GetThreadId());
+    fflush(stderr);
 
     return S_OK;
 }
@@ -8745,7 +8755,10 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
 
     // MW05 FIX: Log all thread creations to find the graphics initialization thread
     static int s_thread_count = 0;
-    fprintf(stderr, "[MW05_FIX] Thread #%d created: entry=%08X ctx=%08X flags=%08X\n", ++s_thread_count, startAddress, startContext, creationFlags);
+    const bool is_suspended = (creationFlags & 0x1) != 0;
+    fprintf(stderr, "[MW05_FIX] Thread #%d created: entry=%08X ctx=%08X flags=%08X %s\n",
+        ++s_thread_count, startAddress, startContext, creationFlags,
+        is_suspended ? "SUSPENDED" : "RUNNING");
     fflush(stderr);
 
     uint32_t hostThreadId;
@@ -8754,6 +8767,11 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
 
     if (threadId != nullptr)
         *threadId = hostThreadId;
+
+    fprintf(stderr, "[MW05_FIX] Thread #%d handle=%08X hostTid=%08X %s\n",
+        s_thread_count, (uint32_t)*handle, hostThreadId,
+        is_suspended ? "WAITING_FOR_RESUME" : "STARTED");
+    fflush(stderr);
 
     KernelTraceHostOpF("HOST.ExCreateThread DONE entry=%08X hostTid=%08X", startAddress, hostThreadId);
 
@@ -8854,8 +8872,19 @@ uint32_t KeResumeThread(GuestThreadHandle* object)
 {
     assert(object != GetKernelObject(CURRENT_THREAD_HANDLE));
 
+    fprintf(stderr, "[MW05_FIX] KeResumeThread called: handle=%p tid=%08X\n",
+        (void*)object, object ? object->GetThreadId() : 0);
+    fflush(stderr);
+
+    KernelTraceHostOpF("HOST.KeResumeThread tid=%08X", object ? object->GetThreadId() : 0);
+
     object->suspended = false;
     object->suspended.notify_all();
+
+    fprintf(stderr, "[MW05_FIX] KeResumeThread: thread resumed, tid=%08X\n",
+        object->GetThreadId());
+    fflush(stderr);
+
     return 0;
 }
 

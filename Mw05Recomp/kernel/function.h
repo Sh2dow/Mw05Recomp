@@ -9,6 +9,8 @@
 #include "memory.h"
 #include "trace.h"
 extern "C" uint32_t Mw05GetHostDefaultVdIsrMagic();
+void Mw05AutoVideoInitIfNeeded();
+void Mw05StartVblankPumpOnce();
 
 // --- Detect "variadic function pointer" types like R(*)(Args..., ...)
 template <typename T>

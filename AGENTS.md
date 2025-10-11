@@ -40,31 +40,34 @@
 
 ## Critical Debugging Information
 
-### Current Status: BLACK SCREEN - Game Stuck in Early Init
-**ROOT CAUSE**: Game stuck in infinite loop in `sub_8262DD80` (string formatting) at `lr=0x8262DD88` BEFORE calling any kernel functions or setting up import table.
+### Current Status: MAJOR PROGRESS - Import Table Patching Working!
+**BREAKTHROUGH**: XEX import table processing is now WORKING! 348/719 imports (48%) are patched and being called successfully.
 
 ### Key Findings
-1. **Main loop IS running** - unblock thread at `0x82A2CF40` working correctly (138M+ iterations)
-2. **Game stuck in CRT initialization** - never reaches import table setup (ObReferenceObjectByHandle, etc.)
-3. **Main thread spinning** - 81,501 calls doing memory stores in string formatting code
-4. **NO kernel function calls** - game hasn't called TLS, file I/O, audio, input, or any other kernel functions
-5. **PM4 buffers have register writes** - 24,576 type-0 packets (GPU config) but 0 draw commands
-6. **Graphics callback registered and invoked** - 923+ times, but does no work (context values = 0)
+1. **VBlank pump working** - Fixed in previous iteration, VBlank ticks are happening (count: 0, 10, 20, ...)
+2. ✅ **Import table patching WORKING!** - 348/719 imports (48%) successfully patched and callable
+3. ✅ **Auto-generated import lookup** - Created Python script to generate lookup table from all 209 __imp__ functions
+4. ✅ **Nt* kernel functions implemented** - Added 12 critical Nt* functions (timers, mutexes, I/O completion)
+5. ✅ **VdInitializeEngines being called!** - Game is calling graphics initialization functions
+6. ✅ **Graphics callbacks registered!** - Game naturally registered graphics callback at 0x825979A8
+7. ✅ **Graphics callbacks invoked!** - 6723 successful callback invocations in 60 seconds
+8. ✅ **PM4 command buffer scanning!** - PM4_ScanLinear is being called, processing command buffers
+9. ⚠️ **No draws yet** - PM4 scans show draws=0, game hasn't issued draw commands yet
+10. ⚠️ **371 imports still missing** - 192 unique missing imports (mostly NetDll, Xam, XMA, file I/O functions)
 
 ### Execution Flow Comparison (Xenia vs Our Implementation)
 **Xenia (Working)**:
 - Line 375-380: Creates XMA Decoder and Audio Worker threads BEFORE loading game
-- Line 910-950: Sets up import table (ObReferenceObjectByHandle, RtlUnicodeToMultiByteN, etc.)
+- Line 909-1110: **Processes import table** - patches 193 xboxkrnl imports with kernel function addresses
 - Line 1122-1123: Game starts executing, loads title name "NFS Most Wanted"
 - Line 35788+: VD notify callback invoked, NEW THREAD created, draw commands issued
 
-**Our Implementation (Broken)**:
-- Creates 28 threads including worker threads at `0x82812ED0` → `0x828134E0` (complete successfully)
-- Main thread `tid=a9c4` (entry `0x8262E9A8`) stuck in infinite loop
-- Executing at `lr=0x8262DD88` in `sub_8262DD80` (string formatting)
-- NEVER reaches import table setup
-- NEVER calls any kernel functions
-- NEVER progresses to main game loop
+**Our Implementation (Current State)**:
+- ✅ VBlank pump starts before guest thread (FIXED)
+- ✅ Multiple threads running, kernel calls happening (WORKING)
+- ❌ Import table NOT processed - `LdrLoadModule` doesn't patch imports
+- ❌ Game can't call `VdInitializeEngines` - import table entry not patched
+- ❌ Main thread sleeping at `lr=0x8262F300` - waiting for graphics init
 
 ### Memory Addresses of Interest
 - `0x82A2CF40`: Main thread spin loop flag (unblock thread sets this to 1)
@@ -112,12 +115,12 @@ Get-Content out/build/x64-Clang-Debug/Mw05Recomp/mw05_host_trace.log | Select-St
 Get-Content debug_stderr.txt | Select-String 'STUB|!!!'
 ```
 
-### Next Steps to Fix
-1. **Identify infinite loop in `sub_8262DD80`** - why string formatting never completes
-2. **Add aggressive loop breaking** - similar to `MW05_BREAK_82813514` but for CRT init
-3. **Skip CRT initialization** - jump directly to import table setup
-4. **Implement missing CRT dependencies** - whatever `sub_8262DD80` is waiting for
-5. **Compare with Xenia startup** - find what we're missing in early init sequence
+### Next Steps to Get Draws Appearing
+1. **Implement more imports** - Add the missing 697 imports (prioritize Ke*, Nt*, Rtl*, Ex* kernel functions)
+2. **Investigate game state** - Check why the game is stuck and not progressing to draw commands
+3. **Monitor thread activity** - Ensure all game threads are running and not blocked
+4. **Check for missing resources** - Verify that all required game resources are accessible
+5. **Add more Vd* functions** - Implement any additional graphics functions the game might need
 
 ### Reference: Working Thread Patterns (from Xenia)
 - XMA Decoder thread created at startup (before game module load)

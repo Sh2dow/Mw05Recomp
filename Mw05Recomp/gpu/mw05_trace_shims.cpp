@@ -678,39 +678,43 @@ void MW05HostAllocCb(PPCContext& ctx, uint8_t* base) {
 // Add shims for research helpers used by MW05 during rendering.
 // Specialize 82595FC8/825972B0 to dump more state
 // CRITICAL FIX: sub_82595FC8 is called from the present function and appears to hang
-// This function checks buffer space and calls sub_825972B0 (PM4 builder) and sub_82596978
-// For now, stub it to just return the current buffer pointer (r3 = [r31+0])
+// Array access function: r3 = array[r4]
+// IDA shows: slwi r30,r29,2; add r31,r3,r30; lwz r3,0(r31)
+// This is: r3 = [r3 + (r4 * 4)]
 void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
     static int call_count = 0;
     call_count++;
-    if (call_count <= 10) {
-        KernelTraceHostOpF("sub_82595FC8.STUB count=%d r3=%08X r4=%08X", call_count, ctx.r3.u32, ctx.r4.u32);
-    }
+
+    uint32_t baseAddr = ctx.r3.u32;
+    uint32_t index = ctx.r4.u32;
 
     // Capture scheduler context
-    if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) {
-        MaybeLogSchedCapture(ctx.r3.u32);
-        s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release);
+    if (baseAddr >= 0x1000 && baseAddr < PPC_MEMORY_SIZE) {
+        MaybeLogSchedCapture(baseAddr);
+        s_lastSchedR3.store(baseAddr, std::memory_order_release);
         s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    // Return the current buffer pointer from [r31+0]
-    uint32_t r31 = ctx.r3.u32;
-    if (r31 >= 0x1000 && r31 < PPC_MEMORY_SIZE - 4) {
-        uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(r31));
-        if (ptr) {
-            ctx.r3.u32 = be<uint32_t>(*ptr);
-            if (call_count <= 10) {
-                KernelTraceHostOpF("sub_82595FC8.STUB.ret r3=%08X", ctx.r3.u32);
-            }
-            return;
+    // Calculate address: base + (index * 4)
+    uint32_t offset = index * 4;
+    uint32_t addr = baseAddr + offset;
+
+    // Load value from memory
+    if (addr >= 0x1000 && addr < PPC_MEMORY_SIZE - 4) {
+        uint32_t value = PPC_LOAD_U32(addr);
+        ctx.r3.u32 = value;
+        if (call_count <= 10) {
+            KernelTraceHostOpF("sub_82595FC8 count=%d base=%08X index=%08X addr=%08X value=%08X",
+                              call_count, baseAddr, index, addr, value);
         }
+        return;
     }
 
     // Fallback: return 0
     ctx.r3.u32 = 0;
     if (call_count <= 10) {
-        KernelTraceHostOpF("sub_82595FC8.STUB.ret r3=00000000 (fallback)");
+        KernelTraceHostOpF("sub_82595FC8 count=%d base=%08X index=%08X INVALID_ADDR=%08X ret=00000000",
+                          call_count, baseAddr, index, addr);
     }
 }
 

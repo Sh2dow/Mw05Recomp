@@ -36,9 +36,21 @@
 #include <ppc/ppc_context.h>
 
 #include <cstdlib>
+#include <unordered_map>
 
 // Forward declarations for kernel functions
 extern uint32_t KeTlsAlloc();
+
+// Ordinal-to-name mappings for Xbox kernel exports (defined in XenonUtils/xex.cpp)
+extern std::unordered_map<size_t, const char*> XamExports;
+extern std::unordered_map<size_t, const char*> XboxKernelExports;
+
+// Forward declare all __imp__ functions we need
+// These are defined in kernel/imports.cpp via GUEST_FUNCTION_HOOK
+PPC_EXTERN_FUNC(__imp__VdInitializeEngines);
+PPC_EXTERN_FUNC(__imp__VdShutdownEngines);
+PPC_EXTERN_FUNC(__imp__VdSetGraphicsInterruptCallback);
+// ... (we'll need to add more as we discover which ones are actually used)
 
 static void MwSetEnv(const char* k, const char* v) {
 #ifdef _WIN32
@@ -247,6 +259,208 @@ void KiSystemStartup()
     }
 
     XAudioInitializeSystem();
+
+    // CRITICAL FIX: Start VBlank pump BEFORE guest thread starts
+    // In Xenia, VBlank ticks start immediately after audio system init (before game module load)
+    // The game waits for VBlank ticks to progress through initialization
+    KernelTraceHostOpF("HOST.KiSystemStartup starting VBlank pump");
+    Mw05AutoVideoInitIfNeeded();  // Initialize video system (ring buffer, etc.)
+    Mw05StartVblankPumpOnce();    // Start VBlank ticks
+    KernelTraceHostOpF("HOST.KiSystemStartup VBlank pump started");
+
+    // EXPERIMENTAL: Send notification that the game is waiting for
+    // Send it from a background thread with a delay to ensure the game has created listeners
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));  // Wait 2 seconds for game to create listeners
+
+        extern void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam);
+
+        // The game is polling for notification message ID 0x11 (17 decimal)
+        // Listener areas = 0x2F (binary 00101111) = areas {0,1,2,3,5}
+        // Notification format: (area << 16) | message_number (NOT area << 25!)
+        // Try area 0 with message 0x11
+        const uint32_t NOTIFICATION_AREA_0_MSG_0x11 = (0 << 16) | 0x11;
+
+        KernelTraceHostOpF("HOST.NotificationThread sending notification area=0 msg=0x11 (dwId=%08X)", NOTIFICATION_AREA_0_MSG_0x11);
+        XamNotifyEnqueueEvent(NOTIFICATION_AREA_0_MSG_0x11, 0);
+
+        KernelTraceHostOpF("HOST.NotificationThread notification sent");
+    }).detach();
+}
+
+// Helper to get address of __imp__ function by name
+// Returns nullptr if not found
+extern "C" PPCFunc* GetImportFunctionByName(const char* name);
+
+// Process XEX import table and patch with kernel function addresses
+// This matches Xenia's behavior where imports are resolved before game execution
+void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
+{
+    KernelTraceHostOp("HOST.ProcessImportTable ENTER");
+    fprintf(stderr, "[XEX] Processing import table...\n");
+    fflush(stderr);
+
+    // Assign guest addresses for imports starting after the game code
+    // PPC_CODE_BASE=0x820E0000, PPC_CODE_SIZE=0x7E8DA0, so code ends at ~0x828C8DA0
+    // We'll start imports at 0x828CA000 (aligned to 4KB boundary for safety)
+    uint32_t nextImportAddress = 0x828CA000;
+
+    // Get import libraries header
+    // For XEX_HEADER_IMPORT_LIBRARIES (0x000103FF), getOptHeaderPtr returns moduleBytes + offset
+    // because (0x000103FF & 0xFF) == 0xFF, which triggers the "else" case in getOptHeaderPtr
+    const auto* importHeader = reinterpret_cast<const Xex2ImportHeader*>(
+        getOptHeaderPtr(xexData, XEX_HEADER_IMPORT_LIBRARIES));
+
+    if (!importHeader)
+    {
+        fprintf(stderr, "[XEX] No import table found (XEX_HEADER_IMPORT_LIBRARIES not present)\n");
+        fflush(stderr);
+        KernelTraceHostOp("HOST.ProcessImportTable no_imports");
+        return;
+    }
+
+    const uint32_t numLibraries = importHeader->numImports.get();
+    fprintf(stderr, "[XEX] Import table: %u libraries, stringTableSize=%u\n",
+            numLibraries, importHeader->sizeOfStringTable.get());
+    fflush(stderr);
+
+    // Build string table (library names are null-terminated and padded to 4-byte boundaries)
+    // The library->name field is an INDEX into this array, not a byte offset
+    const char* pStrTable = reinterpret_cast<const char*>(importHeader + 1);
+    std::vector<const char*> stringTable;
+    size_t paddedStringOffset = 0;
+    for (uint32_t i = 0; i < numLibraries; i++)
+    {
+        stringTable.push_back(pStrTable + paddedStringOffset);
+
+        // Calculate length and pad to next multiple of 4
+        size_t len = strlen(stringTable.back()) + 1; // +1 for null terminator
+        paddedStringOffset += ((len + 3) & ~3);
+    }
+
+    // Import libraries follow the string table
+    const auto* library = reinterpret_cast<const Xex2ImportLibrary*>(
+        reinterpret_cast<const uint8_t*>(importHeader) +
+        sizeof(Xex2ImportHeader) +
+        importHeader->sizeOfStringTable.get());
+
+    uint32_t totalImportsPatched = 0;
+    uint32_t totalImportsFailed = 0;
+
+    // Process each library
+    for (uint32_t libIdx = 0; libIdx < numLibraries; libIdx++)
+    {
+        const uint16_t nameIndex = library->name.get();
+        const char* libraryName = (nameIndex < stringTable.size()) ? stringTable[nameIndex] : "<invalid>";
+        const uint32_t numImports = library->numberOfImports.get();
+
+        fprintf(stderr, "\n[XEX] Library #%u: '%s' (name_index=%u), version=%u.%u.%u.%u, %u imports\n",
+                libIdx,
+                libraryName,
+                nameIndex,
+                (library->version.get() >> 24) & 0xFF,
+                (library->version.get() >> 16) & 0xFF,
+                (library->version.get() >> 8) & 0xFF,
+                library->version.get() & 0xFF,
+                numImports);
+        fflush(stderr);
+
+        // Select the appropriate ordinal-to-name mapping for this library
+        const std::unordered_map<size_t, const char*>* exportTable = nullptr;
+        if (strcmp(libraryName, "xam.xex") == 0)
+        {
+            exportTable = &XamExports;
+        }
+        else if (strcmp(libraryName, "xboxkrnl.exe") == 0)
+        {
+            exportTable = &XboxKernelExports;
+        }
+
+        // Import descriptors follow the library header
+        const auto* importDesc = reinterpret_cast<const Xex2ImportDescriptor*>(library + 1);
+
+        // Process each import in this library
+        for (uint32_t i = 0; i < numImports; i++)
+        {
+            const uint32_t thunkAddr = importDesc[i].firstThunk.get();
+
+            // Get the thunk data from guest memory
+            auto* thunkData = reinterpret_cast<Xex2ThunkData*>(g_memory.Translate(thunkAddr));
+            if (!thunkData)
+            {
+                fprintf(stderr, "[XEX]   Import %u: thunk address 0x%08X not in guest memory\n", i, thunkAddr);
+                fflush(stderr);
+                totalImportsFailed++;
+                continue;
+            }
+
+            // Extract ordinal from thunk data
+            const uint32_t ordinal = thunkData->ordinal.get();
+            const uint8_t importType = (ordinal >> 24) & 0xFF;
+            const uint16_t importOrdinal = ordinal & 0xFFFF;
+
+            // Look up function name from ordinal
+            const char* functionName = nullptr;
+            if (exportTable)
+            {
+                auto it = exportTable->find(importOrdinal);
+                if (it != exportTable->end())
+                {
+                    functionName = it->second;
+                }
+            }
+
+            if (!functionName)
+            {
+                fprintf(stderr, "[XEX]   Import %u: ordinal=%u (0x%03X) type=%s thunk=0x%08X - NO NAME FOUND\n",
+                        i, importOrdinal, importOrdinal,
+                        importType == XEX_THUNK_FUNCTION ? "FUNCTION" : "VARIABLE",
+                        thunkAddr);
+                fflush(stderr);
+                totalImportsFailed++;
+                continue;
+            }
+
+            // Get the address of the __imp__ function
+            // Note: functionName already includes the "__imp__" prefix from the ordinal table
+            PPCFunc* hostFunc = GetImportFunctionByName(functionName);
+
+            if (!hostFunc)
+            {
+                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) - NOT IMPLEMENTED\n",
+                        i, functionName, importOrdinal);
+                fflush(stderr);
+                totalImportsFailed++;
+                continue;
+            }
+
+            // Assign a unique guest address for this import
+            uint32_t importGuestAddr = nextImportAddress;
+            nextImportAddress += 4; // Each import gets 4 bytes (enough for a function pointer)
+
+            // Register the function at this guest address
+            g_memory.InsertFunction(importGuestAddr, hostFunc);
+
+            // Patch the thunk to point to this guest address
+            // The thunk data is in big-endian format (be<uint32_t>)
+            thunkData->function = importGuestAddr;
+
+            fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> guest=0x%08X PATCHED\n",
+                    i, functionName, importOrdinal, thunkAddr, importGuestAddr);
+            fflush(stderr);
+            totalImportsPatched++;
+        }
+
+        // Move to next library (libraries are variable size)
+        library = reinterpret_cast<const Xex2ImportLibrary*>(
+            reinterpret_cast<const uint8_t*>(library) + library->size.get());
+    }
+
+    fprintf(stderr, "\n[XEX] Import table processing complete: %u patched, %u failed\n",
+            totalImportsPatched, totalImportsFailed);
+    fflush(stderr);
+    KernelTraceHostOpF("HOST.ProcessImportTable DONE patched=%u failed=%u",
+                       totalImportsPatched, totalImportsFailed);
 }
 
 uint32_t LdrLoadModule(const std::filesystem::path &path)
@@ -304,6 +518,11 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     // Log the XEX load details to console for debugging
     fprintf(stderr, "[XEX] loadAddress=0x%08X imageSize=0x%08X entry=0x%08X compressionType=%d\n",
             security->loadAddress.get(), security->imageSize.get(), entry, fileFormatInfo->compressionType.get());
+
+    // CRITICAL: Process import table BEFORE returning
+    // This patches the game's import table with addresses of our kernel function hooks
+    // Matches Xenia's behavior where imports are resolved before game execution starts
+    ProcessImportTable(loadResult.data(), security->loadAddress.get());
 
     return entry;
 }

@@ -73,6 +73,7 @@ set(MW05_RECOMP_PRECOMPILED_HEADERS
 
 set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/imports.cpp"
+    "kernel/import_lookup.cpp"
     "kernel/xdm.cpp"
     "kernel/heap.cpp"
     "kernel/memory.cpp"

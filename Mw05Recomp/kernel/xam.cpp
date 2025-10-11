@@ -115,11 +115,14 @@ void XamRootCreate(const std::string_view& root, const std::string_view& path)
 XamListener::XamListener()
 {
     gListeners.insert(this);
+    KernelTraceHostOpF("HOST.XamListener.constructor this=%p gListeners.size=%u", this, (unsigned int)gListeners.size());
 }
 
 XamListener::~XamListener()
 {
+    KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u BEFORE erase", this, (unsigned int)gListeners.size());
     gListeners.erase(this);
+    KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u AFTER erase", this, (unsigned int)gListeners.size());
 }
 
 XCONTENT_DATA XamMakeContent(uint32_t type, const std::string_view& name)
@@ -154,12 +157,19 @@ void XamRegisterContent(uint32_t type, const std::string_view name, const std::s
 
 uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 {
+    KernelTraceHostOpF("HOST.XamNotifyCreateListener BEFORE CreateKernelObject areas=%016llX gListeners.size=%u",
+                      (unsigned long long)qwAreas, (unsigned int)gListeners.size());
+
     auto* listener = CreateKernelObject<XamListener>();
+
+    KernelTraceHostOpF("HOST.XamNotifyCreateListener AFTER CreateKernelObject listener=%p gListeners.size=%u",
+                      listener, (unsigned int)gListeners.size());
 
     listener->areas = qwAreas;
 
     // Trace and optionally enqueue a benign boot notification to kick title state machines
-    KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX", (unsigned long long)qwAreas);
+    KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX handle=%08X",
+                      (unsigned long long)qwAreas, GetKernelHandle(listener));
 
     const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
     const char* listShims = std::getenv("MW05_LIST_SHIMS");
@@ -180,18 +190,53 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 {
+    KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent id=%08X param=%08X area=%u msg=%u listeners=%zu",
+                      dwId, dwParam, MSG_AREA(dwId), MSG_NUMBER(dwId), gListeners.size());
+
+    int delivered_count = 0;
     for (const auto& listener : gListeners)
     {
-        if (((1 << MSG_AREA(dwId)) & listener->areas) == 0)
+        uint32_t area_bit = 1 << MSG_AREA(dwId);
+        bool matches = (area_bit & listener->areas) != 0;
+
+        KernelTraceHostOpF("  listener areas=%016llX area_bit=%08X matches=%d",
+                          (unsigned long long)listener->areas, area_bit, matches);
+
+        if (!matches)
             continue;
 
         listener->notifications.emplace_back(dwId, dwParam);
+        delivered_count++;
+
+        KernelTraceHostOpF("  -> delivered to listener (queue_size now %zu)", listener->notifications.size());
     }
+
+    KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent delivered to %d listeners", delivered_count);
 }
 
 bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* pdwId, be<uint32_t>* pParam)
 {
     auto& listener = *GetKernelObject<XamListener>(hNotification);
+
+    static int call_count = 0;
+    static int last_log_count = 0;
+    call_count++;
+
+    // Log first 10 calls and every 100th call
+    bool should_log = (call_count <= 10) || (call_count % 100 == 0);
+
+    if (should_log) {
+        KernelTraceHostOpF("HOST.XNotifyGetNext count=%d filter=%08X queue_size=%zu",
+                          call_count, dwMsgFilter, listener.notifications.size());
+
+        // Log queued notifications
+        for (size_t i = 0; i < listener.notifications.size() && i < 5; i++) {
+            uint32_t id = std::get<0>(listener.notifications[i]);
+            uint32_t param = std::get<1>(listener.notifications[i]);
+            KernelTraceHostOpF("  [%zu] id=%08X param=%08X area=%u msg=%u",
+                              i, id, param, MSG_AREA(id), MSG_NUMBER(id));
+        }
+    }
 
     if (dwMsgFilter)
     {
@@ -207,8 +252,16 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
 
                 listener.notifications.erase(listener.notifications.begin() + i);
 
+                KernelTraceHostOpF("HOST.XNotifyGetNext FOUND filter=%08X -> id=%08X param=%08X",
+                                  dwMsgFilter, pdwId ? (uint32_t)*pdwId : 0, pParam ? (uint32_t)*pParam : 0);
+
                 return true;
             }
+        }
+
+        if (should_log && listener.notifications.size() > 0) {
+            KernelTraceHostOpF("HOST.XNotifyGetNext NOT_FOUND filter=%08X (queue has %zu items but none match)",
+                              dwMsgFilter, listener.notifications.size());
         }
     }
     else
@@ -223,6 +276,9 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
             *pParam = std::get<1>(listener.notifications[0]);
 
         listener.notifications.erase(listener.notifications.begin());
+
+        KernelTraceHostOpF("HOST.XNotifyGetNext NO_FILTER -> id=%08X param=%08X",
+                          pdwId ? (uint32_t)*pdwId : 0, pParam ? (uint32_t)*pParam : 0);
 
         return true;
     }

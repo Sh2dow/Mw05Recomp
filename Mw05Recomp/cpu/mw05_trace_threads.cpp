@@ -401,13 +401,25 @@ void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
+    // DEEP DEBUG: Track what the main thread is doing
+    static const bool s_deep_debug = [](){
+        if (const char* v = std::getenv("MW05_DEEP_DEBUG"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+
     // Check the sleep-skip flag at 0x82A1FF40 BEFORE calling the original
     // The main loop checks this address: if it's non-zero, it skips sleep and calls this function
     static std::atomic<uint64_t> s_lastLogCount{0};
-    if (count < 10 || (count % 1000) == 0) {
+    if (s_deep_debug || count < 10 || (count % 1000) == 0) {
         uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
-        KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X",
-                          ctx.lr, count, sleepSkipFlag);
+
+        // Sample some key memory locations to see what's changing
+        uint32_t titleState = PPC_LOAD_U32(0x8208F518);  // TitleState base
+        uint32_t mainLoopFlag = PPC_LOAD_U32(0x82A2CF40);  // Main thread unblock flag
+
+        KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu sleepSkipFlag=%08X titleState=%08X mainLoopFlag=%08X",
+                          ctx.lr, count, sleepSkipFlag, titleState, mainLoopFlag);
         s_lastLogCount.store(count, std::memory_order_release);
     }
 

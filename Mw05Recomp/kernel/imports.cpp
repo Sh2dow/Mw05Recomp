@@ -14,6 +14,8 @@
 #include <map>
 #include <mutex>
 #include <atomic>
+#include <queue>
+#include <condition_variable>
 #include "xam.h"
 #include "xdm.h"
 #include <user/config.h>
@@ -613,7 +615,7 @@ static inline bool Mw05AutoVideoEnabled() {
     return true;
 }
 
-static void Mw05AutoVideoInitIfNeeded() {
+void Mw05AutoVideoInitIfNeeded() {
     // One-time optional forced registration via env var
     Mw05MaybeForceRegisterVdEventFromEnv();
 
@@ -1665,7 +1667,7 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 static void Mw05ForceRegisterGfxNotifyIfRequested();
 static void Mw05ForceCreateRenderThreadIfRequested();
 
-static void Mw05StartVblankPumpOnce() {
+void Mw05StartVblankPumpOnce() {
     if (!Mw05VblankPumpEnabled()) return;
     bool expected = false;
     if (!g_vblankPumpRun.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -3700,6 +3702,181 @@ struct Semaphore final : KernelObject, HostObject<XKSEMAPHORE>
     }
 };
 
+// Timer kernel object
+struct Timer final : KernelObject
+{
+    std::atomic<bool> signaled{false};
+    bool manualReset{false};
+
+    Timer(bool manual) : manualReset(manual) {}
+
+    uint32_t Wait(uint32_t timeout) override
+    {
+        if (timeout == 0)
+        {
+            return signaled.load() ? STATUS_SUCCESS : STATUS_TIMEOUT;
+        }
+        else if (timeout == INFINITE)
+        {
+            while (!signaled.load())
+            {
+                signaled.wait(false);
+            }
+            if (!manualReset)
+                signaled = false;
+            return STATUS_SUCCESS;
+        }
+        else
+        {
+            // Timed wait not fully implemented
+            return STATUS_TIMEOUT;
+        }
+    }
+
+    void Set()
+    {
+        signaled = true;
+        signaled.notify_all();
+    }
+
+    void Reset()
+    {
+        signaled = false;
+    }
+};
+
+// Mutant (Mutex) kernel object
+struct Mutant final : KernelObject
+{
+    std::atomic<uint32_t> ownerThreadId{0};
+    std::atomic<int32_t> recursionCount{0};
+
+    Mutant() = default;
+
+    uint32_t Wait(uint32_t timeout) override
+    {
+        uint32_t currentThreadId = GuestThread::GetCurrentThreadId();
+
+        // Check if already owned by current thread
+        if (ownerThreadId.load() == currentThreadId)
+        {
+            recursionCount++;
+            return STATUS_SUCCESS;
+        }
+
+        // Try to acquire
+        if (timeout == 0)
+        {
+            uint32_t expected = 0;
+            if (ownerThreadId.compare_exchange_strong(expected, currentThreadId))
+            {
+                recursionCount = 1;
+                return STATUS_SUCCESS;
+            }
+            return STATUS_TIMEOUT;
+        }
+        else if (timeout == INFINITE)
+        {
+            while (true)
+            {
+                uint32_t expected = 0;
+                if (ownerThreadId.compare_exchange_weak(expected, currentThreadId))
+                {
+                    recursionCount = 1;
+                    return STATUS_SUCCESS;
+                }
+                ownerThreadId.wait(expected);
+            }
+        }
+        else
+        {
+            // Timed wait not fully implemented
+            return STATUS_TIMEOUT;
+        }
+    }
+
+    void Release()
+    {
+        uint32_t currentThreadId = GuestThread::GetCurrentThreadId();
+        if (ownerThreadId.load() != currentThreadId)
+        {
+            // Error: trying to release a mutex not owned by current thread
+            return;
+        }
+
+        recursionCount--;
+        if (recursionCount == 0)
+        {
+            ownerThreadId = 0;
+            ownerThreadId.notify_all();
+        }
+    }
+};
+
+// I/O Completion Port kernel object
+struct IoCompletion final : KernelObject
+{
+    struct CompletionPacket
+    {
+        uint32_t key;
+        uint32_t value;
+        uint32_t status;
+        uint32_t information;
+    };
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::queue<CompletionPacket> packets;
+
+    IoCompletion() = default;
+
+    uint32_t Wait(uint32_t timeout) override
+    {
+        // Not used for I/O completion ports
+        return STATUS_SUCCESS;
+    }
+
+    void Post(uint32_t key, uint32_t value, uint32_t status, uint32_t information)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        packets.push({key, value, status, information});
+        cv.notify_one();
+    }
+
+    bool Remove(CompletionPacket& packet, uint32_t timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+
+        if (timeout == 0)
+        {
+            if (packets.empty())
+                return false;
+            packet = packets.front();
+            packets.pop();
+            return true;
+        }
+        else if (timeout == INFINITE)
+        {
+            cv.wait(lock, [this] { return !packets.empty(); });
+            packet = packets.front();
+            packets.pop();
+            return true;
+        }
+        else
+        {
+            // Timed wait
+            auto duration = std::chrono::milliseconds(timeout);
+            if (cv.wait_for(lock, duration, [this] { return !packets.empty(); }))
+            {
+                packet = packets.front();
+                packets.pop();
+                return true;
+            }
+            return false;
+        }
+    }
+};
+
 inline void CloseKernelObject(XDISPATCHER_HEADER& header)
 {
     if (header.WaitListHead.Flink != OBJECT_SIGNATURE)
@@ -3872,7 +4049,9 @@ uint32_t XMsgStartIORequest(uint32_t App, uint32_t Message, XXOVERLAPPED* lpOver
 
 uint32_t XamUserGetSigninState(uint32_t userIndex)
 {
-    return userIndex == 0 ? 1u : 0u;
+    uint32_t state = userIndex == 0 ? 1u : 0u;
+    KernelTraceHostOpF("HOST.XamUserGetSigninState userIndex=%u -> state=%u", userIndex, state);
+    return state;
 }
 
 uint32_t XamGetSystemVersion()
@@ -3936,15 +4115,19 @@ uint32_t XamContentGetDeviceState()
 
 uint32_t XamUserGetSigninInfo(uint32_t userIndex, uint32_t flags, XUSER_SIGNIN_INFO* info)
 {
+    KernelTraceHostOpF("HOST.XamUserGetSigninInfo userIndex=%u flags=%08X", userIndex, flags);
+
     if (userIndex == 0)
     {
         memset(info, 0, sizeof(*info));
         info->xuid = 0xB13EBABEBABEBABE;
         info->SigninState = 1;
         strcpy(info->Name, "SWA");
+        KernelTraceHostOpF("HOST.XamUserGetSigninInfo -> SUCCESS xuid=%016llX name=%s", info->xuid, info->Name);
         return 0;
     }
 
+    KernelTraceHostOpF("HOST.XamUserGetSigninInfo -> ERROR_NO_SUCH_USER");
     return 0x00000525; // ERROR_NO_SUCH_USER
 }
 
@@ -7592,13 +7775,18 @@ void XamUserReadProfileSettings
     void* overlapped
 )
 {
+    KernelTraceHostOpF("HOST.XamUserReadProfileSettings titleId=%08X userIndex=%u xuidCount=%u settingCount=%u bufferSize=%u buffer=%p",
+                      titleId, userIndex, xuidCount, settingCount, bufferSize ? (uint32_t)*bufferSize : 0, buffer);
+
     if (buffer != nullptr)
     {
         memset(buffer, 0, *bufferSize);
+        KernelTraceHostOpF("HOST.XamUserReadProfileSettings -> cleared buffer");
     }
     else
     {
         *bufferSize = 4;
+        KernelTraceHostOpF("HOST.XamUserReadProfileSettings -> set bufferSize=4");
     }
 }
 
@@ -7859,6 +8047,213 @@ uint32_t NtReleaseSemaphore(Semaphore* Handle, uint32_t ReleaseCount, int32_t* P
     if (PreviousCount != nullptr)
         *PreviousCount = ByteSwap(previousCount);
 
+    return STATUS_SUCCESS;
+}
+
+// Timer functions
+uint32_t NtCreateTimer(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttributes, uint32_t TimerType)
+{
+    if (!Handle)
+        return STATUS_INVALID_PARAMETER;
+
+    // TimerType: 0 = NotificationTimer (manual reset), 1 = SynchronizationTimer (auto reset)
+    bool manualReset = (TimerType == 0);
+    *Handle = GetKernelHandle(CreateKernelObject<Timer>(manualReset));
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtSetTimerEx(Timer* Handle, be<int64_t>* DueTime, uint32_t Period, uint32_t ApcRoutine, uint32_t ApcContext, uint32_t Resume, uint32_t PreviousState, be<uint32_t>* State)
+{
+    if (!Handle)
+        return STATUS_INVALID_HANDLE;
+
+    // For now, just signal the timer immediately (simplified implementation)
+    // A full implementation would schedule the timer based on DueTime and Period
+    Handle->Set();
+
+    if (State)
+        *State = 1; // Timer is now signaled
+
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtCancelTimer(Timer* Handle, be<uint32_t>* CurrentState)
+{
+    if (!Handle)
+        return STATUS_INVALID_HANDLE;
+
+    Handle->Reset();
+
+    if (CurrentState)
+        *CurrentState = 0; // Timer is now not signaled
+
+    return STATUS_SUCCESS;
+}
+
+// Mutant (Mutex) functions
+uint32_t NtCreateMutant(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttributes, uint32_t InitialOwner)
+{
+    if (!Handle)
+        return STATUS_INVALID_PARAMETER;
+
+    auto* mutant = CreateKernelObject<Mutant>();
+
+    // If InitialOwner is true, the creating thread owns the mutex
+    if (InitialOwner)
+    {
+        mutant->ownerThreadId = GuestThread::GetCurrentThreadId();
+        mutant->recursionCount = 1;
+    }
+
+    *Handle = GetKernelHandle(mutant);
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtReleaseMutant(Mutant* Handle, be<uint32_t>* PreviousCount)
+{
+    if (!Handle)
+        return STATUS_INVALID_HANDLE;
+
+    if (PreviousCount)
+        *PreviousCount = Handle->recursionCount.load();
+
+    Handle->Release();
+    return STATUS_SUCCESS;
+}
+
+// I/O Completion functions
+uint32_t NtCreateIoCompletion(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttributes, uint32_t NumberOfConcurrentThreads)
+{
+    if (!Handle)
+        return STATUS_INVALID_PARAMETER;
+
+    *Handle = GetKernelHandle(CreateKernelObject<IoCompletion>());
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtSetIoCompletion(IoCompletion* Handle, uint32_t KeyContext, uint32_t ApcContext, uint32_t IoStatus, uint32_t IoStatusInformation)
+{
+    if (!Handle)
+        return STATUS_INVALID_HANDLE;
+
+    Handle->Post(KeyContext, ApcContext, IoStatus, IoStatusInformation);
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtRemoveIoCompletion(IoCompletion* Handle, be<uint32_t>* KeyContext, be<uint32_t>* ApcContext, XIO_STATUS_BLOCK* IoStatusBlock, be<int64_t>* Timeout)
+{
+    if (!Handle || !KeyContext || !ApcContext || !IoStatusBlock)
+        return STATUS_INVALID_PARAMETER;
+
+    uint32_t timeout_ms = INFINITE;
+    if (Timeout)
+    {
+        int64_t timeout_100ns = Timeout->get();
+        if (timeout_100ns < 0)
+        {
+            // Relative timeout (negative value in 100ns units)
+            timeout_ms = static_cast<uint32_t>((-timeout_100ns) / 10000);
+        }
+        else if (timeout_100ns == 0)
+        {
+            timeout_ms = 0;
+        }
+        else
+        {
+            // Absolute timeout - not fully supported, use infinite
+            timeout_ms = INFINITE;
+        }
+    }
+
+    IoCompletion::CompletionPacket packet;
+    if (Handle->Remove(packet, timeout_ms))
+    {
+        *KeyContext = packet.key;
+        *ApcContext = packet.value;
+        IoStatusBlock->Status = packet.status;
+        IoStatusBlock->Information = packet.information;
+        return STATUS_SUCCESS;
+    }
+
+    return STATUS_TIMEOUT;
+}
+
+// Event functions
+uint32_t NtPulseEvent(Event* Handle, be<uint32_t>* PreviousState)
+{
+    if (!Handle)
+        return STATUS_INVALID_HANDLE;
+
+    // Pulse: briefly signal then reset
+    Handle->Set();
+    Handle->Reset();
+
+    if (PreviousState)
+        *PreviousState = 0;
+
+    return STATUS_SUCCESS;
+}
+
+// Thread functions
+uint32_t NtQueueApcThread(uint32_t ThreadHandle, uint32_t ApcRoutine, uint32_t ApcContext, uint32_t Argument1, uint32_t Argument2)
+{
+    // Simplified stub: just return success
+    // A full implementation would queue the APC to the thread
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtSignalAndWaitForSingleObjectEx(uint32_t SignalHandle, uint32_t WaitHandle, uint32_t Alertable, be<int64_t>* Timeout)
+{
+    // Signal the first object
+    if (IsKernelObject(SignalHandle))
+    {
+        auto* signalObj = GetKernelObject<KernelObject>(SignalHandle);
+        if (auto* event = dynamic_cast<Event*>(signalObj))
+        {
+            event->Set();
+        }
+        else if (auto* semaphore = dynamic_cast<Semaphore*>(signalObj))
+        {
+            uint32_t prev;
+            semaphore->Release(1, &prev);
+        }
+        else if (auto* mutant = dynamic_cast<Mutant*>(signalObj))
+        {
+            mutant->Release();
+        }
+    }
+
+    // Wait for the second object
+    if (IsKernelObject(WaitHandle))
+    {
+        auto* waitObj = GetKernelObject<KernelObject>(WaitHandle);
+        if (waitObj)
+        {
+            uint32_t timeout_ms = INFINITE;
+            if (Timeout)
+            {
+                int64_t timeout_100ns = Timeout->get();
+                if (timeout_100ns < 0)
+                {
+                    timeout_ms = static_cast<uint32_t>((-timeout_100ns) / 10000);
+                }
+                else if (timeout_100ns == 0)
+                {
+                    timeout_ms = 0;
+                }
+            }
+
+            return waitObj->Wait(timeout_ms);
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+uint32_t NtYieldExecution()
+{
+    // Yield the current thread's time slice
+    std::this_thread::yield();
     return STATUS_SUCCESS;
 }
 
@@ -8867,8 +9262,8 @@ GUEST_FUNCTION_STUB(__imp__XMASetOutputBufferValid);
 GUEST_FUNCTION_STUB(__imp__XMAIsInputBuffer0Valid);
 GUEST_FUNCTION_STUB(__imp__XMASetInputBuffer1Valid);
 
-GUEST_FUNCTION_STUB(__imp__NtSetTimerEx);
-GUEST_FUNCTION_STUB(__imp__NtCreateTimer);
+GUEST_FUNCTION_HOOK(__imp__NtSetTimerEx, NtSetTimerEx);
+GUEST_FUNCTION_HOOK(__imp__NtCreateTimer, NtCreateTimer);
 
 // Additional minimal stubs to satisfy link for mappings that are unused at runtime.
 GUEST_FUNCTION_STUB(__imp__Refresh);
@@ -8878,13 +9273,13 @@ GUEST_FUNCTION_HOOK(__imp__VdQuerySystemCommandBuffer, VdQuerySystemCommandBuffe
 GUEST_FUNCTION_HOOK(__imp__VdSetSystemCommandBuffer, VdSetSystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__VdInitializeEDRAM, VdInitializeEDRAM);
 GUEST_FUNCTION_STUB(__imp__MmSetAddressProtect);
-GUEST_FUNCTION_STUB(__imp__NtCreateIoCompletion);
-GUEST_FUNCTION_STUB(__imp__NtSetIoCompletion);
-GUEST_FUNCTION_STUB(__imp__NtRemoveIoCompletion);
+GUEST_FUNCTION_HOOK(__imp__NtCreateIoCompletion, NtCreateIoCompletion);
+GUEST_FUNCTION_HOOK(__imp__NtSetIoCompletion, NtSetIoCompletion);
+GUEST_FUNCTION_HOOK(__imp__NtRemoveIoCompletion, NtRemoveIoCompletion);
 GUEST_FUNCTION_STUB(__imp__ObOpenObjectByPointer);
 GUEST_FUNCTION_STUB(__imp__ObLookupThreadByThreadId);
 GUEST_FUNCTION_STUB(__imp__KeSetDisableBoostThread);
-GUEST_FUNCTION_STUB(__imp__NtQueueApcThread);
+GUEST_FUNCTION_HOOK(__imp__NtQueueApcThread, NtQueueApcThread);
 GUEST_FUNCTION_STUB(__imp__RtlCompareMemory);
 GUEST_FUNCTION_STUB(__imp__XamCreateEnumeratorHandle);
 GUEST_FUNCTION_STUB(__imp__XMsgSystemProcessCall);
@@ -8892,9 +9287,9 @@ GUEST_FUNCTION_STUB(__imp__XamGetPrivateEnumStructureFromHandle);
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetCleanup);
 
 // Missing exports reported by linker for PPC mappings
-GUEST_FUNCTION_STUB(__imp__NtCreateMutant);
-GUEST_FUNCTION_STUB(__imp__NtReleaseMutant);
-GUEST_FUNCTION_STUB(__imp__NtYieldExecution);
+GUEST_FUNCTION_HOOK(__imp__NtCreateMutant, NtCreateMutant);
+GUEST_FUNCTION_HOOK(__imp__NtReleaseMutant, NtReleaseMutant);
+GUEST_FUNCTION_HOOK(__imp__NtYieldExecution, NtYieldExecution);
 GUEST_FUNCTION_STUB(__imp__FscGetCacheElementCount);
 GUEST_FUNCTION_STUB(__imp__XamVoiceHeadsetPresent);
 GUEST_FUNCTION_STUB(__imp__XamVoiceClose);
@@ -8908,10 +9303,10 @@ GUEST_FUNCTION_STUB(__imp__MmAllocatePhysicalMemory);
 GUEST_FUNCTION_STUB(__imp__XMASetInputBufferReadOffset);
 GUEST_FUNCTION_STUB(__imp__XMABlockWhileInUse);
 GUEST_FUNCTION_STUB(__imp__XMASetLoopData);
-GUEST_FUNCTION_STUB(__imp__NtCancelTimer);
+GUEST_FUNCTION_HOOK(__imp__NtCancelTimer, NtCancelTimer);
 GUEST_FUNCTION_STUB(__imp__ObOpenObjectByName);
-GUEST_FUNCTION_STUB(__imp__NtPulseEvent);
-GUEST_FUNCTION_STUB(__imp__NtSignalAndWaitForSingleObjectEx);
+GUEST_FUNCTION_HOOK(__imp__NtPulseEvent, NtPulseEvent);
+GUEST_FUNCTION_HOOK(__imp__NtSignalAndWaitForSingleObjectEx, NtSignalAndWaitForSingleObjectEx);
 // Networking (XNet) stubs
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetRandom);
 GUEST_FUNCTION_STUB(__imp__NetDll_XNetCreateKey);

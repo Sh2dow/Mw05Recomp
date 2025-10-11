@@ -1,62 +1,74 @@
 #!/usr/bin/env python3
-"""
-Analyze the main thread (tid=a9c4) to see what it's doing.
-"""
+"""Analyze what the main thread is doing between frame updates."""
 
 import re
-import sys
+from collections import Counter
 
-def analyze_main_thread(log_path):
-    """Analyze the main thread's execution."""
+def analyze_main_thread_pattern(filename, main_tid='688c'):
+    """Analyze the pattern of calls in the main thread."""
     
-    main_tid = 'a9c4'
-    
-    # Track function calls (non-Store operations)
-    function_calls = []
-    last_100_lines = []
-    
-    print(f"Analyzing main thread {main_tid}...")
-    
-    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+    calls = []
+    with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         for line in f:
-            if f'tid={main_tid}' in line:
-                last_100_lines.append(line.strip())
-                if len(last_100_lines) > 100:
-                    last_100_lines.pop(0)
+            # Match lines for the main thread
+            match = re.search(r'import=([^ ]+).*tid=' + main_tid, line)
+            if match:
+                func = match.group(1)
                 
-                # Skip Store operations
-                if 'Store64BE_W' not in line and 'Store8BE_W' not in line:
-                    function_calls.append(line.strip())
+                # Clean up function names
+                if func.startswith('__imp__'):
+                    func = func[7:]
+                elif func.startswith('HOST.'):
+                    func = func[5:]
+                
+                # Skip debug/trace functions
+                skip_prefixes = ('Store', 'Load', 'watch.', 'TitleEntry', 'main.', 
+                               'Init.', 'UnblockThread', 'GuestThread', 'GameWindow', 
+                               'VideoDevice', 'KernelVar', 'KiSystemStartup')
+                if any(func.startswith(prefix) for prefix in skip_prefixes):
+                    continue
+                
+                calls.append(func)
     
-    print("\n" + "="*80)
-    print(f"MAIN THREAD ({main_tid}) - NON-STORE FUNCTION CALLS")
-    print("="*80)
-    print(f"Total non-store calls: {len(function_calls)}")
-    print("\nFirst 20:")
-    for i, call in enumerate(function_calls[:20], 1):
-        # Extract just the important part
-        match = re.search(r'\[HOST\] import=([^ ]+)', call)
-        if match:
-            print(f"{i:3d}. {match.group(1)}")
+    return calls
+
+def find_repeating_patterns(calls, min_length=3, max_length=20):
+    """Find repeating patterns in the call sequence."""
+    patterns = Counter()
     
-    print("\nLast 20:")
-    for i, call in enumerate(function_calls[-20:], 1):
-        match = re.search(r'\[HOST\] import=([^ ]+)', call)
-        if match:
-            print(f"{i:3d}. {match.group(1)}")
+    for length in range(min_length, max_length + 1):
+        for i in range(len(calls) - length):
+            pattern = tuple(calls[i:i+length])
+            patterns[pattern] += 1
     
-    print("\n" + "="*80)
-    print("LAST 100 LINES (including stores)")
-    print("="*80)
-    for i, line in enumerate(last_100_lines[-20:], 1):
-        # Extract key info
-        match = re.search(r'import=([^ ]+).*lr=(0x[0-9A-Fa-f]+)', line)
-        if match:
-            func = match.group(1)
-            lr = match.group(2)
-            print(f"{i:3d}. {func:50s} lr={lr}")
+    # Filter to patterns that repeat at least 3 times
+    repeating = {p: count for p, count in patterns.items() if count >= 3}
+    return repeating
 
 if __name__ == '__main__':
-    log_path = sys.argv[1] if len(sys.argv) > 1 else 'out/build/x64-Clang-Debug/Mw05Recomp/mw05_host_trace.log'
-    analyze_main_thread(log_path)
+    log_file = 'out/build/x64-Clang-Debug/Mw05Recomp/mw05_host_trace.log'
+    
+    print("Analyzing main thread call pattern...")
+    calls = analyze_main_thread_pattern(log_file)
+    
+    print(f"\nTotal calls by main thread: {len(calls)}")
+    
+    # Show first 100 calls
+    print("\nFirst 100 calls:")
+    for i, func in enumerate(calls[:100]):
+        print(f"  {i:3d}. {func}")
+    
+    # Find repeating patterns
+    print("\n" + "="*80)
+    print("REPEATING PATTERNS (3+ occurrences):")
+    print("="*80)
+    patterns = find_repeating_patterns(calls)
+    
+    # Sort by frequency
+    sorted_patterns = sorted(patterns.items(), key=lambda x: -x[1])
+    
+    for pattern, count in sorted_patterns[:20]:
+        print(f"\nPattern (repeated {count} times):")
+        for func in pattern:
+            print(f"  - {func}")
 

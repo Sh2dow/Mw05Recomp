@@ -126,8 +126,26 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
 
     std::lock_guard lock(physicalMutex);
 
+    // Debug: Log heap state before allocation
+    const auto d_before = o1heapGetDiagnostics(physicalHeap);
+    fprintf(stderr, "[AllocPhysical] BEFORE: size=%zu (%.2f MB) align=%zu heap_alloc=%zu/%zu (%.2f/%.2f MB) oom=%llu\n",
+            size, size / (1024.0 * 1024.0), alignment,
+            d_before.allocated, d_before.capacity,
+            d_before.allocated / (1024.0 * 1024.0), d_before.capacity / (1024.0 * 1024.0),
+            (unsigned long long)d_before.oom_count);
+    fflush(stderr);
+
     // Reserve extra slack so we can always place a tag before the aligned pointer.
     void* base = o1heapAllocate(physicalHeap, size + (alignment * 2));
+
+    if (!base) {
+        const auto d_after = o1heapGetDiagnostics(physicalHeap);
+        fprintf(stderr, "[AllocPhysical] FAILED: o1heapAllocate returned NULL! size=%zu align=%zu oom=%llu\n",
+                size, alignment, (unsigned long long)d_after.oom_count);
+        fflush(stderr);
+        return nullptr;
+    }
+
     size_t aligned = ((size_t)base + alignment) & ~(alignment - 1);
     if (aligned - (size_t)base < 16)
         aligned += alignment; // ensure at least 16 bytes for the tag
@@ -137,6 +155,15 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
     *((void**)aligned - 1) = base;
 
     void* out = (void*)aligned;
+
+    // Debug: Log heap state after allocation
+    const auto d_after = o1heapGetDiagnostics(physicalHeap);
+    fprintf(stderr, "[AllocPhysical] SUCCESS: size=%zu (%.2f MB) align=%zu guest=0x%08X heap_alloc=%zu/%zu (%.2f/%.2f MB) oom=%llu\n",
+            size, size / (1024.0 * 1024.0), alignment, g_memory.MapVirtual(out),
+            d_after.allocated, d_after.capacity,
+            d_after.allocated / (1024.0 * 1024.0), d_after.capacity / (1024.0 * 1024.0),
+            (unsigned long long)d_after.oom_count);
+    fflush(stderr);
     {
         const char* t1 = std::getenv("MW05_TRACE_HEAP");
         const char* t2 = std::getenv("MW05_TRACE_MEM");

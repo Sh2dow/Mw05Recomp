@@ -1661,8 +1661,9 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
     (void)Mw05SignalVdInterruptEvent();
 }
 
-// Forward declaration for use in VBLANK handler
+// Forward declarations for use in VBLANK handler
 static void Mw05ForceRegisterGfxNotifyIfRequested();
+static void Mw05ForceCreateRenderThreadIfRequested();
 
 static void Mw05StartVblankPumpOnce() {
     if (!Mw05VblankPumpEnabled()) return;
@@ -2030,6 +2031,9 @@ static void Mw05StartVblankPumpOnce() {
 
             // Try to register graphics callback if requested (will check delay internally)
             Mw05ForceRegisterGfxNotifyIfRequested();
+
+            // Try to create render thread if requested (will check delay internally)
+            Mw05ForceCreateRenderThreadIfRequested();
 
             if (currentTick >= 340 && currentTick <= 360) {
                 fprintf(stderr, "[VBLANK-POST-REG] After Mw05ForceRegisterGfxNotifyIfRequested tick=%u\n", currentTick);
@@ -6210,6 +6214,137 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
     }
 }
 
+// Force-create the render thread if it hasn't been created naturally
+// This thread (entry=0x825AA970) is responsible for issuing draw commands
+static void Mw05ForceCreateRenderThreadIfRequested() {
+    const char* en = std::getenv("MW05_FORCE_RENDER_THREAD");
+    if (!en || (en[0]=='0' && en[1]=='\0')) return;
+
+    // Check if we should delay thread creation until after graphics init
+    static const uint32_t s_create_delay_ticks = [](){
+        if (const char* v = std::getenv("MW05_FORCE_RENDER_THREAD_DELAY_TICKS"))
+            return (uint32_t)std::strtoul(v, nullptr, 10);
+        return 200u; // default: wait 200 ticks to ensure graphics is initialized
+    }();
+
+    const uint32_t current_tick = g_vblankTicks.load(std::memory_order_acquire);
+    if (current_tick < s_create_delay_ticks) {
+        // Too early - skip creation for now
+        return;
+    }
+
+    // Check if already created (one-time creation)
+    static std::atomic<bool> s_created{false};
+    bool expected = false;
+    if (!s_created.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        // Another thread is creating or has created the render thread
+        return;
+    }
+
+    // Get the render thread entry point from environment or use default
+    uint32_t entry = 0x825AA970u;  // Default from Xenia log
+    if (const char* s = std::getenv("MW05_RENDER_THREAD_ENTRY")) {
+        entry = (uint32_t)std::strtoul(s, nullptr, 0);
+    }
+
+    // Get the context pointer - this should be the scheduler context
+    uint32_t ctx = 0x7FEA17B0u;  // Default from Xenia log (context passed to thread 0x828508A8)
+    if (const char* c = std::getenv("MW05_RENDER_THREAD_CTX")) {
+        ctx = (uint32_t)std::strtoul(c, nullptr, 0);
+    }
+
+    // Initialize the context structure
+    // The render thread expects context+0 to point to a graphics/scheduler context
+    // From analysis: r27 = Load32(context+0), then Load32(r27+628) is checked
+    // The graphics context is at 0x40007180 (16KB structure)
+    uint32_t gfx_ctx = 0x40007180u;  // Graphics context address
+    if (auto* ctx_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ctx))) {
+        *ctx_ptr = be<uint32_t>(gfx_ctx);  // Set pointer to graphics context
+        fprintf(stderr, "[RENDER-THREAD] Initialized context+0 at 0x%08X to point to gfx_ctx=0x%08X\n", ctx, gfx_ctx);
+        fflush(stderr);
+    }
+
+    // APPROACH A: Find and set the flag that gates present calls
+    // The render thread checks a flag at r31+10434 before calling present
+    // r31 is loaded from a global graphics device structure
+    // Try to find and set this flag to enable present calls
+    static const bool s_force_present_flag = [](){
+        if (const char* v = std::getenv("MW05_FORCE_PRESENT_FLAG")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    if (s_force_present_flag) {
+        // r31 is loaded from either (0x82000000+2884) or (0x82000000+2888) depending on process type
+        // Try both locations
+        for (uint32_t offset : {2884u, 2888u}) {
+            uint32_t ptr_ea = 0x82000000u + offset;
+            if (auto* ptr_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ptr_ea))) {
+                uint32_t r31_ea = ptr_ptr->get();
+                if (r31_ea >= 0x1000 && r31_ea < 0x90000000) {
+                    // Found a valid pointer, set the flag at offset 10434
+                    uint32_t flag_ea = r31_ea + 10434;
+                    if (auto* flag_ptr = reinterpret_cast<uint8_t*>(g_memory.Translate(flag_ea))) {
+                        *flag_ptr = 0x08;  // Set bit 3 (the flag checked by the render thread)
+                        fprintf(stderr, "[RENDER-THREAD] Set present flag at 0x%08X (r31=0x%08X offset=10434)\n", flag_ea, r31_ea);
+                        fflush(stderr);
+                    }
+                }
+            }
+        }
+    }
+
+    fprintf(stderr, "[RENDER-THREAD] About to create render thread entry=0x%08X ctx=0x%08X tick=%u\n", entry, ctx, current_tick);
+    fflush(stderr);
+
+    KernelTraceHostOpF("HOST.RenderThread.force_create entry=%08X ctx=%08X tick=%u", entry, ctx, current_tick);
+
+    // Create the thread using ExCreateThread
+    // Flags: 0x00000000 = not suspended (same as Xenia log shows)
+    uint32_t stack_size = 0x40000;  // 256KB stack (same as other game threads)
+
+    EnsureGuestContextForThisThread("ForceCreateRenderThread");
+
+    #if defined(_WIN32)
+    __try {
+    #endif
+        // Call ExCreateThread
+        // The function signature is: uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags)
+        // For MW05, xApiThreadStartup is typically 0 (the game uses startAddress directly)
+
+        fprintf(stderr, "[RENDER-THREAD] Calling ExCreateThread...\n");
+        fflush(stderr);
+
+        // Forward declaration of ExCreateThread
+        extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags);
+
+        be<uint32_t> thread_handle = 0;
+        be<uint32_t> thread_id = 0;
+
+        uint32_t result = ExCreateThread(&thread_handle, stack_size, &thread_id, 0, entry, ctx, 0x00000000);
+
+        fprintf(stderr, "[RENDER-THREAD] ExCreateThread returned 0x%08X, handle=0x%08X, tid=0x%08X\n", result, (uint32_t)thread_handle, (uint32_t)thread_id);
+        fflush(stderr);
+
+        if (result == 0) {  // STATUS_SUCCESS
+            fprintf(stderr, "[RENDER-THREAD] Render thread created successfully!\n");
+            fflush(stderr);
+            KernelTraceHostOpF("HOST.RenderThread.force_create.success handle=%08X tid=%08X", (uint32_t)thread_handle, (uint32_t)thread_id);
+        } else {
+            fprintf(stderr, "[RENDER-THREAD] ExCreateThread failed with status 0x%08X\n", result);
+            fflush(stderr);
+            KernelTraceHostOpF("HOST.RenderThread.force_create.failed status=%08X", result);
+        }
+
+    #if defined(_WIN32)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[RENDER-THREAD] ExCreateThread crashed with exception 0x%08X\n", (unsigned)GetExceptionCode());
+        fflush(stderr);
+        KernelTraceHostOpF("HOST.RenderThread.force_create.exception code=%08X", (unsigned)GetExceptionCode());
+    }
+    #endif
+
+    // s_created is already set to true at the beginning of the function via compare_exchange
+}
+
 uint32_t MmGetPhysicalAddress(uint32_t address)
 {
     LOGF_UTILITY("0x{:x}", address);
@@ -6399,18 +6534,45 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
     Mw05AutoVideoInitIfNeeded();
     Mw05StartVblankPumpOnce();
 
-    // Call the callback if provided (this initializes the graphics context structure)
-    if (callback_ea != 0) {
-        fprintf(stderr, "[VdInitEngines #%d] Calling callback at 0x%08X with arg=%08X\n",
-                call_count, callback_ea, callback_arg);
-        fflush(stderr);
+    // CRITICAL FIX: If callback_ea is 0, inject a default callback to initialize graphics device
+    // The game sometimes calls VdInitializeEngines with cb=0, which skips graphics device initialization
+    // This causes ISR-present to fail because it can't find the graphics device structure
+    if (callback_ea == 0) {
+        // Check if we should inject a default callback
+        static const bool inject_enabled = []() -> bool {
+            if (const char* v = std::getenv("MW05_INJECT_VD_CALLBACK"))
+                return !(v[0] == '0' && v[1] == '\0');
+            return true;  // Enabled by default
+        }();
 
-        // Check if the callback address is valid
-        if (!GuestOffsetInRange(callback_ea, 4)) {
-            fprintf(stderr, "[VdInitEngines #%d] ERROR: Callback address 0x%08X is out of range!\n", call_count, callback_ea);
+        if (inject_enabled) {
+            // Use the known-good callback address from Xenia traces
+            callback_ea = 0x825979A8u;
+            // Use the graphics context address as the callback argument
+            callback_arg = 0x40007180u;
+
+            fprintf(stderr, "[VdInitEngines #%d] INJECTING default callback: cb=0x%08X arg=0x%08X (was cb=0)\n",
+                    call_count, callback_ea, callback_arg);
+            fflush(stderr);
+            KernelTraceHostOpF("HOST.VdInitializeEngines.INJECT_CB cb=%08X arg=%08X", callback_ea, callback_arg);
+        } else {
+            fprintf(stderr, "[VdInitEngines #%d] No callback (cb=0), call_count=%d\n", call_count, call_count);
             fflush(stderr);
             return;
         }
+    }
+
+    // Call the callback (this initializes the graphics context structure)
+    fprintf(stderr, "[VdInitEngines #%d] Calling callback at 0x%08X with arg=%08X\n",
+            call_count, callback_ea, callback_arg);
+    fflush(stderr);
+
+    // Check if the callback address is valid
+    if (!GuestOffsetInRange(callback_ea, 4)) {
+        fprintf(stderr, "[VdInitEngines #%d] ERROR: Callback address 0x%08X is out of range!\n", call_count, callback_ea);
+        fflush(stderr);
+        return;
+    }
 
         // Dump first 16 bytes at callback address to see if it's code
         if (uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(callback_ea))) {
@@ -6458,10 +6620,6 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
             fprintf(stderr, "[VdInitEngines #%d] ERROR: No current thread context!\n", call_count);
             fflush(stderr);
         }
-    } else {
-        fprintf(stderr, "[VdInitEngines #%d] No callback (cb=0), call_count=%d\n", call_count, call_count);
-        fflush(stderr);
-    }
 }
 
 uint32_t VdIsHSIOTrainingSucceeded()
@@ -7149,6 +7307,92 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
             KernelTraceHostOp("HOST.VdCallGraphicsNotificationRoutines.no_cb");
         }
     }
+
+    // APPROACH C: Periodically call present function directly from ISR
+    // This bypasses the render thread entirely and calls the present function on every N source==0 callbacks
+    static const bool s_isr_call_present = [](){
+        if (const char* v = std::getenv("MW05_ISR_CALL_PRESENT")) return !(v[0]=='0' && v[1]=='\0');
+        return false;
+    }();
+    static const uint32_t s_isr_present_interval = [](){
+        if (const char* v = std::getenv("MW05_ISR_PRESENT_INTERVAL"))
+            return (uint32_t)std::strtoul(v, nullptr, 10);
+        return 60u; // default: every 60 source==0 callbacks (~1 second at 60Hz)
+    }();
+    static uint32_t s_isr_present_counter = 0;
+    static bool s_isr_present_debug_once = false;
+    // IMPORTANT: Don't check g_sawRealVdSwap here because VdSwap sets it even when called by our force-present logic
+    // We want to keep calling present until we actually see draw commands being issued
+    if (s_isr_call_present && source == 0) {
+        if (!s_isr_present_debug_once) {
+            fprintf(stderr, "[ISR-PRESENT-DEBUG] Enabled, interval=%u\n", s_isr_present_interval);
+            fflush(stderr);
+            s_isr_present_debug_once = true;
+        }
+        s_isr_present_counter++;
+        if (s_isr_present_counter >= s_isr_present_interval) {
+            s_isr_present_counter = 0;
+            // Get r31 (graphics device structure) from global pointer
+            // r31 is loaded from either (0x82000000+2884), (0x82000000+2888), or (0x82000000+10388) depending on process type
+            // The global contains either a HANDLE (object index) or a direct pointer to the structure
+            uint32_t r31_ea = 0;
+            for (uint32_t offset : {2884u, 2888u, 10388u}) {  // 10388 = 0x2894
+                uint32_t ptr_ea = 0x82000000u + offset;
+                if (auto* ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ptr_ea))) {
+                    uint32_t value = ptr->get();
+
+                    // Check if it's a direct pointer (in guest memory range)
+                    if (value >= 0x1000 && value < 0x90000000) {
+                        r31_ea = value;
+                        fprintf(stderr, "[ISR-PRESENT-DEBUG] Found r31=0x%08X (direct pointer) at offset=%u\n", r31_ea, offset);
+                        fflush(stderr);
+                        break;
+                    }
+
+                    // Otherwise try to dereference as a handle
+                    if (value >= 0x100 && value < 0x10000) {
+                        if (auto* struct_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(value))) {
+                            r31_ea = struct_ptr->get();
+                            if (r31_ea >= 0x1000 && r31_ea < 0x90000000) {
+                                fprintf(stderr, "[ISR-PRESENT-DEBUG] Found r31=0x%08X via handle=0x%08X at offset=%u\n", r31_ea, value, offset);
+                                fflush(stderr);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (r31_ea == 0) {
+                fprintf(stderr, "[ISR-PRESENT] Failed to find graphics device structure pointer (not initialized yet?)\n");
+                fflush(stderr);
+                return;
+            }
+
+            // Get r4 = Load32(r31 + 13976)
+            uint32_t r4_ea = 0;
+            if (auto* r4_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(r31_ea + 13976))) {
+                r4_ea = r4_ptr->get();
+            }
+
+            fprintf(stderr, "[ISR-PRESENT] Calling present function fp=0x82598A20 r3=0x%08X r4=0x%08X r5=0 (interval=%u)\n", r31_ea, r4_ea, s_isr_present_interval);
+            fflush(stderr);
+
+        #if defined(_WIN32)
+            __try {
+                GuestToHostFunction<void>(0x82598A20u, r31_ea, r4_ea, 0u);
+                KernelTraceHostOp("HOST.ISR.CallPresent.ret");
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                KernelTraceHostOpF("HOST.ISR.CallPresent.seh_abort code=%08X", (unsigned)GetExceptionCode());
+                fprintf(stderr, "[ISR-PRESENT] Exception 0x%08X calling present function\n", (unsigned)GetExceptionCode());
+                fflush(stderr);
+            }
+        #else
+            GuestToHostFunction<void>(0x82598A20u, r31_ea, r4_ea, 0u);
+            KernelTraceHostOp("HOST.ISR.CallPresent.ret");
+        #endif
+        }
+    }
 }
 
 // Ensure function scope is closed (balance safety)
@@ -7192,7 +7436,26 @@ uint32_t MmAllocatePhysicalMemoryEx
 )
 {
     LOGF_UTILITY("0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}", flags, size, protect, minAddress, maxAddress, alignment);
-    return g_memory.MapVirtual(g_userHeap.AllocPhysical(size, alignment));
+
+    // Debug logging for physical memory allocations
+    fprintf(stderr, "[MmAllocPhysicalMemEx] ENTRY: size=%u (%.2f MB) align=%u flags=%08X min=%08X max=%08X\n",
+            size, size / (1024.0 * 1024.0), alignment, flags, minAddress, maxAddress);
+    fflush(stderr);
+
+    void* ptr = g_userHeap.AllocPhysical(size, alignment);
+    uint32_t result = g_memory.MapVirtual(ptr);
+
+    if (result == 0) {
+        fprintf(stderr, "[MmAllocPhysicalMemEx] FAILED: AllocPhysical returned NULL for size=%u (%.2f MB)\n",
+                size, size / (1024.0 * 1024.0));
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p\n",
+                size, size / (1024.0 * 1024.0), result, ptr);
+        fflush(stderr);
+    }
+
+    return result;
 }
 
 void ObDeleteSymbolicLink()

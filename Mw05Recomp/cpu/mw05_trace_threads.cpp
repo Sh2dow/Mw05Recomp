@@ -346,8 +346,12 @@ void sub_824411E0(PPCContext& ctx, uint8_t* base) {
 
 // Helper to check if CRT init loop breaking is enabled
 static inline bool BreakCRTInitLoopEnabled() {
+    // Check both MW05_BREAK_CRT_INIT and MW05_BREAK_8262DD80 (alias)
     if(const char* v = std::getenv("MW05_BREAK_CRT_INIT")) {
-        return !(v[0] == '0' && v[1] == '\0');
+        if (!(v[0] == '0' && v[1] == '\0')) return true;
+    }
+    if(const char* v = std::getenv("MW05_BREAK_8262DD80")) {
+        if (!(v[0] == '0' && v[1] == '\0')) return true;
     }
     return false;
 }
@@ -390,25 +394,19 @@ void sub_8262DD80(PPCContext& ctx, uint8_t* base) {
     __imp__sub_8262DD80(ctx, base);
 }
 
-// Wrapper for sub_8262DE60 - the CRT initialization function that calls sub_8262DD80 in a loop
+// Wrapper for sub_8262DE60 - frame update function (NOT CRT init!)
+// This is called from the main game loop and should NOT be skipped
 void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
-    KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu", ctx.lr, count);
-
-    // Check if CRT init loop breaking is enabled
-    if (BreakCRTInitLoopEnabled()) {
-        // Only skip after a certain number of calls to allow some initialization
-        constexpr uint64_t kMaxCalls = 1000;  // Increased from 100 to allow more init
-        if (count >= kMaxCalls) {
-            KernelTraceHostOpF("HOST.sub_8262DE60.skip_after_limit lr=%08llX count=%llu", ctx.lr, count);
-            // Skip after limit - the game is stuck in a loop
-            return;
-        }
+    // Only log occasionally to reduce spam
+    if (count < 10 || (count % 1000) == 0) {
+        KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu", ctx.lr, count);
     }
 
-    // Call original
+    // Always call the original - this is the frame update function!
+    // DO NOT skip this or the game won't render
     __imp__sub_8262DE60(ctx, base);
 }
 

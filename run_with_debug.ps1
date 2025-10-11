@@ -4,6 +4,7 @@ $env:MW05_FAKE_ALLOC_SYSBUF = "1"                        # ESSENTIAL: Fake syste
 $env:MW05_UNBLOCK_MAIN = "1"                             # Try unblocking main thread
 $env:MW05_TRACE_KERNEL = "1"                             # Enable kernel tracing
 $env:MW05_HOST_TRACE_IMPORTS = "1"                       # Enable import tracing to file
+$env:MW05_TRACE_HEAP = "1"                               # Enable heap tracing
 $env:MW05_BREAK_SLEEP_LOOP = "1"                    # Break sleep loop in sub_8262F2A0 after a few iterations
 $env:MW05_BREAK_SLEEP_AFTER = "5"
 
@@ -18,7 +19,10 @@ $env:MW05_FORCE_PRESENT_BG = "0"
 $env:MW05_VDSWAP_NOTIFY = "0"
 $env:MW05_FAST_BOOT = "0"
 $env:MW05_FAST_RET = "0"
-$env:MW05_BREAK_CRT_INIT = "1"
+# DISABLED: These were only needed during early boot, now they cause infinite loops in frame update
+# $env:MW05_BREAK_CRT_INIT = "1"
+# $env:MW05_BREAK_8262DD80 = "1"                     # Break string formatting loop at 0x8262DD80
+$env:MW05_FORCE_VD_INIT = "1"                      # Force graphics device initialization via CreateDevice
 $env:MW05_TRACE_INDIRECT = "0"
 $env:MW05_TITLE_STATE_TRACE = "1"
 $env:MW05_BREAK_WAIT_LOOP = "0"
@@ -51,10 +55,34 @@ $env:MW05_SCHED_R3_EA = "0x00260370"
 # Optionally kick PM4 builders once after present wrapper returns
 $env:MW05_FPW_KICK_PM4 = "1"
 
+# Force-create the render thread that issues draw commands
+$env:MW05_FORCE_RENDER_THREAD = "1"
+$env:MW05_FORCE_RENDER_THREAD_DELAY_TICKS = "400"  # Wait for graphics init to complete
+$env:MW05_RENDER_THREAD_ENTRY = "0x825AA970"       # From Xenia log
+$env:MW05_RENDER_THREAD_CTX = "0x7FEA17B0"         # From Xenia log
+
+# Signal the VD interrupt event to wake up the render thread
+$env:MW05_HOST_ISR_SIGNAL_VD_EVENT = "1"
+$env:MW05_PULSE_VD_EVENT_ON_SLEEP = "1"
+
+# Enable PM4 state application (render target, viewport, scissor)
+$env:MW05_PM4_APPLY_STATE = "1"
+
+# APPROACH A: Force the flag at r31+10434 that gates present calls in the render thread
+$env:MW05_FORCE_PRESENT_FLAG = "1"
+
+# APPROACH B: Force-call present function periodically (every 60 source==0 callbacks)
+$env:MW05_FORCE_PRESENT_ON_ZERO = "1"  # Already exists, enable it
+$env:MW05_FORCE_PRESENT_EVERY_ZERO = "0"  # Too aggressive, keep disabled
+
+# APPROACH C: Call present function directly from ISR (every 10 source==0 callbacks)
+$env:MW05_ISR_CALL_PRESENT = "1"
+$env:MW05_ISR_PRESENT_INTERVAL = "10"  # Call every 10 frames (~166ms at 60Hz)
+
 
 
 $p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.exe" -PassThru -RedirectStandardError ".\debug_stderr.txt"
-Start-Sleep -Seconds 15
+Start-Sleep -Seconds 120
 Stop-Process -Id $p.Id -Force
 Start-Sleep -Seconds 2
 Write-Host "`n=== STDERR DEBUG OUTPUT ==="

@@ -118,6 +118,22 @@ static inline bool BreakCRTInitLoopEnabled() {
     return false;
 }
 
+static inline bool Break8262DD80Enabled() {
+    if(const char* v = std::getenv("MW05_BREAK_8262DD80")) {
+        return !(v[0] == '0' && v[1] == '\0');
+    }
+    return false;
+}
+
+static inline uint32_t Get8262DD80MaxIterations() {
+    if(const char* v = std::getenv("MW05_BREAK_8262DD80_MAX_ITER")) {
+        char* end = nullptr;
+        unsigned long val = std::strtoul(v, &end, 0);
+        return (val > 0 && val <= 10000) ? static_cast<uint32_t>(val) : 100;
+    }
+    return 100;  // Default: break after 100 iterations
+}
+
 static inline uint64_t FastBootReturnValue() {
     if(const char* v = std::getenv("MW05_FAST_RET")) {
         // Accept decimal (0/192) or hex (0xC0)

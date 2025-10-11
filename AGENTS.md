@@ -40,34 +40,48 @@
 
 ## Critical Debugging Information
 
-### Current Status: MAJOR PROGRESS - Import Table Patching Working!
-**BREAKTHROUGH**: XEX import table processing is now WORKING! 348/719 imports (48%) are patched and being called successfully.
+### Current Status: ROOT CAUSE IDENTIFIED - Initialization Chain Never Triggered
+**ISSUE**: Game is running but stuck in initialization, not progressing to file I/O or rendering. 388/719 imports (54%) patched.
+**KEY FINDING**: In Xenia, the game sleeps 149,148 times before issuing first draw command - sleep loop is NORMAL.
+**CRITICAL FIX**: Removed unconditional flag manipulation and disabled MW05_UNBLOCK_MAIN by default - game now runs naturally.
+**ROOT CAUSE FOUND**: Initialization chain never triggered! Function `sub_82216398` (init gate) is never called.
+**INIT CHAIN**: `sub_82216398` → `sub_82440220` → `sub_825A16A0` → `sub_82598230` (CreateDevice) → `sub_825AAE58` (creates threads)
+**NEXT STEP**: Find what should call `sub_82216398` and why it's not being called.
 
 ### Key Findings
-1. **VBlank pump working** - Fixed in previous iteration, VBlank ticks are happening (count: 0, 10, 20, ...)
-2. ✅ **Import table patching WORKING!** - 348/719 imports (48%) successfully patched and callable
-3. ✅ **Auto-generated import lookup** - Created Python script to generate lookup table from all 209 __imp__ functions
-4. ✅ **Nt* kernel functions implemented** - Added 12 critical Nt* functions (timers, mutexes, I/O completion)
+1. **VBlank pump working** - Fixed in previous iteration, VBlank ticks are happening
+2. ✅ **Import table patching WORKING!** - 388/719 imports (54%) successfully patched and callable
+3. ✅ **Auto-generated import lookup** - 232 __imp__ functions in lookup table
+4. ✅ **Nt* kernel functions implemented** - Added 12 Nt* functions + 10 additional kernel functions
 5. ✅ **VdInitializeEngines being called!** - Game is calling graphics initialization functions
 6. ✅ **Graphics callbacks registered!** - Game naturally registered graphics callback at 0x825979A8
-7. ✅ **Graphics callbacks invoked!** - 6723 successful callback invocations in 60 seconds
+7. ✅ **Graphics callbacks invoked!** - 1,994 successful callback invocations in 30 seconds
 8. ✅ **PM4 command buffer scanning!** - PM4_ScanLinear is being called, processing command buffers
-9. ⚠️ **No draws yet** - PM4 scans show draws=0, game hasn't issued draw commands yet
-10. ⚠️ **371 imports still missing** - 192 unique missing imports (mostly NetDll, Xam, XMA, file I/O functions)
+9. ✅ **KeDelayExecutionThread implemented!** - Sleep function is working correctly
+10. ⚠️ **No draws yet** - PM4 scans show draws=0, game hasn't issued draw commands yet
+11. ⚠️ **Game stuck in sleep loop** - KeDelayExecutionThread called 9,285 times in 30 seconds
+12. ⚠️ **NO file I/O** - Game has not called NtCreateFile/NtOpenFile/NtReadFile even once
+13. ⚠️ **331 imports still missing** - 182 unique missing imports (mostly NetDll, Xam, XMA)
+14. ⚠️ **Missing 6 threads** - Xenia creates 9 threads, we only create 3
 
 ### Execution Flow Comparison (Xenia vs Our Implementation)
 **Xenia (Working)**:
 - Line 375-380: Creates XMA Decoder and Audio Worker threads BEFORE loading game
-- Line 909-1110: **Processes import table** - patches 193 xboxkrnl imports with kernel function addresses
+- Line 725-944: **Processes import table** - patches 193 xboxkrnl imports with kernel function addresses
 - Line 1122-1123: Game starts executing, loads title name "NFS Most Wanted"
-- Line 35788+: VD notify callback invoked, NEW THREAD created, draw commands issued
+- Line 1280+: Main thread sleeps at `lr=0x8262F300` (SAME AS US!)
+- Line 1280-317729: **Game sleeps 149,148 times** (this is NORMAL!)
+- Line 35788+: VD notify callback invoked, NEW THREAD created
+- Line 317731: **First draw command issued!**
 
 **Our Implementation (Current State)**:
 - ✅ VBlank pump starts before guest thread (FIXED)
+- ✅ Import table processed - 388/719 imports patched (WORKING)
 - ✅ Multiple threads running, kernel calls happening (WORKING)
-- ❌ Import table NOT processed - `LdrLoadModule` doesn't patch imports
-- ❌ Game can't call `VdInitializeEngines` - import table entry not patched
-- ❌ Main thread sleeping at `lr=0x8262F300` - waiting for graphics init
+- ✅ Main thread sleeping at `lr=0x8262F300` (SAME AS XENIA!)
+- ⚠️ Game sleeps infinitely - never progresses to draw commands
+- ❌ Missing 6 threads - Only 3/9 threads created
+- ❌ No file I/O - Game hasn't loaded any resources
 
 ### Memory Addresses of Interest
 - `0x82A2CF40`: Main thread spin loop flag (unblock thread sets this to 1)

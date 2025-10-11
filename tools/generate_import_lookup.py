@@ -93,21 +93,27 @@ extern "C" PPCFunc* GetImportFunctionByName(const char* name)
 def main():
     # Paths
     repo_root = Path(__file__).parent.parent
-    imports_cpp = repo_root / "Mw05Recomp" / "kernel" / "imports.cpp"
+    kernel_dir = repo_root / "Mw05Recomp" / "kernel"
     output_cpp = repo_root / "Mw05Recomp" / "kernel" / "import_lookup.cpp"
-    
-    if not imports_cpp.exists():
-        print(f"Error: {imports_cpp} not found", file=sys.stderr)
-        return 1
-    
-    # Extract imports
-    print(f"Parsing {imports_cpp}...")
-    imports = extract_imports(imports_cpp)
-    print(f"Found {len(imports)} unique __imp__ functions")
-    
+
+    # Scan all .cpp files in kernel directory (recursively)
+    all_imports = set()
+
+    for cpp_file in kernel_dir.rglob("*.cpp"):
+        if cpp_file.name == "import_lookup.cpp":
+            continue  # Skip the generated file
+
+        print(f"Parsing {cpp_file}...")
+        imports = extract_imports(cpp_file)
+        if imports:
+            print(f"  Found {len(imports)} unique __imp__ functions")
+            all_imports.update(imports)
+
+    print(f"\nTotal unique __imp__ functions: {len(all_imports)}")
+
     # Generate lookup table
-    generate_lookup_cpp(imports, output_cpp)
-    
+    generate_lookup_cpp(sorted(all_imports), output_cpp)
+
     print("Done!")
     return 0
 

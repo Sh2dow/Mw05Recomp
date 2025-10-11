@@ -74,7 +74,8 @@ static void MwApplyDebugProfile() {
     MwSetEnvDefault("MW05_STREAM_BRIDGE",                "1");
     MwSetEnvDefault("MW05_STREAM_ANY_LR",                "1");
     MwSetEnvDefault("MW05_STREAM_ACK_NO_PATH",           "0");
-    MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
+    // MW05_UNBLOCK_MAIN disabled by default - let game run naturally
+    // MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
     MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
     MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");
     MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");
@@ -189,23 +190,9 @@ void KiSystemStartup()
         #endif
     #endif
 
-    // CRITICAL FIX: Set the flag that unblocks the main thread
-    // The main thread waits in a loop at sub_82441CF0 checking dword_82A2CF40
-    // It only proceeds when this flag is non-zero
-    KernelTraceHostOpF("HOST.Init.UnblockMainThread BEFORE");
-    {
-        const uint32_t unblock_flag_ea = 0x82A2CF40;
-        uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(unblock_flag_ea));
-        // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
-        // KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X ptr=%p", unblock_flag_ea, flag_ptr);
-        KernelTraceHostOpF("HOST.Init.UnblockMainThread ea=%08X", unblock_flag_ea);
-        if (flag_ptr) {
-            *flag_ptr = __builtin_bswap32(1);  // Set to 1 (big-endian)
-            KernelTraceHostOpF("HOST.Init.UnblockMainThread DONE value=1");
-        } else {
-            KernelTraceHostOpF("HOST.Init.UnblockMainThread FAILED ptr=NULL");
-        }
-    }
+    // NOTE: This flag setting is now controlled by MW05_UNBLOCK_MAIN environment variable
+    // and handled in UnblockMainThreadEarly() in mw05_trace_threads.cpp
+    // Removed unconditional flag setting to allow natural game behavior when MW05_UNBLOCK_MAIN=0
     KernelTraceHostOpF("HOST.Init.UnblockMainThread AFTER");
 
     const auto gameContent = XamMakeContent(XCONTENTTYPE_RESERVED, "Game");
@@ -963,6 +950,15 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] before_sub_8262DE60_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
     fprintf(stderr, "[MAIN] after_sub_8262DE60_install\n"); fflush(stderr);
+
+    fprintf(stderr, "[MAIN] before_init_trace_hooks\n"); fflush(stderr);
+    // NOTE: Init trace hooks are registered via GUEST_FUNCTION_HOOK macros in mw05_init_trace.cpp
+    // They wrap key initialization functions to trace why threads aren't being created
+    fprintf(stderr, "[MAIN] after_init_trace_hooks\n"); fflush(stderr);
+
+    // NOTE: sub_824411E0 is NOT a thread entry point - it's called directly via bl instruction
+    // The wrapper in mw05_trace_threads.cpp is not needed and has been removed
+    // The function will be called naturally by the recompiled PPC code
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
     // KernelTraceHostOpF("HOST.sub_828134E0.install host=%p entry=%p",
     //     reinterpret_cast<const void*>(sub_828134E0),
@@ -1004,7 +1000,19 @@ int main(int argc, char *argv[])
     using namespace std::chrono;
     auto next_present = steady_clock::now();
     const auto present_period = milliseconds(16);
+
+    // DIAGNOSTIC: Log that we're entering the main loop
+    fprintf(stderr, "[MAIN-LOOP] Entering main event loop, present_main=%d\n", present_main ? 1 : 0);
+    fflush(stderr);
+
+    uint64_t loop_iterations = 0;
     for (;;) {
+        ++loop_iterations;
+        if (loop_iterations <= 10 || (loop_iterations % 600) == 0) {
+            fprintf(stderr, "[MAIN-LOOP] Iteration #%llu\n", (unsigned long long)loop_iterations);
+            fflush(stderr);
+        }
+
         // Block briefly for events to reduce CPU and keep message pump serviced
         SDL_Event ev;
         (void)SDL_WaitEventTimeout(&ev, 16);

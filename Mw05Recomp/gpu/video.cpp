@@ -3228,6 +3228,15 @@ void Video::Present()
 {
     // Always write a host trace entry when Present is entered to diagnose bring-up
     KernelTraceHostOp("HOST.VideoPresent.enter2");
+
+    // DIAGNOSTIC: Log every Present call to stderr
+    static uint64_t s_presentCount = 0;
+    ++s_presentCount;
+    if (s_presentCount <= 10 || (s_presentCount % 60) == 0) {
+        fprintf(stderr, "[PRESENT] Call #%llu\n", (unsigned long long)s_presentCount);
+        fflush(stderr);
+    }
+
     // Ensure early VD/ring bring-up if requested (safe no-op otherwise)
     Mw05ForceVdInitOnce();
     // Optional: force-call PM4 builder shim once early to validate path
@@ -8494,8 +8503,16 @@ PPC_FUNC(sub_82E3B1C0)
 // Pass-through wrapper for MW05 CreateDevice to execute original guest body
 struct PPCContext; extern "C" void __imp__sub_82598230(PPCContext&, uint8_t*);
 static void MW05_CreateDevicePass(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOp("HOST.sub_82598230.pass_through");
+    KernelTraceHostOpF("HOST.sub_82598230.CreateDevice ENTER r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
     __imp__sub_82598230(ctx, base);
+    KernelTraceHostOpF("HOST.sub_82598230.CreateDevice EXIT r3=%08X (0=success)", ctx.r3.u32);
+
+    // CRITICAL: If CreateDevice fails (r3 != 0), the game won't create render threads!
+    // This blocks progression to file I/O and rendering
+    if (ctx.r3.u32 != 0) {
+        fprintf(stderr, "[CRITICAL] CreateDevice FAILED with code %08X - render threads won't be created!\n", ctx.r3.u32);
+        fflush(stderr);
+    }
 }
 extern "C" void __imp__sub_82598A20(PPCContext&, uint8_t*);
 

@@ -3887,16 +3887,6 @@ inline void CloseKernelObject(XDISPATCHER_HEADER& header)
     DestroyKernelObject(header.WaitListHead.Blink);
 }
 
-void VdHSIOCalibrationLock()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
-void KeCertMonitorData()
-{
-    LOG_UTILITY("!!! STUB !!!");
-}
-
 // xboxkrnl variable export: XexExecutableModuleHandle (ordinal 0x193)
 // Titles may read this directly to get a module handle for the main XEX.
 // Provide a stable pseudo-handle that also matches XexGetModuleHandle(null).
@@ -3940,13 +3930,16 @@ static void Mw05HostIsrSignalLastWaitHandleIfAny()
 be<uint32_t> ExLoadedCommandLine = be<uint32_t>(0);     // guest ptr to UTF-8/ANSI string
 be<uint32_t> KeDebugMonitorData  = be<uint32_t>(0);     // guest ptr to struct (unused)
 be<uint32_t> ExThreadObjectType  = be<uint32_t>(0);     // guest ptr to object type (unused)
+be<uint32_t> ExEventObjectType   = be<uint32_t>(0);     // guest ptr to object type (unused)
+be<uint32_t> ExSemaphoreObjectType = be<uint32_t>(0);   // guest ptr to object type (unused)
+be<uint32_t> ExTimerObjectType   = be<uint32_t>(0);     // guest ptr to object type (unused)
+be<uint32_t> KeCertMonitorData   = be<uint32_t>(0);     // guest ptr to cert monitor (unused)
 be<uint32_t> KeTimeStampBundle   = be<uint32_t>(0);     // guest ptr to timestamp bundle (unused)
 be<uint32_t> XboxHardwareInfo    = be<uint32_t>(0);     // guest ptr to hw info struct (unused)
-
-// Video device globals expected as variables by some titles
-be<uint32_t> VdGlobalDevice    = be<uint32_t>(0);    // pointer to vd device struct (unused)
-be<uint32_t> VdGlobalXamDevice = be<uint32_t>(0);    // pointer to xam device struct (unused)
-be<uint32_t> VdGpuClockInMHz   = be<uint32_t>(500);  // nominal Xenos GPU clock
+be<uint32_t> VdGlobalDevice      = be<uint32_t>(0);     // guest ptr to graphics device (unused)
+be<uint32_t> VdGlobalXamDevice   = be<uint32_t>(0);     // guest ptr to XAM graphics device (unused)
+be<uint32_t> VdGpuClockInMHz     = be<uint32_t>(500);   // GPU clock speed in MHz
+be<uint32_t> VdHSIOCalibrationLock = be<uint32_t>(0);   // guest ptr to HSIO calibration lock (unused)
 
 
 // One-time initializer to allocate and publish basic kernel variables.
@@ -8257,6 +8250,108 @@ uint32_t NtYieldExecution()
     return STATUS_SUCCESS;
 }
 
+//=============================================================================
+// Additional kernel functions
+//=============================================================================
+
+// Ke* functions
+PPC_FUNC(KePulseEvent)
+{
+    uint32_t handle = ctx.r3.u32;
+
+    // Try to get the event object
+    if (!IsKernelObject(handle))
+    {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+
+    auto* event = reinterpret_cast<Event*>(g_memory.Translate(handle));
+    if (!event)
+    {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+
+    // Pulse: briefly signal then reset
+    event->Set();
+    event->Reset();
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+PPC_FUNC(KeSetDisableBoostThread)
+{
+    // Thread boost control - stub (not critical for rendering)
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+PPC_FUNC(KeTryToAcquireSpinLockAtRaisedIrql)
+{
+    // Spinlock - stub (return success, assume acquired)
+    ctx.r3.u32 = 1; // TRUE
+}
+
+// Ob* functions
+PPC_FUNC(ObLookupThreadByThreadId)
+{
+    // Stub: return success
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+PPC_FUNC(ObOpenObjectByName)
+{
+    // Stub: fail gracefully
+    ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+PPC_FUNC(ObOpenObjectByPointer)
+{
+    // Stub: fail gracefully
+    ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+}
+
+// Mm* functions
+PPC_FUNC(MmAllocatePhysicalMemory)
+{
+    // Stub: return a safe guest address
+    ctx.r3.u32 = 0x90000000;
+}
+
+PPC_FUNC(MmSetAddressProtect)
+{
+    // Memory protection - stub (not critical)
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+// Rtl* functions
+uint32_t RtlCompareMemory(uint32_t src1, uint32_t src2, uint32_t length)
+{
+    const uint8_t* p1 = static_cast<const uint8_t*>(g_memory.Translate(src1));
+    const uint8_t* p2 = static_cast<const uint8_t*>(g_memory.Translate(src2));
+
+    if (!p1 || !p2)
+    {
+        return 0;
+    }
+
+    uint32_t matchCount = 0;
+    for (uint32_t i = 0; i < length; i++)
+    {
+        if (p1[i] != p2[i])
+            break;
+        matchCount++;
+    }
+
+    return matchCount;
+}
+
+// Vd* functions
+PPC_FUNC(VdGetGraphicsAsicID)
+{
+    // Return a fake ASIC ID (Xenos GPU)
+    ctx.r3.u32 = 0x5820; // Xbox 360 GPU ID
+}
+
 // ===== helpers =====
 static inline bool EarlyBootGate(const char* env_name, const char* trace_tag, std::chrono::steady_clock::time_point t0) {
     static const bool on = [] (const char* key) {
@@ -9268,17 +9363,17 @@ GUEST_FUNCTION_HOOK(__imp__NtCreateTimer, NtCreateTimer);
 // Additional minimal stubs to satisfy link for mappings that are unused at runtime.
 GUEST_FUNCTION_STUB(__imp__Refresh);
 GUEST_FUNCTION_STUB(__imp__XamInputGetKeystrokeEx);
-GUEST_FUNCTION_STUB(__imp__VdGetGraphicsAsicID);
+GUEST_FUNCTION_HOOK(__imp__VdGetGraphicsAsicID, VdGetGraphicsAsicID);
 GUEST_FUNCTION_HOOK(__imp__VdQuerySystemCommandBuffer, VdQuerySystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__VdSetSystemCommandBuffer, VdSetSystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__VdInitializeEDRAM, VdInitializeEDRAM);
-GUEST_FUNCTION_STUB(__imp__MmSetAddressProtect);
+GUEST_FUNCTION_HOOK(__imp__MmSetAddressProtect, MmSetAddressProtect);
 GUEST_FUNCTION_HOOK(__imp__NtCreateIoCompletion, NtCreateIoCompletion);
 GUEST_FUNCTION_HOOK(__imp__NtSetIoCompletion, NtSetIoCompletion);
 GUEST_FUNCTION_HOOK(__imp__NtRemoveIoCompletion, NtRemoveIoCompletion);
-GUEST_FUNCTION_STUB(__imp__ObOpenObjectByPointer);
-GUEST_FUNCTION_STUB(__imp__ObLookupThreadByThreadId);
-GUEST_FUNCTION_STUB(__imp__KeSetDisableBoostThread);
+GUEST_FUNCTION_HOOK(__imp__ObOpenObjectByPointer, ObOpenObjectByPointer);
+GUEST_FUNCTION_HOOK(__imp__ObLookupThreadByThreadId, ObLookupThreadByThreadId);
+GUEST_FUNCTION_HOOK(__imp__KeSetDisableBoostThread, KeSetDisableBoostThread);
 GUEST_FUNCTION_HOOK(__imp__NtQueueApcThread, NtQueueApcThread);
 GUEST_FUNCTION_STUB(__imp__RtlCompareMemory);
 GUEST_FUNCTION_STUB(__imp__XamCreateEnumeratorHandle);
@@ -9297,14 +9392,14 @@ GUEST_FUNCTION_STUB(__imp__XMsgCancelIORequest);
 GUEST_FUNCTION_STUB(__imp__XamVoiceSubmitPacket);
 GUEST_FUNCTION_STUB(__imp__XamVoiceCreate);
 GUEST_FUNCTION_STUB(__imp__XAudioQueryDriverPerformance);
-GUEST_FUNCTION_STUB(__imp__KeTryToAcquireSpinLockAtRaisedIrql);
-GUEST_FUNCTION_STUB(__imp__KePulseEvent);
-GUEST_FUNCTION_STUB(__imp__MmAllocatePhysicalMemory);
+GUEST_FUNCTION_HOOK(__imp__KeTryToAcquireSpinLockAtRaisedIrql, KeTryToAcquireSpinLockAtRaisedIrql);
+GUEST_FUNCTION_HOOK(__imp__KePulseEvent, KePulseEvent);
+GUEST_FUNCTION_HOOK(__imp__MmAllocatePhysicalMemory, MmAllocatePhysicalMemory);
 GUEST_FUNCTION_STUB(__imp__XMASetInputBufferReadOffset);
 GUEST_FUNCTION_STUB(__imp__XMABlockWhileInUse);
 GUEST_FUNCTION_STUB(__imp__XMASetLoopData);
 GUEST_FUNCTION_HOOK(__imp__NtCancelTimer, NtCancelTimer);
-GUEST_FUNCTION_STUB(__imp__ObOpenObjectByName);
+GUEST_FUNCTION_HOOK(__imp__ObOpenObjectByName, ObOpenObjectByName);
 GUEST_FUNCTION_HOOK(__imp__NtPulseEvent, NtPulseEvent);
 GUEST_FUNCTION_HOOK(__imp__NtSignalAndWaitForSingleObjectEx, NtSignalAndWaitForSingleObjectEx);
 // Networking (XNet) stubs

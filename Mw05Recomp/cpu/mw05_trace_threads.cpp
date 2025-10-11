@@ -151,9 +151,8 @@ extern "C" void __imp__sub_8262DD80(PPCContext& ctx, uint8_t* base);
 // CRT initialization function that calls sub_8262DD80 in a loop
 extern "C" void __imp__sub_8262DE60(PPCContext& ctx, uint8_t* base);
 
-// Workaround: Start a background thread that continuously sets the flag.
-// The main thread at sub_82441CF0 waits for dword_82A2CF40 to become non-zero.
-// This flag should be set by sub_82442080, but the initialization chain is never triggered.
+// REAL FIX: Call sub_82442080 directly to set the unblock flag
+// This is what should happen naturally, but the initialization chain is broken
 extern "C" void UnblockMainThreadEarly() {
 	fprintf(stderr, "[UNBLOCK-DEBUG] UnblockMainThreadEarly called, enabled=%d\n", UnblockMainThreadEnabled());
 	fflush(stderr);
@@ -169,21 +168,39 @@ extern "C" void UnblockMainThreadEarly() {
 		return;
 	}
 
-	// Set the flag to 1 initially (big-endian)
-	*flag_ptr = __builtin_bswap32(1);
-
-	// Read it back to verify
-	uint32_t readback = __builtin_bswap32(*flag_ptr);
-	fprintf(stderr, "[UNBLOCK-DEBUG] Set flag ea=%08X to 1, readback=%u ptr=%p\n", flag_ea, readback, flag_ptr);
+	// REAL FIX: Call sub_82442080 directly instead of just setting the flag
+	// This function does the proper initialization and sets the flag
+	fprintf(stderr, "[UNBLOCK-DEBUG] Calling sub_82442080 to set unblock flag\n");
 	fflush(stderr);
-	KernelTraceHostOpF("HOST.UnblockMainThreadEarly set flag ea=%08X to 1, readback=%u ptr=%p", flag_ea, readback, flag_ptr);
+	KernelTraceHostOp("HOST.UnblockMainThreadEarly calling sub_82442080");
 
-	// Start background thread to keep setting the flag
-	if (!g_unblockThreadRunning.exchange(true, std::memory_order_acq_rel)) {
-		g_unblockThread = std::thread(UnblockThreadFunc);
-		fprintf(stderr, "[UNBLOCK-DEBUG] Started background thread\n");
+	PPCContext ctx{};
+	if (auto* cur = GetPPCContext()) {
+		ctx = *cur;
+	} else {
+		// Initialize a minimal context if none exists
+		ctx.r1.u32 = 0x7FEA0000; // Stack pointer
+		ctx.r3.u32 = 0;
+		ctx.r4.u32 = 0;
+	}
+	uint8_t* base = g_memory.base;
+	__imp__sub_82442080(ctx, base);
+
+	fprintf(stderr, "[UNBLOCK-DEBUG] sub_82442080 returned, checking flag\n");
+	fflush(stderr);
+	KernelTraceHostOp("HOST.UnblockMainThreadEarly sub_82442080 complete");
+
+	// Verify the flag was set
+	uint32_t flag_value = __builtin_bswap32(*flag_ptr);
+	fprintf(stderr, "[UNBLOCK-DEBUG] Flag at 0x%08X = 0x%08X\n", flag_ea, flag_value);
+	fflush(stderr);
+	KernelTraceHostOpF("HOST.UnblockMainThreadEarly flag=%08X", flag_value);
+
+	// Fallback: If sub_82442080 didn't set the flag, set it manually
+	if (flag_value == 0) {
+		fprintf(stderr, "[UNBLOCK-DEBUG] sub_82442080 didn't set flag, setting manually\n");
 		fflush(stderr);
-		KernelTraceHostOp("HOST.UnblockMainThreadEarly started background thread");
+		*flag_ptr = __builtin_bswap32(1);
 	}
 }
 
@@ -319,31 +336,9 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
     __imp__sub_82812ED0(ctx, base);
 }
 
-
-// Thread entry point that should call sub_82442080 to set the main thread unblock flag
-// This is a proper fix to replace the MW05_UNBLOCK_MAIN workaround
-void sub_824411E0(PPCContext& ctx, uint8_t* base) {
-    SetPPCContext(ctx);
-    KernelTraceHostOpF("HOST.ThreadEntry.824411E0 r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
-
-    // This thread entry is responsible for calling sub_82442080 which sets dword_82A2CF40
-    // The condition check in the original code (at 0x8244129C) looks at dword_828FBB50
-    // and calls sub_82442080 when dword_828FBB50 == 1
-    // We'll ensure the condition is met by setting it to 1 before calling the original function
-    const uint32_t condition_flag_ea = 0x828FBB50;
-    if (uint32_t* flag_ptr = static_cast<uint32_t*>(g_memory.Translate(condition_flag_ea))) {
-        uint32_t current = __builtin_bswap32(*flag_ptr);
-        KernelTraceHostOpF("HOST.ThreadEntry.824411E0 condition_flag ea=%08X current=%u", condition_flag_ea, current);
-
-        // Set the condition flag to 1 to ensure sub_82442080 gets called
-        // This will cause the code path at 0x824412A8 to execute: bl sub_82442080
-        *flag_ptr = __builtin_bswap32(1);
-        KernelTraceHostOpF("HOST.ThreadEntry.824411E0 set condition_flag to 1");
-    }
-
-    __imp__sub_824411E0(ctx, base);
-    KernelTraceHostOp("HOST.ThreadEntry.824411E0 complete");
-}
+// NOTE: sub_824411E0 is NOT a thread entry point - it's called directly via bl instruction
+// It's a regular function that's part of the game's initialization sequence
+// The recompiled PPC code will call it naturally, no wrapper needed
 
 // Helper to check if CRT init loop breaking is enabled
 static inline bool BreakCRTInitLoopEnabled() {

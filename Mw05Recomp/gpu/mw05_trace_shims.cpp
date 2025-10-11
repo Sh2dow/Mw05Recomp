@@ -1334,12 +1334,46 @@ void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
 
 // Main loop caller shim observed in logs (lr=82441D4C around TitleState calls)
 void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOpF("sub_82441CF0.lr=%08llX r3=%08X r4=%08X r5=%08X",
-                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    // Log the sleep-skip flag value at 0x82A1FF40
+    // The main loop checks this address: if it's non-zero, it skips sleep and calls frame update
+    if (count < 10) {
+        uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
+        KernelTraceHostOpF("sub_82441CF0.entry lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X r3=%08X r4=%08X r5=%08X",
+                          (unsigned long long)ctx.lr, count, sleepSkipFlag, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    } else if ((count % 1000) == 0) {
+        // Log occasionally to track progress
+        uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
+        KernelTraceHostOpF("sub_82441CF0.periodic lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X",
+                          (unsigned long long)ctx.lr, count, sleepSkipFlag);
+    }
+
+    // DISABLED: We now set the flag in sub_8262DE60 wrapper instead
+    // This was setting it to the wrong value (2 instead of 0)
+    // Keeping this code here for reference but commented out
+    /*
+    static const bool s_force_sleep_flag = [](){
+        if (const char* v = std::getenv("MW05_FORCE_SLEEP_FLAG"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true;  // Enable by default!
+    }();
+
+    if (s_force_sleep_flag) {
+        PPC_STORE_U32(0x82A1FF40, 0);  // Force to 0 to make sleep check call sleep
+        if (count < 10) {
+            KernelTraceHostOpF("sub_82441CF0.forced_sleep_flag_to_0 count=%llu", count);
+        }
+    }
+    */
+
     // Heuristic: r5 looks like a small control block observed at TitleState; capture as scheduler seed
     Mw05Trace_ConsiderSchedR3(ctx.r5.u32);
-    DumpEAWindow("82441CF0.r5", ctx.r5.u32);
-    DumpSchedState("82441CF0", ctx.r5.u32);
+    if (count < 10) {
+        DumpEAWindow("82441CF0.r5", ctx.r5.u32);
+        DumpSchedState("82441CF0", ctx.r5.u32);
+    }
 
     static const bool s_loop_try_pm4_pre = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_PRE")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
     static const bool s_loop_try_pm4 = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4")) return !(v[0]=='0' && v[1]=='\0'); return false; }();

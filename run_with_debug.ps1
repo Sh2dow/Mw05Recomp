@@ -82,7 +82,7 @@ $env:MW05_ISR_PRESENT_INTERVAL = "10"  # Call every 10 frames (~166ms at 60Hz)
 
 
 $p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.exe" -PassThru -RedirectStandardError ".\debug_stderr.txt"
-Start-Sleep -Seconds 120
+Start-Sleep -Seconds 20
 Stop-Process -Id $p.Id -Force
 Start-Sleep -Seconds 2
 Write-Host "`n=== STDERR DEBUG OUTPUT ==="

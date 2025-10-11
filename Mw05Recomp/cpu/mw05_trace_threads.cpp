@@ -18,8 +18,9 @@ extern "C" {
     void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_824411E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82442080(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
+    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);
     void __imp__sub_8262F2A0(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_8262D9D0(PPCContext& ctx, uint8_t* base);  // Sleep function called from main loop
 
     uint32_t Mw05PeekSchedulerBlockEA();
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
@@ -400,15 +401,67 @@ void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
-    // Only log occasionally to reduce spam
+    // Check the sleep-skip flag at 0x82A1FF40 BEFORE calling the original
+    // The main loop checks this address: if it's non-zero, it skips sleep and calls this function
+    static std::atomic<uint64_t> s_lastLogCount{0};
     if (count < 10 || (count % 1000) == 0) {
-        KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu", ctx.lr, count);
+        uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
+        KernelTraceHostOpF("HOST.sub_8262DE60.called lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X",
+                          ctx.lr, count, sleepSkipFlag);
+        s_lastLogCount.store(count, std::memory_order_release);
     }
 
     // Always call the original - this is the frame update function!
     // DO NOT skip this or the game won't render
     __imp__sub_8262DE60(ctx, base);
+
+    // CRITICAL FIX: The game's main loop has a goto that should jump back to the sleep check,
+    // but for some reason the goto is not being executed! As a workaround, we'll call the
+    // sleep function directly from here to simulate the correct behavior.
+    static const bool s_force_sleep_call = [](){
+        if (const char* v = std::getenv("MW05_FORCE_SLEEP_CALL"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true;  // Enable by default!
+    }();
+
+    if (s_force_sleep_call) {
+        // Call the sleep function directly to make the game sleep between frames
+        // This is what SHOULD happen via the goto in the generated code, but doesn't
+        ctx.r3.s64 = 0;  // Set r3 to 0 (sleep parameter)
+        if (count < 10) {
+            KernelTraceHostOpF("HOST.sub_8262DE60.calling_sleep_directly count=%llu", count);
+        }
+        __imp__sub_8262D9D0(ctx, base);  // Call sleep function directly!
+    }
 }
+
+// Wrapper for sub_8262D9D0 - sleep function called from main loop
+// This is called when the sleep-skip flag at 0x82A1FF40 is ZERO
+void sub_8262D9D0(PPCContext& ctx, uint8_t* base) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    // Log every call - this should be called if the sleep-skip flag is ZERO
+    KernelTraceHostOpF("HOST.sub_8262D9D0.called lr=%08llX count=%llu r3=%08X",
+                      ctx.lr, count, ctx.r3.u32);
+
+    // Call the original
+    __imp__sub_8262D9D0(ctx, base);
+}
+
+// Wrapper for sub_8262D9A0 - another sleep function
+// NOTE: This function is not actually called in our implementation, but we keep the wrapper for logging
+// void sub_8262D9A0(PPCContext& ctx, uint8_t* base) {
+//     static std::atomic<uint64_t> s_callCount{0};
+//     uint64_t count = s_callCount.fetch_add(1);
+
+//     // Log every call
+//     KernelTraceHostOpF("HOST.sub_8262D9A0.called lr=%08llX count=%llu r3=%08X",
+//                       ctx.lr, count, ctx.r3.u32);
+
+//     // Call the original
+//     __imp__sub_8262D9A0(ctx, base);
+// }
 
 // Register the thread entry point hooks
 // These wrapper functions are registered via g_memory.InsertFunction in main.cpp

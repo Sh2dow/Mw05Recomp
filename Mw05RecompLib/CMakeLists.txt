@@ -18,11 +18,8 @@ target_compile_definitions(XenonRecomp PRIVATE
     XENON_RECOMP_CONFIG_FILE_PATH=\"${XENON_RECOMP_CONFIG_FILE_PATH}\"
     XENON_RECOMP_HEADER_FILE_PATH=\"${XENON_RECOMP_HEADER_FILE_PATH}\")
 
-set(MW05_RECOMP_PPC_RECOMPILED_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_config.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_context.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp_shared.h"
-)
+# Start with an empty list; generated headers are not hard-required at configure time.
+set(MW05_RECOMP_PPC_RECOMPILED_SOURCES)
 
 # Prefer a generated file list if present (created by bootstrap step)
 set(_MW05_PPC_LIST "${CMAKE_CURRENT_SOURCE_DIR}/ppc/generated_sources.cmake")
@@ -41,10 +38,13 @@ if (EXISTS ${_MW05_PPC_LIST})
     if (_ppc_len EQUAL 0)
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
     endif()
-    # Ensure mapping table TU is included even when using generated list
-    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
-    # Include local stubs to satisfy any rare missing symbols cleanly
-    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+    # Optionally include mapping table TU and local stubs if present
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+    endif()
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+    endif()
 else()
     # No generated list. If there are already generated files in-tree, use them.
     file(GLOB _ppc_existing "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.*.cpp")
@@ -56,9 +56,12 @@ else()
         # Bootstrap: include a tiny stub so CMake can configure without generated sources.
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
     endif()
-    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
-    # Add local stubs to cover any rare unmapped functions to keep link stable.
-    list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
+    endif()
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
+    endif()
 endif()
 
 add_custom_command(
@@ -149,12 +152,17 @@ target_compile_definitions(Mw05RecompLib PRIVATE _CRT_SECURE_NO_WARNINGS)
 # if (CMAKE_BUILD_TYPE MATCHES "Debug")
 #     target_compile_definitions(Mw05RecompLib PRIVATE MW05_ENABLE_MEM_GUARD)
 # endif()
-target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
-# Force-include our PPC trace glue so generated TUs log indirect-miss via logger
-if (MSVC)
-    target_compile_options(Mw05RecompLib PRIVATE /FIppc/ppc_trace_glue.h)
-else()
-    target_compile_options(Mw05RecompLib PRIVATE -include ppc/ppc_trace_glue.h)
+# Only enable PCH after generated header exists
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp_shared.h")
+    target_precompile_headers(Mw05RecompLib PUBLIC "ppc/ppc_recomp_shared.h")
+endif()
+# Force-include PPC trace glue only when generated context header is present
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_context.h")
+    if (MSVC)
+        target_compile_options(Mw05RecompLib PRIVATE /FIppc/ppc_trace_glue.h)
+    else()
+        target_compile_options(Mw05RecompLib PRIVATE -include ppc/ppc_trace_glue.h)
+    endif()
 endif()
 # Enable SSSE3 for generated PPC recompiler TUs that use _mm_shuffle_epi8
 # Build Mw05RecompLib with SSSE3 so PCH and all TUs share the same target features

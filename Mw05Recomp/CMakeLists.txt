@@ -359,26 +359,28 @@ if (MW05_GEN_INDIRECT_REDIRECTS)
 endif()
 
 # Generate a hardfix TU directly from extracted misses to ensure exact-address coverage
-set(PPC_INDIRECT_HARDFIX_CPP "${CMAKE_BINARY_DIR}/ppc_indirect_hardfix.gen.cpp")
-add_custom_command(
-    OUTPUT ${PPC_INDIRECT_HARDFIX_CPP}
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
-            ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
-                              -D_misses=${PPC_INDIRECT_MISSES_TXT}
-                              -D_html=${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
-                              -D_out=${PPC_INDIRECT_HARDFIX_CPP}
-                              -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_hardfix.cmake
-    DEPENDS ${PPC_INDIRECT_MISSES_TXT}
-            ${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
-            ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
-            ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
-    COMMENT "Generating hardfix indirect redirects from misses file"
-    VERBATIM)
-list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_HARDFIX_CPP})
-
-# Ensure the misses list is updated before compiling the app
-if (TARGET Mw05Recomp)
-    add_dependencies(Mw05Recomp ExtractIndirectMisses)
+if (MW05_GEN_INDIRECT_REDIRECTS_HARDFIX)
+    set(PPC_INDIRECT_HARDFIX_CPP "${CMAKE_BINARY_DIR}/ppc_indirect_hardfix.gen.cpp")
+    add_custom_command(
+        OUTPUT ${PPC_INDIRECT_HARDFIX_CPP}
+        COMMAND ${CMAKE_COMMAND} -E env PYTHONUTF8=1
+                ${CMAKE_COMMAND} -D_py=${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
+                                  -D_misses=${PPC_INDIRECT_MISSES_TXT}
+                                  -D_html=${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+                                  -D_out=${PPC_INDIRECT_HARDFIX_CPP}
+                                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_hardfix.cmake
+        DEPENDS ${PPC_INDIRECT_MISSES_TXT}
+                ${CMAKE_SOURCE_DIR}/tools/gen_indirect_hardfix_from_misses.py
+                ${CMAKE_SOURCE_DIR}/NfsMWEurope.xex.html
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_python_script_redirects.cmake
+        COMMENT "Generating hardfix indirect redirects from misses file"
+        VERBATIM)
+    list(APPEND MW05_RECOMP_CXX_SOURCES ${PPC_INDIRECT_HARDFIX_CPP})
+    
+    # Ensure the misses list is updated before compiling the app
+    if (TARGET Mw05Recomp)
+        add_dependencies(Mw05Recomp ExtractIndirectMisses)
+    endif()
 endif()
 
 # Optional: auto-generate import stubs for __imp__ functions
@@ -510,6 +512,7 @@ endif()
 target_compile_definitions(Mw05Recomp PRIVATE
     SDL_ENABLE_OLD_NAMES=1
     MW05_GEN_INDIRECT_REDIRECTS=$<BOOL:${MW05_GEN_INDIRECT_REDIRECTS}>
+    MW05_GEN_INDIRECT_REDIRECTS_HARDFIX=$<BOOL:${MW05_GEN_INDIRECT_REDIRECTS_HARDFIX}>
     MW05_ENABLE_UNLEASHED=$<BOOL:${MW05_ENABLE_UNLEASHED}>
     MW05_ENABLE_IMPLOT=$<BOOL:${MW05_ENABLE_IMPLOT}>)
 

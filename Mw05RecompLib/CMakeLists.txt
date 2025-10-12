@@ -21,7 +21,7 @@ target_compile_definitions(XenonRecomp PRIVATE
 # Start with an empty list; generated headers are not hard-required at configure time.
 set(MW05_RECOMP_PPC_RECOMPILED_SOURCES)
 
-# Prefer a generated file list if present (created by bootstrap step)
+# Prefer a generated file list if present (created by genlist stage)
 set(_MW05_PPC_LIST "${CMAKE_CURRENT_SOURCE_DIR}/ppc/generated_sources.cmake")
 if (EXISTS ${_MW05_PPC_LIST})
     include(${_MW05_PPC_LIST})
@@ -36,7 +36,11 @@ if (EXISTS ${_MW05_PPC_LIST})
     # If the generated list was stale/empty, fall back to bootstrap stub
     list(LENGTH MW05_RECOMP_PPC_RECOMPILED_SOURCES _ppc_len)
     if (_ppc_len EQUAL 0)
-        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
+        set(_bootstrap_stub "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
+        if (NOT EXISTS "${_bootstrap_stub}")
+            file(WRITE "${_bootstrap_stub}" "// Bootstrap stub for Mw05RecompLib\nnamespace mw05::ppc { void bootstrap_stub() {} }\n")
+        endif()
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${_bootstrap_stub}")
     endif()
     # Optionally include mapping table TU and local stubs if present
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
@@ -46,15 +50,21 @@ if (EXISTS ${_MW05_PPC_LIST})
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_missing_stubs.cpp")
     endif()
 else()
-    # No generated list. If there are already generated files in-tree, use them.
+    # No generated list. Create bootstrap stub if needed for fresh clone.
+    set(_bootstrap_stub "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
+    if (NOT EXISTS "${_bootstrap_stub}")
+        file(WRITE "${_bootstrap_stub}" "// Bootstrap stub for Mw05RecompLib\nnamespace mw05::ppc { void bootstrap_stub() {} }\n")
+    endif()
+
+    # If there are already generated files in-tree, use them.
     file(GLOB _ppc_existing "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_recomp.*.cpp")
     list(LENGTH _ppc_existing _ppc_existing_len)
     if (_ppc_existing_len GREATER 0)
         list(SORT _ppc_existing)
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES ${_ppc_existing})
     else()
-        # Bootstrap: include a tiny stub so CMake can configure without generated sources.
-        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_bootstrap_stub.cpp")
+        # Bootstrap: include the stub so CMake can configure without generated sources.
+        list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${_bootstrap_stub}")
     endif()
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")
         list(APPEND MW05_RECOMP_PPC_RECOMPILED_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ppc/ppc_func_mapping.cpp")

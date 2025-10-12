@@ -21,6 +21,8 @@ extern "C" {
     void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);
     void __imp__sub_8262F2A0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_8262D9D0(PPCContext& ctx, uint8_t* base);  // Sleep function called from main loop
+    void __imp__sub_82813598(PPCContext& ctx, uint8_t* base);  // Worker thread initialization
+    void __imp__sub_82813678(PPCContext& ctx, uint8_t* base);  // Worker thread shutdown
 
     uint32_t Mw05PeekSchedulerBlockEA();
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
@@ -282,8 +284,34 @@ void sub_828508A8(PPCContext& ctx, uint8_t* base) {
 
 
 void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
-    fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called!\n");
+    fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called! r3=0x%08X\n", ctx.r3.u32);
     fflush(stderr);
+
+    // Check what's at the context address
+    if (ctx.r3.u32 != 0) {
+        uint32_t* ctx_ptr = (uint32_t*)(base + ctx.r3.u32);
+        fprintf(stderr, "[WRAPPER_82812ED0] Context structure at 0x%08X:\n", ctx.r3.u32);
+        fprintf(stderr, "  +0x00 (state):    0x%08X\n", __builtin_bswap32(ctx_ptr[0]));
+        fprintf(stderr, "  +0x04 (func_ptr): 0x%08X\n", __builtin_bswap32(ctx_ptr[1]));
+        fprintf(stderr, "  +0x08 (context):  0x%08X\n", __builtin_bswap32(ctx_ptr[2]));
+
+        // CORRUPTION DETECTION: Check if function pointer is corrupted
+        uint32_t func_ptr = __builtin_bswap32(ctx_ptr[1]);
+        const uint32_t expected_func_ptr = 0x828134E0;
+        if (func_ptr != expected_func_ptr) {
+            fprintf(stderr, "[CORRUPTION-DETECTED] Function pointer corrupted!\n");
+            fprintf(stderr, "  Expected: 0x%08X\n", expected_func_ptr);
+            fprintf(stderr, "  Actual:   0x%08X\n", func_ptr);
+            fprintf(stderr, "  Context address: 0x%08X\n", ctx.r3.u32);
+            fprintf(stderr, "  Memory address: %p\n", &ctx_ptr[1]);
+
+            // FIX: Restore the correct function pointer
+            fprintf(stderr, "[CORRUPTION-FIX] Restoring correct function pointer...\n");
+            ctx_ptr[1] = __builtin_bswap32(expected_func_ptr);
+            fprintf(stderr, "[CORRUPTION-FIX] Function pointer restored to 0x%08X\n", expected_func_ptr);
+        }
+        fflush(stderr);
+    }
 
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.ThreadEntry.82812ED0");
@@ -336,7 +364,14 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
 
     if(KickVideoInitEnabled()) KickMinimalVideo();
 	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
+
+    fprintf(stderr, "[WRAPPER_82812ED0] About to call __imp__sub_82812ED0\n");
+    fflush(stderr);
+
     __imp__sub_82812ED0(ctx, base);
+
+    fprintf(stderr, "[WRAPPER_82812ED0] __imp__sub_82812ED0 returned\n");
+    fflush(stderr);
 }
 
 // NOTE: sub_824411E0 is NOT a thread entry point - it's called directly via bl instruction
@@ -472,6 +507,99 @@ void sub_8262D9D0(PPCContext& ctx, uint8_t* base) {
 //     // Call the original
 //     __imp__sub_8262D9A0(ctx, base);
 // }
+
+// Worker thread initialization function (sets up qword_828F1F98 and creates Thread #2)
+void sub_82813598(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[WORKER-INIT] sub_82813598 CALLED - Worker thread initialization!\n");
+    fprintf(stderr, "[WORKER-INIT] Parameters: r3=0x%08X (used for division!)\n", ctx.r3.u32);
+    fprintf(stderr, "[WORKER-INIT] This function should:\n");
+    fprintf(stderr, "[WORKER-INIT]   1. Create event (call sub_8284E6C0)\n");
+    fprintf(stderr, "[WORKER-INIT]   2. Calculate: divw r9, 0xFF676980, r3 (r3 MUST be > 0!)\n");
+    fprintf(stderr, "[WORKER-INIT]   3. Store r9 into qword_828F1F98\n");
+    fprintf(stderr, "[WORKER-INIT]   4. Create Thread #2 (call sub_82813418)\n");
+
+    // Check if r3 is valid for division
+    if (ctx.r3.u32 == 0) {
+        fprintf(stderr, "[WORKER-INIT] ERROR: r3 is 0! Division will fail and trap!\n");
+        fprintf(stderr, "[WORKER-INIT] This will prevent qword_828F1F98 from being set!\n");
+    } else {
+        // Calculate what the value should be
+        int32_t r10 = (int32_t)0xFF676980;
+        int32_t r30 = (int32_t)ctx.r3.u32;
+        int32_t r9 = r10 / r30;
+        int64_t r11 = (int64_t)r9; // extsw - sign extend
+        fprintf(stderr, "[WORKER-INIT] Expected calculation: 0x%08X / 0x%08X = 0x%08X (sign-extended: 0x%016llX)\n",
+                (uint32_t)r10, (uint32_t)r30, (uint32_t)r9, (uint64_t)r11);
+    }
+
+    // Check qword_828F1F98 BEFORE initialization
+    const uint32_t qword_addr = 0x828F1F98;
+    void* qword_host = g_memory.Translate(qword_addr);
+    if (qword_host) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        uint64_t value_before = __builtin_bswap64(*qword_ptr);
+        fprintf(stderr, "[WORKER-INIT] BEFORE: qword_828F1F98 = 0x%016llX\n", value_before);
+    }
+
+    // WORKAROUND: Set the flag BEFORE calling the function, so it's set before Thread #2 is created
+    if (qword_host && ctx.r3.u32 > 0) {
+        int32_t r10 = (int32_t)0xFF676980;
+        int32_t r30 = (int32_t)ctx.r3.u32;
+        int32_t r9 = r10 / r30;
+        int64_t r11 = (int64_t)r9; // extsw - sign extend
+        uint64_t value_to_set = (uint64_t)r11;
+
+        fprintf(stderr, "[WORKER-INIT] WORKAROUND: Pre-setting qword_828F1F98 to 0x%016llX (BEFORE thread creation)\n", value_to_set);
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        *qword_ptr = __builtin_bswap64(value_to_set);
+    }
+    fflush(stderr);
+
+    SetPPCContext(ctx);
+    __imp__sub_82813598(ctx, base);
+
+    // Check qword_828F1F98 AFTER initialization
+    if (qword_host) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        uint64_t value_after = __builtin_bswap64(*qword_ptr);
+        fprintf(stderr, "[WORKER-INIT] AFTER: qword_828F1F98 = 0x%016llX\n", value_after);
+        if (value_after == 0) {
+            fprintf(stderr, "[WORKER-INIT] WARNING: qword_828F1F98 is still 0! Worker thread will exit immediately!\n");
+
+            // WORKAROUND: Manually set the value that should have been set
+            if (ctx.r3.u32 > 0) {
+                int32_t r10 = (int32_t)0xFF676980;
+                int32_t r30 = (int32_t)ctx.r3.u32;
+                int32_t r9 = r10 / r30;
+                int64_t r11 = (int64_t)r9; // extsw - sign extend
+                uint64_t value_to_set = (uint64_t)r11;
+
+                fprintf(stderr, "[WORKER-INIT] WORKAROUND: Manually setting qword_828F1F98 to 0x%016llX\n", value_to_set);
+                *qword_ptr = __builtin_bswap64(value_to_set);
+
+                uint64_t value_verify = __builtin_bswap64(*qword_ptr);
+                fprintf(stderr, "[WORKER-INIT] WORKAROUND: Verified qword_828F1F98 = 0x%016llX\n", value_verify);
+            }
+        } else {
+            fprintf(stderr, "[WORKER-INIT] SUCCESS: qword_828F1F98 is set to non-zero value!\n");
+        }
+    }
+
+    fprintf(stderr, "[WORKER-INIT] sub_82813598 RETURNED\n");
+    fflush(stderr);
+}
+
+// Worker thread shutdown function (sets qword_828F1F98 to 0 and waits for Thread #2 to exit)
+void sub_82813678(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[WORKER-SHUTDOWN] sub_82813678 CALLED - Worker thread shutdown!\n");
+    fflush(stderr);
+
+    SetPPCContext(ctx);
+    __imp__sub_82813678(ctx, base);
+
+    fprintf(stderr, "[WORKER-SHUTDOWN] sub_82813678 RETURNED\n");
+    fflush(stderr);
+}
 
 // Register the thread entry point hooks
 // These wrapper functions are registered via g_memory.InsertFunction in main.cpp

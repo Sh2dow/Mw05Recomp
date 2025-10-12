@@ -3621,11 +3621,18 @@ static void InitVmArenaOnce()
         if (phys_begin_guest > heap_end_guest)
         {
             g_vmArena.Init(heap_end_guest, phys_begin_guest - heap_end_guest);
+            fprintf(stderr, "[VMARENA-INIT] Initialized VmArena: base=0x%08X size=0x%08X (%.2f MB)\n",
+                    heap_end_guest, phys_begin_guest - heap_end_guest,
+                    (phys_begin_guest - heap_end_guest) / (1024.0 * 1024.0));
+            fprintf(stderr, "[VMARENA-INIT] Range: [0x%08X, 0x%08X)\n", heap_end_guest, phys_begin_guest);
+            fflush(stderr);
         }
         else
         {
             // Fallback: if unexpected ordering, initialize a no-op arena to avoid crashes.
             g_vmArena.Init(0, 0);
+            fprintf(stderr, "[VMARENA-INIT] WARNING: Unexpected heap ordering, VmArena disabled!\n");
+            fflush(stderr);
         }
     });
 }
@@ -4405,6 +4412,14 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                                             uint32_t Alertable,
                                             be<int64_t>* Timeout)
 {
+    static std::atomic<int> s_waitCount{0};
+    int count = s_waitCount.fetch_add(1);
+    if (count < 10) {  // Log first 10 waits
+        fprintf(stderr, "[NtWaitForSingleObjectEx] Call #%d: Handle=0x%08X WaitMode=%u Alertable=%u\n",
+                count + 1, Handle, WaitMode, Alertable);
+        fflush(stderr);
+    }
+
     const bool fastBoot  = Mw05FastBootEnabled();
     const bool listShims = Mw05ListShimsEnabled();
     static const auto t0 = std::chrono::steady_clock::now();
@@ -4800,7 +4815,14 @@ uint32_t MmQueryStatistics(XMM_STATS* out_stats)
 
 uint32_t NtCreateEvent(be<uint32_t>* handle, void* objAttributes, uint32_t eventType, uint32_t initialState)
 {
+    fprintf(stderr, "[NtCreateEvent] CALLED: eventType=%u initialState=%u\n", eventType, initialState);
+    fflush(stderr);
+
     *handle = GetKernelHandle(CreateKernelObject<Event>(!eventType, !!initialState));
+
+    fprintf(stderr, "[NtCreateEvent] Created event handle=0x%08X\n", (uint32_t)*handle);
+    fflush(stderr);
+
     return 0;
 }
 
@@ -7629,6 +7651,13 @@ uint32_t MmAllocatePhysicalMemoryEx
         fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p\n",
                 size, size / (1024.0 * 1024.0), result, ptr);
         fflush(stderr);
+
+        // TRACE: Log small allocations that might be context structures
+        if (size >= 12 && size <= 64) {
+            fprintf(stderr, "[CONTEXT-TRACE] Small allocation: size=%u guest=%08X (might be context structure)\n",
+                    size, result);
+            fflush(stderr);
+        }
     }
 
     return result;
@@ -8760,6 +8789,59 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
         ++s_thread_count, startAddress, startContext, creationFlags,
         is_suspended ? "SUSPENDED" : "RUNNING");
     fflush(stderr);
+
+    // TRACE: For Thread #2, dump the context structure
+    if (startAddress == 0x82812ED0) {
+        fprintf(stderr, "[THREAD2-TRACE] Thread #2 being created with ctx=%08X\n", startContext);
+        if (startContext != 0) {
+            void* ctx_host = g_memory.Translate(startContext);
+            if (ctx_host) {
+                uint32_t* ctx_ptr = (uint32_t*)ctx_host;
+                fprintf(stderr, "[THREAD2-TRACE] Context at %08X:\n", startContext);
+                fprintf(stderr, "  +0x00: 0x%08X\n", __builtin_bswap32(ctx_ptr[0]));
+                fprintf(stderr, "  +0x04: 0x%08X\n", __builtin_bswap32(ctx_ptr[1]));
+                fprintf(stderr, "  +0x08: 0x%08X\n", __builtin_bswap32(ctx_ptr[2]));
+                fprintf(stderr, "  +0x0C: 0x%08X\n", __builtin_bswap32(ctx_ptr[3]));
+
+                // Save the valid function pointer for later verification
+                static uint32_t s_saved_func_ptr = 0;
+                static uint32_t s_context_addr = 0;
+                static void* s_context_host_ptr = nullptr;
+                s_saved_func_ptr = __builtin_bswap32(ctx_ptr[1]);
+                s_context_addr = startContext;
+                s_context_host_ptr = ctx_host;
+                fprintf(stderr, "[THREAD2-TRACE] Saved function pointer: 0x%08X at guest=%08X host=%p\n",
+                        s_saved_func_ptr, s_context_addr, s_context_host_ptr);
+
+                // Start a monitoring thread to detect when corruption happens
+                static std::atomic<bool> s_monitor_started{false};
+                if (!s_monitor_started.exchange(true)) {
+                    uint32_t saved_func = s_saved_func_ptr;
+                    uint32_t ctx_addr = s_context_addr;
+                    std::thread([ctx_ptr, saved_func, ctx_addr]() {
+                        fprintf(stderr, "[CORRUPTION-MONITOR] Started monitoring context at 0x%08X\n", ctx_addr);
+                        for (int i = 0; i < 100; ++i) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                            uint32_t current_func_ptr = __builtin_bswap32(ctx_ptr[1]);
+                            if (current_func_ptr != saved_func) {
+                                fprintf(stderr, "[CORRUPTION-MONITOR] CORRUPTION DETECTED at iteration %d!\n", i);
+                                fprintf(stderr, "  Expected: 0x%08X\n", saved_func);
+                                fprintf(stderr, "  Current:  0x%08X\n", current_func_ptr);
+                                fprintf(stderr, "  Time: ~%d ms after thread creation\n", i * 10);
+                                fflush(stderr);
+                                break;
+                            }
+                        }
+                        fprintf(stderr, "[CORRUPTION-MONITOR] Monitoring ended\n");
+                        fflush(stderr);
+                    }).detach();
+                }
+            } else {
+                fprintf(stderr, "[THREAD2-TRACE] Context address %08X is NOT MAPPED!\n", startContext);
+            }
+        }
+        fflush(stderr);
+    }
 
     uint32_t hostThreadId;
 

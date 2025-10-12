@@ -939,6 +939,16 @@ int main(int argc, char *argv[])
     g_memory.InsertFunction(0x828134E0, sub_828134E0);
     fprintf(stderr, "[MAIN] after_sub_828134E0_install\n"); fflush(stderr);
 
+    // Install wrappers for worker thread init/shutdown functions
+    extern void sub_82813598(PPCContext&, uint8_t*);
+    extern void sub_82813678(PPCContext&, uint8_t*);
+    fprintf(stderr, "[MAIN] before_sub_82813598_install (worker init)\n"); fflush(stderr);
+    g_memory.InsertFunction(0x82813598, sub_82813598);
+    fprintf(stderr, "[MAIN] after_sub_82813598_install\n"); fflush(stderr);
+    fprintf(stderr, "[MAIN] before_sub_82813678_install (worker shutdown)\n"); fflush(stderr);
+    g_memory.InsertFunction(0x82813678, sub_82813678);
+    fprintf(stderr, "[MAIN] after_sub_82813678_install\n"); fflush(stderr);
+
     // Install wrapper for string formatting function to detect infinite loops
     extern void sub_8262DD80(PPCContext&, uint8_t*);
     fprintf(stderr, "[MAIN] before_sub_8262DD80_install\n"); fflush(stderr);

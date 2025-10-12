@@ -40,14 +40,62 @@
 
 ## Critical Debugging Information
 
-### Current Status: THREADS WORKING - Game Calls NtResumeThread Correctly
-**DISCOVERY**: Game DOES call NtResumeThread to resume suspended threads! CREATE_SUSPENDED flag is honored correctly.
-**THREADS CREATED**: Thread #1 (0x828508A8), Thread #2 (0x82812ED0), Thread #3 (0x82849D40) - all created and resumed.
-**THREAD #1**: Running, allocating memory, creating other threads.
-**THREAD #2**: Created, resumed by NtResumeThread, completes immediately (expected behavior for worker thread).
-**THREAD #3**: Created at tick 300 (video thread).
-**LOGGING ADDED**: Comprehensive thread lifecycle logging in ExCreateThread, NtResumeThread, GuestThreadFunc.
-**NEXT STEP**: Monitor for additional thread creation and draw commands. Check if Thread #3 executes and creates render threads.
+### Current Status: ROOT CAUSE FOUND - Context Structure Not Initialized!
+**XENIA DEBUG COMPLETE**: Analyzed Thread #2 (0x82812ED0) with assembly disassembly and memory dumps.
+**FUNCTION ANALYSIS**: `sub_82812ED0` is a TRAMPOLINE function that:
+  1. Takes context structure pointer in r3
+  2. Loads function pointer from *(r3 + 4)
+  3. Loads context parameter from *(r3 + 8)
+  4. Calls the function pointer with the context
+  5. Returns
+**CONTEXT STRUCTURE** (at offset r3):
+  ```c
+  struct ThreadContext {
+      uint32_t state;        // +0x00 - set to 1 before calling
+      uint32_t function_ptr; // +0x04 - function to call
+      uint32_t context;      // +0x08 - parameter to pass
+  };
+  ```
+**OUR PROBLEM**: Context at 0x00120E10 contains GARBAGE:
+  - +0x00 (state): 0x00000000 (OK, will be set to 1)
+  - +0x04 (func_ptr): 0xE0348182 (GARBAGE! Not a valid function pointer!)
+  - +0x08 (context): 0x00000000 (OK)
+**ROOT CAUSE**: Thread #1 (0x828508A8) is NOT initializing the context structure before creating Thread #2.
+**XENIA BEHAVIOR**: Thread #2 created with ctx=0x701EFAF0, which is properly initialized before thread creation.
+**KEY FINDING**: Context addresses are DIFFERENT!
+  - Xenia: ctx=0x701EFAF0 (heap memory, 0x70000000 range)
+  - Ours: ctx=0x00120E10 (XEX data section, 0x00100000 range)
+**CRITICAL DISCOVERY**: Context is CORRUPTED between thread creation and execution!
+  - At ExCreateThread: +0x04 = 0x828134E0 (VALID function pointer!)
+  - At wrapper execution: +0x04 = 0xE0348182 (GARBAGE!)
+  - Something overwrites memory at 0x00120E10 + 4 after thread creation
+**ROOT CAUSE FOUND**: NOT corruption - BYTE-SWAPPING ERROR!
+  - 0x828134E0 (big-endian) = 0xE0348182 (little-endian)
+  - Context was always correct, just read wrong (missing __builtin_bswap32)
+  - Fixed byte-swapping in wrapper - function pointer now reads correctly
+**NEW PROBLEM**: Thread #2 still completes immediately instead of running worker loop
+**INVESTIGATION**: Worker function sub_828134E0 checks qword_828F1F98 after wait
+  - If qword_828F1F98 == 0, worker exits immediately (line 0x8281351C: beq cr6, loc_82813580)
+  - This is likely a "should continue running" flag that needs to be initialized
+**VM ARENA**: VmArena is initialized at [0x7FEA0000, 0xA0000000) = 513 MB (correct!)
+  - Context at 0x00120E10 is in XEX data section (static variable, not heap-allocated)
+  - This is correct - Xenia also uses static context, just at different address
+**ROOT CAUSE FOUND**: sub_82813598 (worker init function) IS being called, but qword_828F1F98 remains 0!
+  - BEFORE sub_82813598: qword_828F1F98 = 0x0000000000000000
+  - AFTER sub_82813598: qword_828F1F98 = 0x0000000000000000
+  - The initialization function is NOT setting the flag!
+  - This causes Thread #2 to exit immediately when it checks the flag
+**DEEPER INVESTIGATION**: Assembly shows `std r11, (qword_828F1F98)` at line 0x8281363C
+  - r11 should contain: divw(0xFF676980, r3) sign-extended = 0xFFFFFFFFFFFE7960 (when r3=0x64)
+  - But recompiled code stores 0 instead!
+  - Workaround: Manually setting flag BEFORE function call works, but recompiled code overwrites it back to 0
+**RECOMPILER BUG**: The PPC recompiler is not correctly executing the `std` instruction or the division/sign-extension
+  - Either r11 is being calculated as 0 (division bug)
+  - Or the `std` instruction is storing the wrong value
+  - This is a bug in the PPC-to-x64 recompilation process
+**WORKAROUND IMPLEMENTED**: Manually setting qword_828F1F98 after sub_82813598 returns (in mw05_trace_threads.cpp)
+**RECOMPILER FIX NEEDED**: See RECOMPILER_BUG_INVESTIGATION.md for detailed instructions to fix XenonRecomp
+**NEXT STEP**: Either fix the recompiler (long-term) or verify the workaround allows Thread #2 to run correctly (short-term).
 
 ### Key Findings
 1. **VBlank pump working** - Fixed in previous iteration, VBlank ticks are happening

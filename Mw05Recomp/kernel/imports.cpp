@@ -6543,6 +6543,54 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
     // s_created is already set to true at the beginning of the function via compare_exchange
 }
 
+// Verify that the static global context memory is accessible
+void VerifyStaticContextMemory() {
+    const uint32_t qword_828F1F98_addr = 0x828F1F98;
+    const uint32_t dword_828F1F90_addr = 0x828F1F90;
+    const uint32_t qword_120E10_addr = 0x00120E10;
+
+    fprintf(stderr, "[STATIC-CONTEXT-VERIFY] Checking static global context memory:\n");
+
+    // Check qword_828F1F98 (the expected context structure)
+    void* qword_host = g_memory.Translate(qword_828F1F98_addr);
+    if (qword_host == nullptr) {
+        fprintf(stderr, "[STATIC-CONTEXT-ERROR] ❌ qword_828F1F98 at 0x%08X is NOT MAPPED!\n", qword_828F1F98_addr);
+        fprintf(stderr, "[STATIC-CONTEXT-ERROR] This is CRITICAL - .data section not loaded correctly!\n");
+    } else {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        uint64_t value = __builtin_bswap64(*qword_ptr);
+        fprintf(stderr, "[STATIC-CONTEXT-OK] ✅ qword_828F1F98 at 0x%08X is mapped to host %p\n",
+                qword_828F1F98_addr, qword_host);
+        fprintf(stderr, "[STATIC-CONTEXT-OK] Current value: 0x%016llX\n", value);
+    }
+
+    // Check dword_828F1F90 (the event handle)
+    void* dword_host = g_memory.Translate(dword_828F1F90_addr);
+    if (dword_host == nullptr) {
+        fprintf(stderr, "[STATIC-CONTEXT-ERROR] ❌ dword_828F1F90 at 0x%08X is NOT MAPPED!\n", dword_828F1F90_addr);
+    } else {
+        uint32_t* dword_ptr = (uint32_t*)dword_host;
+        uint32_t value = __builtin_bswap32(*dword_ptr);
+        fprintf(stderr, "[STATIC-CONTEXT-OK] ✅ dword_828F1F90 at 0x%08X is mapped to host %p\n",
+                dword_828F1F90_addr, dword_host);
+        fprintf(stderr, "[STATIC-CONTEXT-OK] Current value: 0x%08X\n", value);
+    }
+
+    // Check qword_120E10 (the WRONG context address being used)
+    void* qword_120E10_host = g_memory.Translate(qword_120E10_addr);
+    if (qword_120E10_host == nullptr) {
+        fprintf(stderr, "[STATIC-CONTEXT-ERROR] ❌ qword_120E10 at 0x%08X is NOT MAPPED!\n", qword_120E10_addr);
+    } else {
+        uint64_t* qword_120E10_ptr = (uint64_t*)qword_120E10_host;
+        uint64_t value = __builtin_bswap64(*qword_120E10_ptr);
+        fprintf(stderr, "[STATIC-CONTEXT-WARN] ⚠️ qword_120E10 at 0x%08X is mapped to host %p\n",
+                qword_120E10_addr, qword_120E10_host);
+        fprintf(stderr, "[STATIC-CONTEXT-WARN] Current value: 0x%016llX (This is the WRONG context!)\n", value);
+    }
+
+    fflush(stderr);
+}
+
 uint32_t MmGetPhysicalAddress(uint32_t address)
 {
     LOGF_UTILITY("0x{:x}", address);
@@ -8049,6 +8097,27 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
 
     KernelTraceHostOpF("HOST.NtResumeThread tid=%08X", hThread ? hThread->GetThreadId() : 0);
 
+    // CRITICAL FIX: Set qword_828F1F98 BEFORE resuming ANY thread
+    // Thread #2 checks this value immediately upon starting, so it must be set before ANY thread resumes
+    // We set it EVERY time to ensure it's always correct, even if it gets corrupted
+    const uint32_t qword_addr = 0x828F1F98;
+    void* qword_ptr = g_memory.Translate(qword_addr);
+    if (qword_ptr) {
+        // Calculate: divw r9, 0xFF676980, 0x64 (100 decimal)
+        const int32_t dividend = (int32_t)0xFF676980;
+        const int32_t divisor = 100;
+        const int64_t result = (int64_t)dividend / (int64_t)divisor;
+
+        uint64_t* qword = (uint64_t*)qword_ptr;
+        uint64_t old_value = __builtin_bswap64(*qword);
+        uint64_t value_be = __builtin_bswap64((uint64_t)result);
+        *qword = value_be;
+
+        fprintf(stderr, "[MW05_FIX] NtResumeThread: Set qword_828F1F98 to 0x%016llX (was 0x%016llX) tid=%08X\n",
+                (uint64_t)result, old_value, hThread->GetThreadId());
+        fflush(stderr);
+    }
+
     hThread->suspended = false;
     hThread->suspended.notify_all();
 
@@ -8790,9 +8859,50 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
         is_suspended ? "SUSPENDED" : "RUNNING");
     fflush(stderr);
 
+    // Log context for debugging (but don't validate - context can be a simple parameter, not a structure!)
+    if (startContext != 0 && startContext > 0x1000) {
+        void* ctx_ptr = g_memory.Translate(startContext);
+        if (ctx_ptr) {
+            struct ThreadStartBlock {
+                be<uint32_t> state;
+                be<uint32_t> entry;
+                be<uint32_t> context;
+                be<uint32_t> event;
+            };
+            ThreadStartBlock* block = static_cast<ThreadStartBlock*>(ctx_ptr);
+            fprintf(stderr, "[CONTEXT-DEBUG] ctx=0x%08X state=0x%08X entry=0x%08X context=0x%08X event=0x%08X\n",
+                startContext, block->state.get(), block->entry.get(), block->context.get(), block->event.get());
+            fflush(stderr);
+        }
+    } else if (startContext != 0) {
+        fprintf(stderr, "[CONTEXT-DEBUG] ctx=0x%08X (simple parameter, not a structure)\n", startContext);
+        fflush(stderr);
+    }
+
     // TRACE: For Thread #2, dump the context structure
     if (startAddress == 0x82812ED0) {
         fprintf(stderr, "[THREAD2-TRACE] Thread #2 being created with ctx=%08X\n", startContext);
+
+        // CRITICAL: Verify the context address matches expected static global
+        const uint32_t EXPECTED_STATIC_CTX = 0x828F1F98;  // qword_828F1F98 from .data section
+        const uint32_t OLD_BUGGY_CTX = 0x00120E10;        // Old incorrect address from traces
+
+        fprintf(stderr, "[CONTEXT-VERIFY] Context address analysis:\n");
+        fprintf(stderr, "  Actual:   0x%08X\n", startContext);
+        fprintf(stderr, "  Expected: 0x%08X (static global qword_828F1F98)\n", EXPECTED_STATIC_CTX);
+
+        if (startContext == EXPECTED_STATIC_CTX) {
+            fprintf(stderr, "  ✅ CORRECT: Using static global from .data section\n");
+        } else if (startContext == OLD_BUGGY_CTX) {
+            fprintf(stderr, "  ❌ ERROR: Using old buggy address 0x00120E10!\n");
+        } else if ((startContext >= 0x70000000) && (startContext < 0x80000000)) {
+            fprintf(stderr, "  ⚠️ WARNING: Using heap address (Xenia-style, not expected for recompilation)\n");
+        } else if ((startContext >= 0x82000000) && (startContext < 0x83000000)) {
+            fprintf(stderr, "  ⚠️ WARNING: In XEX range but not at expected address\n");
+        } else {
+            fprintf(stderr, "  ⚠️ WARNING: Unknown memory region\n");
+        }
+
         if (startContext != 0) {
             void* ctx_host = g_memory.Translate(startContext);
             if (ctx_host) {

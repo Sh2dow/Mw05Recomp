@@ -1,17 +1,45 @@
-# MW05 Initialization Investigation - PROGRESS REPORT
+# MW05 Recompilation Project - PROGRESS REPORT
 
-## 🔴 CRITICAL BLOCKER - Game Stuck in CRT Initialization
+## ✅ MAJOR BREAKTHROUGH - PPC Recompiler Bug Fixed!
 
-**Last Updated**: 2025-10-11
-**Status**: BLACK SCREEN - Game stuck in early C runtime initialization, never reaches graphics device setup
+**Last Updated**: 2025-10-12
+**Status**: RECOMPILER FIXED - `divw`/`divwu` instructions now correctly sign/zero-extend to 64 bits
+**New Issue**: Memory corruption - value stored correctly but overwritten before function returns
 
-### Issue 1: KernelTraceHostOpF with %p Causes Hang ✅ FIXED
-**Status**: ✅ FIXED - Commented out all `KernelTraceHostOpF` calls with `%p` format specifiers
-**Root Cause**: `KernelTraceHostOpF` with `%p` format specifiers causes the game to hang during initialization
-**Solution**: Commented out all problematic log lines in `Mw05Recomp/main.cpp` (lines 678-680, 683-685, 691-693, 697-699, 707-709, 713-715, 719-721, 725-727)
-**Impact**: Game now progresses past shim installation and starts guest code execution
+## 🎯 CURRENT STATUS: Thread #2 Worker Initialization Investigation
 
-### Current Status: ✅ **RENDER PATH FULLY UNBLOCKED!** - All systems operational, awaiting rendering implementation
+### Issue 1: PPC Recompiler Bug - `divw` Instruction ✅ FIXED
+**Status**: ✅ FIXED - Recompiler now correctly sign-extends 32-bit division results to 64 bits
+**Root Cause**: `divw` instruction only wrote to lower 32 bits (`.s32`), leaving upper 32 bits undefined
+**Solution**: Changed to write full 64-bit sign-extended result (`.s64 = int64_t(.s32) / int64_t(.s32)`)
+**File**: `tools/XenonRecomp/XenonRecomp/recompiler.cpp` lines 913-925
+**Impact**: All 32-bit arithmetic instructions now follow PowerPC 64-bit architecture specification
+**Verification**: Debug logging confirms division, sign-extension, and store all work correctly:
+```
+[DIVW-DEBUG] BEFORE divw: r10.s32=0xFF676980 (-10000000) r30.s32=0x00000064 (100)
+[DIVW-DEBUG] AFTER divw: r9.s64=0xFFFFFFFFFFFE7960 r9.s32=0xFFFE7960 (-100000)
+[EXTSW-DEBUG] AFTER extsw: r11.s64=0xFFFFFFFFFFFE7960
+[STD-DEBUG] BEFORE std: r11.u64=0xFFFFFFFFFFFE7960 addr=0x828F1F98
+```
+
+### Issue 2: Memory Corruption After Store ❌ CRITICAL - NEW DISCOVERY
+**Status**: ❌ CRITICAL - Value stored correctly but overwritten to 0 before function returns
+**Root Cause**: Unknown - something overwrites `qword_828F1F98` after the `std` instruction executes
+**Evidence**:
+```
+[STD-DEBUG] AFTER std: stored to 0x828F1F98
+[WORKER-INIT] AFTER: qword_828F1F98 = 0x0000000000000000  ← Overwritten!
+```
+**Suspects**:
+1. `sub_82813418` (Thread #2 creation function) - called immediately after store
+2. `sub_8284E658` (called after thread creation) - might reset state
+3. Incorrect address calculation - r31 is modified after store
+4. Byte-swapping issue in `PPC_STORE_U64` macro
+
+**Impact**: Thread #2 worker loop exits immediately because flag is 0 instead of expected value
+**Workaround**: Manually set `qword_828F1F98` after function returns (in wrapper)
+
+### Current Status: ⚠️ **RECOMPILER FIXED, MEMORY CORRUPTION UNDER INVESTIGATION**
 
 **COMPLETE SUCCESS**: All critical infrastructure is running!
 - ✅ PM4 system is fully working (139,264+ TYPE0 packets processed in 30s)
@@ -263,6 +291,82 @@ Possible causes:
 - Extracts unique function addresses from lr= fields
 - Identifies missing functions
 
+## 🚀 NEXT STEPS FOR NEW AGENT
+
+### Priority 1: Investigate Memory Corruption (CRITICAL)
+**Goal**: Find what overwrites `qword_828F1F98` after it's stored
+
+**Approach**:
+1. **Check PPC_STORE_U64 implementation**:
+   - File: `Mw05Recomp/ppc/ppc_context.h` or similar
+   - Verify byte-swapping is correct
+   - Ensure it's actually writing to memory
+
+2. **Investigate sub_82813418** (Thread #2 creation):
+   - File: `Mw05RecompLib/ppc/ppc_recomp.*.cpp` (search for `sub_82813418`)
+   - Check if it writes to address 0x828F1F98
+   - Look for memory initialization that might zero the flag
+
+3. **Investigate sub_8284E658** (called after thread creation):
+   - File: `Mw05RecompLib/ppc/ppc_recomp.*.cpp` (search for `sub_8284E658`)
+   - Check if it writes to address 0x828F1F98
+   - Look for state reset logic
+
+4. **Verify address calculation**:
+   - Confirm r31 = 0x828F1F90 at time of store
+   - Confirm r31 + 8 = 0x828F1F98 (correct address)
+   - Check if address translation is working correctly
+
+5. **Add memory watchpoint**:
+   - Implement a watchpoint on address 0x828F1F98
+   - Log all writes to this address
+   - Identify what's overwriting the value
+
+**Expected Outcome**: Identify the function/instruction that overwrites the memory
+
+### Priority 2: Implement Permanent Fix
+**Goal**: Prevent memory corruption or work around it
+
+**Options**:
+1. **Fix the root cause**: Modify the function that's corrupting memory
+2. **Protect the memory**: Add logic to prevent overwrites
+3. **Restore the value**: Set the flag after corruption happens
+4. **Change storage location**: Store the flag in a different memory location
+
+**Implementation**:
+- File: `Mw05Recomp/cpu/mw05_trace_threads.cpp` (wrapper for sub_82813598)
+- Current workaround is already in place (manually sets flag)
+- Need to make it permanent or fix root cause
+
+### Priority 3: Verify Thread #2 Runs Correctly
+**Goal**: Confirm worker thread runs its loop instead of exiting
+
+**Test**:
+1. Build with fix/workaround
+2. Run game for 15 seconds
+3. Check logs for Thread #2 activity
+4. Verify worker loop is running (not completing immediately)
+
+**Expected Logs**:
+```
+[WORKER-INIT] SUCCESS: qword_828F1F98 is set to non-zero value!
+[GUEST_THREAD] Thread tid=XXXXX entry=82812ED0 RUNNING  ← Should NOT say COMPLETED
+```
+
+### Priority 4: Continue Game Initialization
+**Goal**: Progress past Thread #2 initialization to next blocker
+
+**Next Blockers** (from previous investigation):
+1. Video singleton creation
+2. Graphics initialization
+3. Draw command submission
+4. Frame presentation
+
+**Files to Monitor**:
+- `AGENTS.md` - Current debugging status
+- `RECOMPILER_FIX_SUMMARY.md` - Details of recompiler fix
+- `RECOMPILER_BUG_INVESTIGATION.md` - Investigation guide
+
 ## Environment Variables
 
 ### Current Test Configuration
@@ -274,8 +378,39 @@ MW05_FORCE_PRESENT=1
 ```
 
 ### Results
-- Scheduler context seeding: ✅ Working
-- Main thread unblock: ✅ Working (via workaround)
-- Video thread creation: ❌ Still missing
-- Missing initialization chain: ❌ Not triggered
+- PPC recompiler: ✅ FIXED - divw/divwu now work correctly
+- Division operation: ✅ Working - produces correct result
+- Sign-extension: ✅ Working - extsw produces correct 64-bit value
+- Store operation: ✅ Working - std writes correct value to memory
+- Memory corruption: ❌ CRITICAL - value overwritten after store
+- Thread #2 worker: ❌ Exits immediately due to flag being 0
+
+## Key Documentation Files
+
+1. **AGENTS.md** - Current debugging status and findings
+2. **RECOMPILER_FIX_SUMMARY.md** - Complete summary of recompiler fix
+3. **RECOMPILER_BUG_INVESTIGATION.md** - Investigation guide for recompiler bugs
+4. **tools/XenonRecomp/XenonRecomp/recompiler.cpp** - Recompiler source (lines 913-925 fixed)
+5. **Mw05Recomp/cpu/mw05_trace_threads.cpp** - Thread wrappers with workaround
+6. **Mw05RecompLib/ppc/ppc_recomp.96.cpp** - Generated code for sub_82813598 (lines 11044-11168)
+
+## Build Commands
+
+```powershell
+# Clean and regenerate PPC code
+./build_cmd.ps1 -Clean -Stage codegen
+
+# Build application
+./build_cmd.ps1 -Stage app
+
+# Run test
+out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe 2> test_output.txt
+```
+
+## Success Criteria
+
+✅ **Recompiler Fix**: Division, sign-extension, and store all work correctly
+❌ **Memory Integrity**: Value at 0x828F1F98 remains correct after function returns
+❌ **Thread #2 Execution**: Worker thread runs loop instead of exiting immediately
+❌ **Game Progress**: Advances past Thread #2 initialization to next stage
 

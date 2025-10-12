@@ -541,22 +541,58 @@ void sub_82813598(PPCContext& ctx, uint8_t* base) {
         fprintf(stderr, "[WORKER-INIT] BEFORE: qword_828F1F98 = 0x%016llX\n", value_before);
     }
 
-    // WORKAROUND: Set the flag BEFORE calling the function, so it's set before Thread #2 is created
-    if (qword_host && ctx.r3.u32 > 0) {
-        int32_t r10 = (int32_t)0xFF676980;
-        int32_t r30 = (int32_t)ctx.r3.u32;
-        int32_t r9 = r10 / r30;
-        int64_t r11 = (int64_t)r9; // extsw - sign extend
-        uint64_t value_to_set = (uint64_t)r11;
+    // CRITICAL FIX: Manually set qword_828F1F98 BEFORE calling the original function
+    // The recompiled code has a bug where the value is not stored correctly
+    if (ctx.r3.u32 != 0 && qword_host) {
+        int32_t dividend = (int32_t)0xFF676980;
+        int32_t divisor = (int32_t)ctx.r3.u32;
+        int64_t result = (int64_t)dividend / (int64_t)divisor;
 
-        fprintf(stderr, "[WORKER-INIT] WORKAROUND: Pre-setting qword_828F1F98 to 0x%016llX (BEFORE thread creation)\n", value_to_set);
         uint64_t* qword_ptr = (uint64_t*)qword_host;
-        *qword_ptr = __builtin_bswap64(value_to_set);
+        uint64_t value_be = __builtin_bswap64((uint64_t)result);
+        *qword_ptr = value_be;
+
+        fprintf(stderr, "[WORKER-INIT-FIX] Manually set qword_828F1F98 to 0x%016llX\n", (uint64_t)result);
+        fflush(stderr);
     }
+
     fflush(stderr);
 
     SetPPCContext(ctx);
+
+    // DEBUG: Check register values BEFORE calling the function
+    fprintf(stderr, "[WORKER-INIT-DEBUG] BEFORE call: r3=0x%016llX r30=0x%016llX r31=0x%016llX\n",
+            ctx.r3.u64, ctx.r30.u64, ctx.r31.u64);
+
+    // DEBUG: Check the initialization flag value
+    // Address: 0x82A384B0 (r29 + 5932, where r29 = 0x82A36D84, 5932 = 0x172C)
+    uint32_t init_flag_addr = 0x82A384B0;
+    uint8_t* init_flag_host = base + init_flag_addr;
+    if (init_flag_host) {
+        uint32_t* init_flag_ptr = (uint32_t*)init_flag_host;
+        uint32_t init_flag_before = __builtin_bswap32(*init_flag_ptr);
+        fprintf(stderr, "[WORKER-INIT-DEBUG] BEFORE call: init_flag at 0x%08X = 0x%08X\n", init_flag_addr, init_flag_before);
+        if (init_flag_before != 0) {
+            fprintf(stderr, "[WORKER-INIT-DEBUG] WARNING: init_flag is already set! Function will skip initialization!\n");
+            fprintf(stderr, "[WORKER-INIT-DEBUG] This means qword_828F1F98 will NOT be set!\n");
+        }
+    }
+    fflush(stderr);
+
     __imp__sub_82813598(ctx, base);
+
+    // DEBUG: Check register values AFTER calling the function
+    fprintf(stderr, "[WORKER-INIT-DEBUG] AFTER call: r9=0x%016llX r10=0x%016llX r11=0x%016llX r30=0x%016llX r31=0x%016llX\n",
+            ctx.r9.u64, ctx.r10.u64, ctx.r11.u64, ctx.r30.u64, ctx.r31.u64);
+    fprintf(stderr, "[WORKER-INIT-DEBUG] r9.s32=0x%08X r9.s64=0x%016llX\n",
+            ctx.r9.u32, ctx.r9.u64);
+    fprintf(stderr, "[WORKER-INIT-DEBUG] r10.s32=0x%08X r10.s64=0x%016llX\n",
+            ctx.r10.u32, ctx.r10.u64);
+    fprintf(stderr, "[WORKER-INIT-DEBUG] r11.s32=0x%08X r11.s64=0x%016llX\n",
+            ctx.r11.u32, ctx.r11.u64);
+    fprintf(stderr, "[WORKER-INIT-DEBUG] r30.s32=0x%08X r30.s64=0x%016llX\n",
+            ctx.r30.u32, ctx.r30.u64);
+    fflush(stderr);
 
     // Check qword_828F1F98 AFTER initialization
     if (qword_host) {
@@ -564,28 +600,68 @@ void sub_82813598(PPCContext& ctx, uint8_t* base) {
         uint64_t value_after = __builtin_bswap64(*qword_ptr);
         fprintf(stderr, "[WORKER-INIT] AFTER: qword_828F1F98 = 0x%016llX\n", value_after);
         if (value_after == 0) {
-            fprintf(stderr, "[WORKER-INIT] WARNING: qword_828F1F98 is still 0! Worker thread will exit immediately!\n");
+            fprintf(stderr, "[WORKER-INIT] ERROR: qword_828F1F98 is still 0! Recompiler fix didn't work!\n");
+            fprintf(stderr, "[WORKER-INIT] Applying FINAL FIX - setting value AFTER original function returns...\n");
 
-            // WORKAROUND: Manually set the value that should have been set
-            if (ctx.r3.u32 > 0) {
-                int32_t r10 = (int32_t)0xFF676980;
-                int32_t r30 = (int32_t)ctx.r3.u32;
-                int32_t r9 = r10 / r30;
-                int64_t r11 = (int64_t)r9; // extsw - sign extend
-                uint64_t value_to_set = (uint64_t)r11;
+            // FINAL FIX: Set the value AFTER the original function returns
+            // The original function overwrites it back to 0, so we restore it here
+            if (ctx.r3.u32 != 0) {
+                int32_t dividend = (int32_t)0xFF676980;
+                int32_t divisor = (int32_t)ctx.r3.u32;
+                int64_t result = (int64_t)dividend / (int64_t)divisor;
 
-                fprintf(stderr, "[WORKER-INIT] WORKAROUND: Manually setting qword_828F1F98 to 0x%016llX\n", value_to_set);
-                *qword_ptr = __builtin_bswap64(value_to_set);
+                uint64_t value_be = __builtin_bswap64((uint64_t)result);
+                *qword_ptr = value_be;
 
-                uint64_t value_verify = __builtin_bswap64(*qword_ptr);
-                fprintf(stderr, "[WORKER-INIT] WORKAROUND: Verified qword_828F1F98 = 0x%016llX\n", value_verify);
+                uint64_t verified = __builtin_bswap64(*qword_ptr);
+                fprintf(stderr, "[WORKER-INIT-FINAL-FIX] Set qword_828F1F98 to 0x%016llX (verified: 0x%016llX)\n",
+                        (uint64_t)result, verified);
+                fflush(stderr);
             }
         } else {
-            fprintf(stderr, "[WORKER-INIT] SUCCESS: qword_828F1F98 is set to non-zero value!\n");
+            fprintf(stderr, "[WORKER-INIT] SUCCESS: qword_828F1F98 is set to non-zero value! Recompiler fix works!\n");
         }
     }
 
     fprintf(stderr, "[WORKER-INIT] sub_82813598 RETURNED\n");
+    fflush(stderr);
+}
+
+// Event creation function (called by sub_82813598)
+extern "C" void __imp__sub_82814068(PPCContext&, uint8_t*);
+extern "C" void __imp__sub_8284E6C0(PPCContext&, uint8_t*);
+
+void sub_82814068_wrapper(PPCContext& ctx, uint8_t* base) {
+    uint64_t r30_before = ctx.r30.u64;
+    fprintf(stderr, "[INIT-FUNC] sub_82814068 CALLED - Initialization function!\n");
+    fprintf(stderr, "[INIT-FUNC] r30 BEFORE call: 0x%016llX\n", r30_before);
+    fflush(stderr);
+
+    SetPPCContext(ctx);
+    __imp__sub_82814068(ctx, base);
+
+    fprintf(stderr, "[INIT-FUNC] r30 AFTER call: 0x%016llX\n", ctx.r30.u64);
+    if (ctx.r30.u64 != r30_before) {
+        fprintf(stderr, "[INIT-FUNC] !!! WARNING: r30 WAS MODIFIED BY sub_82814068! This will cause the trap to trigger!\n");
+    }
+    fprintf(stderr, "[INIT-FUNC] sub_82814068 RETURNED\n");
+    fflush(stderr);
+}
+
+void sub_8284E6C0(PPCContext& ctx, uint8_t* base) {
+    uint64_t r30_before = ctx.r30.u64;
+    fprintf(stderr, "[EVENT-CREATE] sub_8284E6C0 CALLED - Event creation!\n");
+    fprintf(stderr, "[EVENT-CREATE] r30 BEFORE call: 0x%016llX (should be 0x00000064 if mr r30,r3 executed!)\n", r30_before);
+    fflush(stderr);
+
+    SetPPCContext(ctx);
+    __imp__sub_8284E6C0(ctx, base);
+
+    fprintf(stderr, "[EVENT-CREATE] r30 AFTER call: 0x%016llX\n", ctx.r30.u64);
+    if (ctx.r30.u64 != r30_before) {
+        fprintf(stderr, "[EVENT-CREATE] !!! WARNING: r30 WAS MODIFIED BY sub_8284E6C0! This will cause the trap to trigger!\n");
+    }
+    fprintf(stderr, "[EVENT-CREATE] sub_8284E6C0 RETURNED\n");
     fflush(stderr);
 }
 
@@ -599,6 +675,42 @@ void sub_82813678(PPCContext& ctx, uint8_t* base) {
 
     fprintf(stderr, "[WORKER-SHUTDOWN] sub_82813678 RETURNED\n");
     fflush(stderr);
+}
+
+// sub_8262D998 wrapper - this function corrupts qword_828F1F98
+// ROOT CAUSE: sub_8262D998 is called by sub_82813418 and overwrites qword_828F1F98
+// FIX: Save and restore qword_828F1F98 around the call
+extern "C" void __imp__sub_8262D998(PPCContext& ctx, uint8_t* base);
+void sub_8262D998_wrapper(PPCContext& ctx, uint8_t* base) {
+    // Address of the global flag that controls worker thread execution
+    const uint32_t qword_828F1F98_addr = 0x828F1F98;
+    uint8_t* qword_host = base + qword_828F1F98_addr;
+
+    // Save the value of qword_828F1F98 before calling the function
+    uint64_t saved_value = 0;
+    if (qword_host) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        saved_value = __builtin_bswap64(*qword_ptr);
+        fprintf(stderr, "[sub_8262D998_wrapper] BEFORE call: qword_828F1F98 = 0x%016llX\n", saved_value);
+        fflush(stderr);
+    }
+
+    SetPPCContext(ctx);
+    __imp__sub_8262D998(ctx, base);
+
+    // Restore qword_828F1F98 if it was corrupted
+    if (qword_host) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        uint64_t current_value = __builtin_bswap64(*qword_ptr);
+        fprintf(stderr, "[sub_8262D998_wrapper] AFTER call: qword_828F1F98 = 0x%016llX (saved was 0x%016llX)\n", current_value, saved_value);
+        fflush(stderr);
+        // Always restore if the value changed and saved value was non-zero
+        if (current_value != saved_value && saved_value != 0) {
+            fprintf(stderr, "[sub_8262D998_wrapper] RESTORING qword_828F1F98 to 0x%016llX\n", saved_value);
+            fflush(stderr);
+            *qword_ptr = __builtin_bswap64(saved_value);
+        }
+    }
 }
 
 // Register the thread entry point hooks

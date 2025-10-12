@@ -939,14 +939,33 @@ int main(int argc, char *argv[])
     g_memory.InsertFunction(0x828134E0, sub_828134E0);
     fprintf(stderr, "[MAIN] after_sub_828134E0_install\n"); fflush(stderr);
 
+    // Verify static global context memory is accessible
+    extern void VerifyStaticContextMemory();
+    fprintf(stderr, "[MAIN] Verifying static global context memory...\n"); fflush(stderr);
+    VerifyStaticContextMemory();
+    fprintf(stderr, "[MAIN] Static context verification complete\n"); fflush(stderr);
+
     // Install wrappers for worker thread init/shutdown functions
+    // ROOT CAUSE FOUND: sub_8262D998 is called by sub_82813418 and corrupts qword_828F1F98
+    // FIX: Wrap sub_8262D998 to save/restore qword_828F1F98
+    extern void sub_8262D998_wrapper(PPCContext&, uint8_t*);  // Corrupts qword_828F1F98, needs wrapper
     extern void sub_82813598(PPCContext&, uint8_t*);
     extern void sub_82813678(PPCContext&, uint8_t*);
+    extern void sub_82814068_wrapper(PPCContext&, uint8_t*);
+    extern void sub_8284E6C0(PPCContext&, uint8_t*);
+    fprintf(stderr, "[MAIN] Installing sub_8262D998_wrapper (protects qword_828F1F98)\n"); fflush(stderr);
+    g_memory.InsertFunction(0x8262D998, sub_8262D998_wrapper);
+    fprintf(stderr, "[MAIN] sub_8262D998_wrapper installed\n"); fflush(stderr);
     fprintf(stderr, "[MAIN] before_sub_82813598_install (worker init)\n"); fflush(stderr);
     g_memory.InsertFunction(0x82813598, sub_82813598);
     fprintf(stderr, "[MAIN] after_sub_82813598_install\n"); fflush(stderr);
     fprintf(stderr, "[MAIN] before_sub_82813678_install (worker shutdown)\n"); fflush(stderr);
     g_memory.InsertFunction(0x82813678, sub_82813678);
+    fprintf(stderr, "[MAIN] before_sub_82814068_install (init func)\n"); fflush(stderr);
+    g_memory.InsertFunction(0x82814068, sub_82814068_wrapper);
+    fprintf(stderr, "[MAIN] before_sub_8284E6C0_install (event create)\n"); fflush(stderr);
+    g_memory.InsertFunction(0x8284E6C0, sub_8284E6C0);
+    fprintf(stderr, "[MAIN] after_sub_8284E6C0_install\n"); fflush(stderr);
     fprintf(stderr, "[MAIN] after_sub_82813678_install\n"); fflush(stderr);
 
     // Install wrapper for string formatting function to detect infinite loops

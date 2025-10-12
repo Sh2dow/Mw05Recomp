@@ -16,6 +16,7 @@ param(
 # --- 0) Paths & tools (unified + idempotent) ---
 # Repo root (script lives in repo root)
 $Repo = (Resolve-Path $PSScriptRoot).Path -replace '\\', '/'
+$xex = "$Repo/Mw05RecompLib/private/default.xex"
 
 $root = "C:\Program Files (x86)\Windows Kits\10"
 $latestSdk = "10.0.26100.0"
@@ -429,8 +430,8 @@ function Invoke-Configure
     @zstdArgs `
     -D MW05_RECOMP_SKIP_CODEGEN=OFF `
     -D CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF `
-    -D MW05_GEN_INDIRECT_REDIRECTS=OFF `
-    -D MW05_GEN_INDIRECT_REDIRECTS_HARDFIX=OFF `
+    -D MW05_GEN_INDIRECT_REDIRECTS=ON `
+    -D MW05_GEN_INDIRECT_REDIRECTS_HARDFIX=ON `
     @pchArg `
     @modArg
 
@@ -453,7 +454,6 @@ function Invoke-Codegen
 {
     Write-Host "[Stage] Codegen (PPC)" -ForegroundColor Cyan
     Ensure-Configured
-    $xex = "$Repo/Mw05RecompLib/private/default.xex"
     if (-not (Test-Path $xex))
     {
         Write-Host "Missing XEX: $xex" -ForegroundColor Red
@@ -472,7 +472,6 @@ function Invoke-Codegen
 function Invoke-Patch
 {
     Write-Host "[Stage] Patch XEX (run XenonRecomp)" -ForegroundColor Cyan
-    $xex = "$Repo/Mw05RecompLib/private/default.xex"
     $out = "$Repo/Mw05RecompLib/private/default_patched.xex"
     if (-not (Test-Path $xex))
     {

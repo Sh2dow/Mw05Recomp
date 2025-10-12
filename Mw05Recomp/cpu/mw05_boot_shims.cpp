@@ -393,6 +393,11 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
 
 PPC_FUNC(sub_828134E0)
 {
+    fprintf(stderr, "[WORKER-FUNC] sub_828134E0 CALLED - Worker function!\n");
+    fprintf(stderr, "[WORKER-FUNC] r29=0x%08X r30=0x%08X r31=0x%08X lr=0x%016llX\n",
+            ctx.r29.u32, ctx.r30.u32, ctx.r31.u32, ctx.lr);
+    fflush(stderr);
+
     // Make ctx visible to the watched-store hook (so it can log lr)
     SetPPCContext(ctx);
 

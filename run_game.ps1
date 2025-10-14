@@ -21,7 +21,7 @@ $env:MW05_FORCE_PRESENT_WRAPPER_ONCE = "0"  # Disabled - doesn't help
 $env:MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS = "60"
 
 # CRITICAL: Force host to drive presents continuously to at least show SOMETHING
-$env:MW05_FORCE_PRESENT = "1"
+$env:MW05_FORCE_PRESENT = "0"
 $env:MW05_FORCE_PRESENT_BG = "1"
 
 # Enable graphics notifications

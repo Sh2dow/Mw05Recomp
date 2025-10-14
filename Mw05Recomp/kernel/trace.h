@@ -151,6 +151,21 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v);
     }
 
+    // Watch for vtable pointer writes (0x82065268 is the expected vtable address)
+    // Also watch for ANY writes to addresses ending in +196 (0xC4) which is where vtable pointers are stored
+    if (v == 0x82065268 || (ea & 0xFFF) == 0xC4) {
+        static int vtable_write_count = 0;
+        if (vtable_write_count++ < 20) {
+            if (auto* c = GetPPCContext()) {
+                KernelTraceHostOpF("HOST.vtable.write ea=%08X val=%08X lr=%08llX r31=%08X r29=%08X",
+                                  ea, v, (unsigned long long)c->lr, c->r31.u32, c->r29.u32);
+            } else {
+                KernelTraceHostOpF("HOST.vtable.write ea=%08X val=%08X lr=0", ea, v);
+            }
+            fflush(stderr);
+        }
+    }
+
     // Optional: log if a store hits the System Command Buffer region (first hit only)
     static const bool s_sysbuf_watch = [](){
         if (const char* v = std::getenv("MW05_PM4_SYSBUF_WATCH")) return !(v[0]=='0' && v[1]=='\0');
@@ -224,6 +239,37 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             }
 
         }
+    }
+
+    // CRITICAL: Detect GPU MMIO writes (MW05 uses direct register writes instead of PM4 ring buffer!)
+    // Xbox 360 GPU registers are mapped at physical address 0xC0000000+
+    // The game writes to these addresses using stwbrx instructions
+    static const bool s_trace_mmio = [](){
+        if (const char* v = std::getenv("MW05_TRACE_MMIO")) return !(v[0]=='0' && v[1]=='\0');
+        return true; // Enable by default to discover GPU writes
+    }();
+
+    // Check if this is a GPU MMIO write (physical address 0xC0000000+)
+    // In guest virtual memory, this might be mapped to a different range
+    // Common Xbox 360 MMIO ranges: 0xC0000000-0xC0010000 (GPU registers)
+    if (s_trace_mmio && (ea >= 0xC0000000u && ea < 0xC0010000u)) {
+        static int mmio_log_count = 0;
+        if (mmio_log_count++ < 100) {  // Log first 100 MMIO writes
+            if (auto* c = GetPPCContext()) {
+                KernelTraceHostOpF("HOST.GPU.MMIO.write ea=%08X val=%08X lr=%08llX",
+                                  ea, v, (unsigned long long)c->lr);
+            } else {
+                KernelTraceHostOpF("HOST.GPU.MMIO.write ea=%08X val=%08X lr=0", ea, v);
+            }
+        }
+
+        // TODO: Implement GPU register write handling
+        // - Detect draw initiator register writes
+        // - Translate to host draw calls
+        // - Handle state registers (viewport, scissor, render targets)
+
+        // For now, just log and skip the write (MMIO addresses are not in guest memory)
+        return;
     }
 
     // Trace potential ring-buffer write (32-bit stores are the common PM4 path)

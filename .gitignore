@@ -408,3 +408,6 @@ FodyWeavers.xsd
 **/cmake-build-debug
 **/CMakeCache.txt
 /NfsMWEurope.xex.html
+
+# Debug/trace logs and IDA decompilation outputs
+/ida_logs/

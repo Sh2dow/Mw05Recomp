@@ -394,6 +394,11 @@ uint32_t ExAllocatePool(uint32_t poolType, uint32_t numberOfBytes)
         LOGF_ERROR("[heap] ExAllocatePool failed size={} type={}", numberOfBytes, poolType);
         return 0;
     }
+
+    // CRITICAL FIX: Zero-initialize allocated memory to prevent crashes from uninitialized vtable pointers
+    // The game expects allocated memory to be zero-initialized, especially for structures with vtables
+    memset(ptr, 0, numberOfBytes);
+
     return g_memory.MapVirtual(ptr);
 }
 

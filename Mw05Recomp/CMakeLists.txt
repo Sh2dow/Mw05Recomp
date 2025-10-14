@@ -80,6 +80,7 @@ set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/trace.cpp"
     "kernel/vm_arena.cpp"
     "kernel/xam.cpp"
+    "kernel/system_threads.cpp"
     "kernel/io/file_system.cpp"
 )
 

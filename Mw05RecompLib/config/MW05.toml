@@ -753,7 +753,8 @@ functions = [
     { address = 0x82113350, size = 0x70 },
     { address = 0x821133C0, size = 0x1A8 },
     { address = 0x82113568, size = 0x70 },
-    { address = 0x821135D0, size = 0xA74 },
+    # NOTE: 0x821135D0 is just a branch to 0x82112168, not a real function
+    # { address = 0x821135D0, size = 0xA74 },
     { address = 0x821135D8, size = 0x2A8 },
     { address = 0x82113880, size = 0x190 },
     { address = 0x82113A10, size = 0x5B8 },

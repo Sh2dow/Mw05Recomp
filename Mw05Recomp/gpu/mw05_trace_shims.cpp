@@ -78,6 +78,17 @@ static inline void WriteBE32(uint32_t ea, uint32_t value) {
     #endif
     }
 }
+static inline void WriteBE16(uint32_t ea, uint16_t value) {
+    if (!ea) return;
+    if (auto* p = reinterpret_cast<uint16_t*>(g_memory.Translate(ea))) {
+    #if defined(_MSC_VER)
+        *p = _byteswap_ushort(value);
+    #else
+        *p = __builtin_bswap16(value);
+    #endif
+    }
+}
+
 static inline void WriteBE8(uint32_t ea, uint8_t value) {
     if (!ea) return;
     if (auto* p = reinterpret_cast<uint8_t*>(g_memory.Translate(ea))) {
@@ -567,14 +578,13 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
     ctx.r30.u32 = 0;
 
     // The ISR's source==0 path uses r31 as the base pointer to the "inner" structure.
-    // IMPORTANT: The field at ctx+0x2894 is stored in guest big-endian memory, but the
-    // effective address value we want here must match how g_memory.Translate expects EAs
-    // (as seen in our monitor prints, e.g., 0x00260370). Therefore, read it WITHOUT
-    // byte-swapping (raw host order), which yields the correct EA for subsequent loads/stores.
+    // IMPORTANT: The field at ctx+0x2894 is stored using PPC_STORE_U32, which already byte-swaps
+    // to big-endian format in memory. When we read it here, we need to read it WITHOUT byte-swapping
+    // because the value in memory is already in the correct (little-endian) format for the host.
     if (looks_ptr(ctx.r4.u32)) {
         uint32_t inner_raw = 0;
         if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(ctx.r4.u32 + 0x2894))) {
-            inner_raw = *p; // no swap on purpose
+            inner_raw = *p; // NO byte-swap - PPC_STORE_U32 already did it
         }
         if (looks_ptr(inner_raw)) {
             ctx.r31.u32 = inner_raw;
@@ -584,6 +594,40 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
     // Just call the original guest ISR - no present function workaround
     // The present function hangs when called from within the vblank ISR
     fprintf(stderr, "[GFX-SHIM] 825979A8 entry r3(source)=%u r4(ctx)=%08X r30=%08X r31=%08X\n", ctx.r3.u32, ctx.r4.u32, ctx.r30.u32, ctx.r31.u32);
+
+    // CRITICAL DEBUG: Check if r31 (inner structure pointer) is valid before calling
+    if (ctx.r31.u32 != 0 && ctx.r31.u32 >= 0x1000 && ctx.r31.u32 < 0x90000000) {
+        // Check what's at r31+10388 (the structure pointer that will be loaded into r10)
+        uint32_t r10_value = 0;
+        if (auto* p = reinterpret_cast<const be<uint32_t>*>(g_memory.Translate(ctx.r31.u32 + 10388))) {
+            r10_value = p->get();
+            fprintf(stderr, "[GFX-SHIM-DEBUG] r31+10388 (will be r10) = 0x%08X\n", r10_value);
+
+            // Check what's at r10+16 (the function pointer that will be loaded into r30)
+            if (r10_value != 0 && r10_value >= 0x1000 && r10_value < 0x90000000) {
+                if (auto* p2 = reinterpret_cast<const be<uint32_t>*>(g_memory.Translate(r10_value + 16))) {
+                    uint32_t r30_value = p2->get();
+                    fprintf(stderr, "[GFX-SHIM-DEBUG] r10+16 (will be r30/ctr) = 0x%08X\n", r30_value);
+
+                    if (r30_value == 0) {
+                        fprintf(stderr, "[GFX-SHIM-WARN] Function pointer at r10+16 is NULL! Callback will crash!\n");
+                    } else if (r30_value < 0x82000000 || r30_value >= 0x83000000) {
+                        fprintf(stderr, "[GFX-SHIM-WARN] Function pointer at r10+16 is INVALID (0x%08X)! Callback will crash!\n", r30_value);
+                    }
+                } else {
+                    fprintf(stderr, "[GFX-SHIM-ERROR] Cannot translate r10+16 address (r10=0x%08X)\n", r10_value);
+                }
+            } else {
+                fprintf(stderr, "[GFX-SHIM-ERROR] r10 value is invalid (0x%08X)\n", r10_value);
+            }
+        } else {
+            fprintf(stderr, "[GFX-SHIM-ERROR] Cannot translate r31+10388 address (r31=0x%08X)\n", ctx.r31.u32);
+        }
+    } else {
+        fprintf(stderr, "[GFX-SHIM-ERROR] r31 (inner structure pointer) is invalid (0x%08X)\n", ctx.r31.u32);
+    }
+    fflush(stderr);
+
     __imp__sub_825979A8(ctx, base);
 }
 
@@ -1018,8 +1062,66 @@ void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
 
 
 
-// Declare the original recompiled function
+// Declare the original recompiled functions
+PPC_FUNC_IMPL(__imp__sub_825960B8);
 PPC_FUNC_IMPL(__imp__sub_825968B0);
+PPC_FUNC_IMPL(__imp__sub_8214B490);
+
+// Full replacement for sub_8214B490 to check parameter validity
+// This function initializes a structure and accesses fields in the second parameter
+// Crash happens when r4 (a2) is NULL or invalid
+PPC_FUNC(sub_8214B490) {
+    uint32_t r3 = ctx.r3.u32;  // result structure pointer
+    uint32_t r4 = ctx.r4.u32;  // a2 structure pointer
+
+    // Check if r3 is valid (result structure)
+    if (r3 < 0x1000 || r3 >= PPC_MEMORY_SIZE) {
+        KernelTraceHostOpF("HOST.8214B490.invalid_r3 r3=%08X r4=%08X - returning", r3, r4);
+        return;
+    }
+
+    // Check if r4 is valid (a2 structure)
+    // The function accesses r4+24, r4+28, r4+36
+    if (r4 != 0 && (r4 < 0x1000 || r4 >= PPC_MEMORY_SIZE || r4 + 36 >= PPC_MEMORY_SIZE)) {
+        KernelTraceHostOpF("HOST.8214B490.invalid_r4 r3=%08X r4=%08X - skipping memory access", r3, r4);
+        // Initialize the result structure with zeros (safe default)
+        WriteBE32(r3 + 0, 0);
+        WriteBE32(r3 + 4, r4);  // Store the pointer even if invalid
+        WriteBE32(r3 + 8, 0);
+        WriteBE32(r3 + 12, 0);
+        WriteBE16(r3 + 16, 0);
+        WriteBE16(r3 + 18, 0);
+        return;
+    }
+
+    // Parameters are valid, call the original function
+    SetPPCContext(ctx);
+    __imp__sub_8214B490(ctx, base);
+}
+
+// Full replacement for sub_825960B8 to check structure validity
+PPC_FUNC(sub_825960B8) {
+    uint32_t a1 = ctx.r3.u32;
+
+    // Check if a1 is valid
+    if (a1 < 0x1000 || a1 >= PPC_MEMORY_SIZE) {
+        KernelTraceHostOpF("HOST.825960B8.invalid_a1 r3=%08X - returning 0", a1);
+        ctx.r3.u32 = 0;
+        return;
+    }
+
+    // Check if a1[4] is valid (offset +16)
+    uint32_t a1_4 = ReadBE32(a1 + 16);
+    if (a1_4 == 0 || a1_4 < 0x1000 || a1_4 >= PPC_MEMORY_SIZE) {
+        KernelTraceHostOpF("HOST.825960B8.invalid_a1[4] r3=%08X a1[4]=%08X - skipping call, returning 0", a1, a1_4);
+        ctx.r3.u32 = 0;
+        return;
+    }
+
+    // Structure is valid, call the original function
+    SetPPCContext(ctx);
+    __imp__sub_825960B8(ctx, base);
+}
 
 // Full replacement for sub_825968B0 to avoid NULL function pointer calls
 PPC_FUNC(sub_825968B0) {
@@ -1067,10 +1169,11 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
         // If still invalid and fake_alloc is enabled, return fake allocation
         if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
             if (s_fake_alloc) {
-                // Return a fake allocation from the system command buffer
+                // CRITICAL: When r3 is NULL, just return a fake success value
+                // The caller expects a pointer to allocated memory, so return a fake pointer
                 const uint32_t sys_base    = 0x00140400u;
                 const uint32_t sys_payload = sys_base + 0x10u;
-                KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X", sys_payload);
+                KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X (r3 was NULL)", sys_payload);
                 ctx.r3.u32 = sys_payload;
                 return;
             }

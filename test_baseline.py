@@ -5,6 +5,9 @@ import subprocess
 import time
 import os
 
+# Log directory for debug outputs
+LOG_DIR = r'.\out\build\x64-Clang-Debug\Mw05Recomp'
+
 # Set environment to disable forced graphics callback
 env = os.environ.copy()
 env['MW05_FORCE_GFX_NOTIFY_CB'] = '0'
@@ -40,9 +43,9 @@ else:
 stdout, stderr = proc.communicate()
 
 # Save to files
-with open('baseline_stdout.txt', 'w') as f:
+with open(os.path.join(LOG_DIR, 'baseline_stdout.txt'), 'w') as f:
     f.write(stdout)
-with open('baseline_stderr.txt', 'w') as f:
+with open(os.path.join(LOG_DIR, 'baseline_stderr.txt'), 'w') as f:
     f.write(stderr)
 
 # Print last 30 lines of stderr

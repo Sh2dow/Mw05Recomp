@@ -32,6 +32,7 @@ extern "C"
     void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
+    void __imp__sub_8262D998(PPCContext& ctx, uint8_t* base);  // Function that corrupts qword_828F1F98
 
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
@@ -394,8 +395,26 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
 PPC_FUNC(sub_828134E0)
 {
     fprintf(stderr, "[WORKER-FUNC] sub_828134E0 CALLED - Worker function!\n");
-    fprintf(stderr, "[WORKER-FUNC] r29=0x%08X r30=0x%08X r31=0x%08X lr=0x%016llX\n",
+    fprintf(stderr, "[WORKER-FUNC] BEFORE FIX: r29=0x%08X r30=0x%08X r31=0x%08X lr=0x%016llX\n",
             ctx.r29.u32, ctx.r30.u32, ctx.r31.u32, ctx.lr);
+
+    // CRITICAL FIX: The recompiler generates incorrect code for r29 initialization
+    // It calculates r29 = 0x82813090, but it should be r29 = 0x828F1F90
+    // This is because the recompiled code uses:
+    //   lis r11,-32113  -> r11 = 0x82813000
+    //   addi r29,r11,8080 -> r29 = 0x82813000 + 0x1F90 = 0x82814F90
+    // But it should use:
+    //   lis r11,-32497  -> r11 = 0x828F1000
+    //   addi r29,r11,8080 -> r29 = 0x828F1000 + 0x1F90 = 0x828F2F90
+    // Actually, we need r29 = 0x828F1F90, so:
+    //   r29 = 0x828F1F90 (qword_828F1F98 - 8)
+
+    // FIX: Patch r29 to point to the correct address
+    const uint32_t correct_r29 = 0x828F1F90;
+    ctx.r29.u32 = correct_r29;
+
+    fprintf(stderr, "[WORKER-FUNC] AFTER FIX: r29=0x%08X (patched to correct value)\n", ctx.r29.u32);
+    fprintf(stderr, "[WORKER-FUNC] r29+8 = 0x%08X (should be qword_828F1F98)\n", ctx.r29.u32 + 8);
     fflush(stderr);
 
     // Make ctx visible to the watched-store hook (so it can log lr)
@@ -440,4 +459,34 @@ PPC_FUNC(sub_828134E0)
     __imp__sub_828134E0(ctx, base);
 
     KernelTraceHostOpF("HOST.sub_828134E0.exit lr=%08llX", ctx.lr);
+}
+
+// sub_8262D998 wrapper - this function corrupts qword_828F1F98
+// ROOT CAUSE: sub_8262D998 is called by the worker function and overwrites qword_828F1F98
+// FIX: Save and restore qword_828F1F98 around the call
+PPC_FUNC(sub_8262D998)
+{
+    // Address of the global flag that controls worker thread execution
+    const uint32_t qword_828F1F98_addr = 0x828F1F98;
+    void* qword_host = g_memory.Translate(qword_828F1F98_addr);
+
+    // Save the value of qword_828F1F98 before calling the function
+    uint64_t saved_value = 0;
+    if (qword_host) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        saved_value = __builtin_bswap64(*qword_ptr);
+    }
+
+    SetPPCContext(ctx);
+    __imp__sub_8262D998(ctx, base);
+
+    // Restore qword_828F1F98 if it was corrupted
+    if (qword_host && saved_value != 0) {
+        uint64_t* qword_ptr = (uint64_t*)qword_host;
+        uint64_t current_value = __builtin_bswap64(*qword_ptr);
+        // Always restore if the value changed and saved value was non-zero
+        if (current_value != saved_value) {
+            *qword_ptr = __builtin_bswap64(saved_value);
+        }
+    }
 }

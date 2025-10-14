@@ -37,8 +37,16 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
     ppcContext.r13.u64 = g_memory.MapVirtual(thread);
     ppcContext.fpscr.loadFromHost();
 
+    fprintf(stderr, "[GUEST_CTX] Creating context for tid=%08X cpu=%u (before SetPPCContext)\n",
+            GuestThread::GetCurrentThreadId(), cpuNumber);
+    fflush(stderr);
+
     assert(GetPPCContext() == nullptr);
     SetPPCContext(ppcContext);
+
+    fprintf(stderr, "[GUEST_CTX] Context set for tid=%08X, GetPPCContext()=%p\n",
+            GuestThread::GetCurrentThreadId(), (void*)GetPPCContext());
+    fflush(stderr);
 }
 
 GuestThreadContext::~GuestThreadContext()

@@ -1004,6 +1004,16 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] before_guest_start\n"); fflush(stderr);
     KernelTraceHostOp("HOST.main.before_guest_start");
 
+    // CRITICAL: Create system threads that the game expects to exist
+    // These threads are created by Xenia BEFORE the game module loads
+    // The game waits for these threads to be running before it starts rendering
+    fprintf(stderr, "[MAIN] Creating system threads (GPU Commands, XMA Decoder, Audio Worker, etc.)\n"); fflush(stderr);
+    {
+        extern void Mw05CreateSystemThreads();
+        Mw05CreateSystemThreads();
+    }
+    fprintf(stderr, "[MAIN] System threads created\n"); fflush(stderr);
+
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events
     fprintf(stderr, "[MAIN] calling_GuestThread_Start entry=0x%08X\n", entry); fflush(stderr);

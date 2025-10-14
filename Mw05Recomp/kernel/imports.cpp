@@ -46,6 +46,8 @@ extern "C" void __imp__sub_821BB4D0(PPCContext& ctx, uint8_t* base);
 extern "C" uint32_t Mw05Trace_LastSchedR3();
 extern "C" uint32_t Mw05Trace_SchedR3SeenCount();
 
+// Graphics context helper: get the heap-allocated graphics context address
+extern "C" uint32_t Mw05GetGraphicsContextAddress();
 
 // Diagnostic forward decl for MW05 micro-interpreter
 extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
@@ -1874,20 +1876,48 @@ void Mw05StartVblankPumpOnce() {
                         fflush(stderr);
 
                         if (singleton_ptr == 0) {
-                            // Singleton not created yet, create it
-                            fprintf(stderr, "[VBLANK-FORCE] Singleton not created, calling sub_82849DE8\n");
-                            fflush(stderr);
-                            KernelTraceHostOp("HOST.ForceVideoThread.call_sub_82849DE8");
-                            extern void sub_82849DE8(PPCContext& ctx, uint8_t* base);
-                            sub_82849DE8(ctx, g_memory.base);
-                            fprintf(stderr, "[VBLANK-FORCE] sub_82849DE8 returned r3=%08X\n", ctx.r3.u32);
-                            fflush(stderr);
-                            KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
+                            // Optionally try a more natural init first: call sub_82548F18 (which calls sub_82849DE8 internally)
+                            bool try_natural = false;
+                            if (const char* v = std::getenv("MW05_TRY_CALL_82548F18")) try_natural = !(v[0]=='0' && v[1]=='\0');
+                            if (try_natural) {
+                                fprintf(stderr, "[VBLANK-FORCE] MW05_TRY_CALL_82548F18=1, calling sub_82548F18 first\n");
+                                fflush(stderr);
+                                extern void sub_82548F18(PPCContext& ctx, uint8_t* base);
+                                // Per IDA, r3=3 before calling sub_82849DE8 inside sub_82548F18
+                                ctx.r3.u32 = 3;
+                                sub_82548F18(ctx, g_memory.base);
+                                fprintf(stderr, "[VBLANK-FORCE] sub_82548F18 returned r3=%08X\n", ctx.r3.u32);
+                                fflush(stderr);
+                                // Re-read the singleton pointer after natural path
+                                singleton_ptr = __builtin_bswap32(*reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78));
+                                fprintf(stderr, "[VBLANK-FORCE] After 82548F18, dword_82911B78 = %08X\n", singleton_ptr);
+                                fflush(stderr);
+                                // If natural path produced an object pointer but didn't store the singleton, set it now
+                                if (singleton_ptr == 0 && ctx.r3.u32 != 0) {
+                                    fprintf(stderr, "[VBLANK-FORCE] Using 82548F18 result to set singleton r3=%08X\n", ctx.r3.u32);
+                                    *reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78) = __builtin_bswap32(ctx.r3.u32);
+                                    singleton_ptr = ctx.r3.u32;
+                                    fprintf(stderr, "[VBLANK-FORCE] Singleton now set to %08X (from 82548F18)\n", singleton_ptr);
+                                    fflush(stderr);
+                                }
+                            }
 
-                            // Re-read the singleton pointer using byte-swapped read for correct byte order
-                            singleton_ptr = __builtin_bswap32(*reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78));
-                            fprintf(stderr, "[VBLANK-FORCE] After creation, dword_82911B78 = %08X\n", singleton_ptr);
-                            fflush(stderr);
+                            if (singleton_ptr == 0) {
+                                // Singleton not created yet, fall back to direct call
+                                fprintf(stderr, "[VBLANK-FORCE] Singleton not created, calling sub_82849DE8\n");
+                                fflush(stderr);
+                                KernelTraceHostOp("HOST.ForceVideoThread.call_sub_82849DE8");
+                                extern void sub_82849DE8(PPCContext& ctx, uint8_t* base);
+                                sub_82849DE8(ctx, g_memory.base);
+                                fprintf(stderr, "[VBLANK-FORCE] sub_82849DE8 returned r3=%08X\n", ctx.r3.u32);
+                                fflush(stderr);
+                                KernelTraceHostOpF("HOST.ForceVideoThread.complete r3=%08X", ctx.r3.u32);
+
+                                // Re-read the singleton pointer using byte-swapped read for correct byte order
+                                singleton_ptr = __builtin_bswap32(*reinterpret_cast<uint32_t*>(g_memory.base + 0x02911B78));
+                                fprintf(stderr, "[VBLANK-FORCE] After creation, dword_82911B78 = %08X\n", singleton_ptr);
+                                fflush(stderr);
+                            }
 
                             // CRITICAL FIX: sub_82849DE8 is not setting the singleton pointer for some reason
                             // Manually set it to the returned object pointer
@@ -6146,7 +6176,7 @@ void Mw05ForceVdInitOnce() {
 
     // Then bring engines up explicitly.
     Mw05ApplyVdPokesOnce();
-    VdInitializeEngines();
+    VdInitializeEngines(0, 0, 0, 0, 0);  // Call with all zeros to trigger callback injection
 
     // Make sure the system command buffer is allocated (idempotent).
     VdGetSystemCommandBuffer(nullptr, nullptr);
@@ -6177,140 +6207,159 @@ void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 uint32_t MmAllocatePhysicalMemoryEx(uint32_t flags, uint32_t size, uint32_t protect,
                                      uint32_t minAddress, uint32_t maxAddress, uint32_t alignment);
 
-// Allocate and zero-initialize the graphics context structure at 0x40007180
-// This is a static global variable in the game's BSS section that must exist
-// before the graphics callback can be invoked.
-static void Mw05EnsureGraphicsContextAllocated() {
-    constexpr uint32_t CTX_ADDR = 0x40007180;
+// Global variable to store the heap-allocated graphics context address
+// Following Xenia's approach: allocate context on heap instead of using static address
+static uint32_t g_graphics_context_ea = 0;
+
+// Getter function for external access to the graphics context address
+uint32_t Mw05GetGraphicsContextAddress() {
+    return g_graphics_context_ea;
+}
+
+// Allocate and zero-initialize the graphics context structure on the HEAP
+// Following Xenia's approach: use MmAllocatePhysicalMemoryEx instead of static address
+// Returns the guest address of the allocated context
+static uint32_t Mw05EnsureGraphicsContextAllocated() {
     constexpr uint32_t CTX_SIZE = 0x4000;  // 16KB (minimum is 0x3CF0 based on callback access at +0x3CEC)
 
-    KernelTraceHostOpF("HOST.GfxContext.check ea=%08X size=%08X", CTX_ADDR, CTX_SIZE);
-    fprintf(stderr, "[GFX-CTX] Checking context at 0x%08X...\n", CTX_ADDR);
+    // If already allocated, return the existing address
+    if (g_graphics_context_ea != 0) {
+        fprintf(stderr, "[GFX-CTX] Context already allocated at 0x%08X\n", g_graphics_context_ea);
+        return g_graphics_context_ea;
+    }
 
-    // Check if memory is already accessible (it should be in the game's BSS/data section)
-    if (void* ctx_ptr = g_memory.Translate(CTX_ADDR)) {
-        // Memory is already mapped - just zero-initialize it
-        std::memset(ctx_ptr, 0, CTX_SIZE);
-        fprintf(stderr, "[GFX-CTX] SUCCESS: Memory already mapped, zeroed %u bytes at 0x%08X\n",
-                CTX_SIZE, CTX_ADDR);
-        KernelTraceHostOpF("HOST.GfxContext.zeroed ea=%08X size=%08X", CTX_ADDR, CTX_SIZE);
+    // Allocate context on the heap (Xenia-style)
+    void* ctx_host = g_userHeap.Alloc(CTX_SIZE, 0x1000);  // 4KB alignment
+    if (!ctx_host) {
+        fprintf(stderr, "[GFX-CTX] ERROR: Failed to allocate %u bytes for graphics context\n", CTX_SIZE);
+        return 0;
+    }
 
-        // CRITICAL: Allocate and initialize the structure at context+0x2894
-        // The graphics callback accesses this pointer and expects a valid 32-byte structure
-        // At offset +0x10 of this structure, it checks for magic value 0xBADF00D
-        // If the magic value matches, it will crash with an error
-        constexpr uint32_t STRUCT_OFFSET = 0x2894;
-        constexpr uint32_t STRUCT_SIZE = 0x20;  // 32 bytes
+    // Zero-initialize
+    std::memset(ctx_host, 0, CTX_SIZE);
 
-        // Allocate the structure using the game's allocator
-        void* struct_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
-        if (struct_host) {
-            // Zero-initialize to ensure +0x10 is NOT 0xBADF00D
-            std::memset(struct_host, 0, STRUCT_SIZE);
+    // Convert to guest address
+    const uint32_t ctx_ea = g_memory.MapVirtual(ctx_host);
+    g_graphics_context_ea = ctx_ea;
 
-            // Convert to guest address
-            const uint32_t struct_guest = g_memory.MapVirtual(struct_host);
+    fprintf(stderr, "[GFX-CTX] SUCCESS: Allocated %u bytes on HEAP at guest=0x%08X host=%p\n",
+            CTX_SIZE, ctx_ea, ctx_host);
+    KernelTraceHostOpF("HOST.GfxContext.heap_allocated ea=%08X size=%08X", ctx_ea, CTX_SIZE);
 
-            // Store the pointer at context+0x2894
-            uint32_t* ctx_struct_ptr = reinterpret_cast<uint32_t*>(
-                static_cast<uint8_t*>(ctx_ptr) + STRUCT_OFFSET);
-            *ctx_struct_ptr = struct_guest;
+    // CRITICAL: Allocate and initialize the structure at context+0x2894
+    // The graphics callback accesses this pointer and expects a valid 32-byte structure
+    // At offset +0x10 of this structure, it checks for magic value 0xBADF00D
+    // If the magic value matches, it will crash with an error
+    constexpr uint32_t STRUCT_OFFSET = 0x2894;
+    constexpr uint32_t STRUCT_SIZE = 0x4000;  // 16KB (same as context size)
 
-            fprintf(stderr, "[GFX-CTX] Allocated structure at 0x%08X, stored pointer at context+0x%04X (expects ctx+0x2894)\n",
-                    struct_guest, STRUCT_OFFSET);
-            KernelTraceHostOpF("HOST.GfxContext.struct_allocated ea=%08X offset=%04X",
-                             struct_guest, STRUCT_OFFSET);
-            // Initialize important members inside the inner structure that ISR uses
-            {
-                auto* inner_u32 = reinterpret_cast<uint32_t*>(struct_host);
-                // Ensure the source==1 function pointer (+0x10) is NULL to avoid bogus indirect calls
-                inner_u32[0x10 / 4] = 0;
-                // Present function pointer (+0x3CEC) initially 0; will be set before first call
-                inner_u32[0x3CEC / 4] = 0;
-                // Invocation counter (+0x3CF0)
-                inner_u32[0x3CF0 / 4] = 0;
-                // Decrement counter (+0x3CF8)
-                inner_u32[0x3CF8 / 4] = 0;
-                // Scratch (+0x3CF4, +0x3CFC)
-                inner_u32[0x3CF4 / 4] = 0;
-                inner_u32[0x3CFC / 4] = 0;
-            }
+    // Allocate the structure using the game's allocator
+    void* struct_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
+    if (struct_host) {
+        // Zero-initialize to ensure +0x10 is NOT 0xBADF00D
+        std::memset(struct_host, 0, STRUCT_SIZE);
 
+        // Convert to guest address
+        const uint32_t struct_guest = g_memory.MapVirtual(struct_host);
+
+        // Store the pointer at context+0x2894
+        // CRITICAL: Store in LITTLE-ENDIAN format (host format) because the shim reads it as uint32_t*
+        // The shim does NOT byte-swap when reading, so we should NOT byte-swap when storing
+        uint32_t* ctx_struct_ptr = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_host) + STRUCT_OFFSET);
+        *ctx_struct_ptr = struct_guest;  // Store as-is (little-endian)
+
+        fprintf(stderr, "[GFX-CTX] Allocated structure at 0x%08X, stored pointer at context+0x%04X (expects ctx+0x2894)\n",
+                struct_guest, STRUCT_OFFSET);
+        KernelTraceHostOpF("HOST.GfxContext.struct_allocated ea=%08X offset=%04X",
+                         struct_guest, STRUCT_OFFSET);
+        // CRITICAL: The inner structure ALSO has a pointer at +0x2894 to a SECOND-LEVEL structure
+        // The callback does: r11 = Load32(r31 + 0x2894), then r3 = Load32(r11 + 20)
+        // We need to allocate this second-level structure as well
+        void* struct2_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
+        if (struct2_host) {
+            std::memset(struct2_host, 0, STRUCT_SIZE);
+            const uint32_t struct2_guest = g_memory.MapVirtual(struct2_host);
+
+            // Store the second-level structure pointer at inner+0x2894
+            // CRITICAL: The PPC code reads this with PPC_LOAD_U32 which does byte-swapping,
+            // so we need to store it in BIG-ENDIAN format (using be<uint32_t>)
+            be<uint32_t>* inner_struct_ptr = reinterpret_cast<be<uint32_t>*>(
+                static_cast<uint8_t*>(struct_host) + STRUCT_OFFSET);
+            *inner_struct_ptr = struct2_guest;  // Store in big-endian format
+
+            fprintf(stderr, "[GFX-CTX] Allocated second-level structure at 0x%08X, stored pointer at inner+0x%04X\n",
+                    struct2_guest, STRUCT_OFFSET);
         } else {
-            fprintf(stderr, "[GFX-CTX] WARNING: Failed to allocate structure for context+0x%04X\n",
-                    STRUCT_OFFSET);
-            KernelTraceHostOpF("HOST.GfxContext.struct_alloc_failed offset=%04X", STRUCT_OFFSET);
+            fprintf(stderr, "[GFX-CTX] ERROR: Failed to allocate second-level structure\n");
         }
 
-        // CRITICAL: Initialize the spinlock at context+0x2898
-        // The graphics callback acquires this spinlock via KeAcquireSpinLockAtRaisedIrql
-        // If not initialized, it will corrupt memory or crash
-        constexpr uint32_t SPINLOCK_OFFSET = 0x2898;
-        uint32_t* spinlock_ptr = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + SPINLOCK_OFFSET);
-        *spinlock_ptr = 0;  // Initialize to unlocked state
+        // Initialize important members inside the inner structure that ISR uses
+        {
+            auto* inner_u32 = reinterpret_cast<uint32_t*>(struct_host);
+            // Ensure the source==1 function pointer (+0x10) is NULL to avoid bogus indirect calls
+            inner_u32[0x10 / 4] = 0;
+            // Present function pointer (+0x3CEC) initially 0; will be set before first call
+            inner_u32[0x3CEC / 4] = 0;
+            // Invocation counter (+0x3CF0)
+            inner_u32[0x3CF0 / 4] = 0;
+            // Decrement counter (+0x3CF8)
+            inner_u32[0x3CF8 / 4] = 0;
+            // Scratch (+0x3CF4, +0x3CFC)
+            inner_u32[0x3CF4 / 4] = 0;
+            inner_u32[0x3CFC / 4] = 0;
+        }
 
-        fprintf(stderr, "[GFX-CTX] Initialized spinlock at context+0x%04X\n", SPINLOCK_OFFSET);
-        KernelTraceHostOpF("HOST.GfxContext.spinlock_initialized offset=%04X", SPINLOCK_OFFSET);
-
-        // CRITICAL: Initialize other context members accessed by the callback
-        // The callback accesses these members after acquiring the spinlock
-        // If not initialized, the callback will behave unpredictably
-
-        // Counter at +0x3CF0: Incremented by callback each invocation
-        uint32_t* ctx_3CF0 = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + 0x3CF0);
-        *ctx_3CF0 = 0;
-
-        // Counter at +0x3CF8: Decremented by callback, triggers logic when zero
-        uint32_t* ctx_3CF8 = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + 0x3CF8);
-        *ctx_3CF8 = 0;  // Start at 0 (won't decrement, won't trigger special logic)
-
-        // Value at +0x3CEC: If non-zero, triggers additional processing
-        uint32_t* ctx_3CEC = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + 0x3CEC);
-        *ctx_3CEC = 0;  // No pending work
-
-        // Value at +0x3CF4: Written by callback
-        uint32_t* ctx_3CF4 = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + 0x3CF4);
-        *ctx_3CF4 = 0;
-
-        // Value at +0x3CFC: Read by callback when +0x3CEC is non-zero
-        uint32_t* ctx_3CFC = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(ctx_ptr) + 0x3CFC);
-        *ctx_3CFC = 0;
-
-        fprintf(stderr, "[GFX-CTX] Initialized context members: +0x3CEC, +0x3CF0, +0x3CF4, +0x3CF8, +0x3CFC\n");
-        KernelTraceHostOpF("HOST.GfxContext.members_initialized count=5");
-
-        return;
+    } else {
+        fprintf(stderr, "[GFX-CTX] WARNING: Failed to allocate structure for context+0x%04X\n",
+                STRUCT_OFFSET);
+        KernelTraceHostOpF("HOST.GfxContext.struct_alloc_failed offset=%04X", STRUCT_OFFSET);
     }
 
-    // Memory not mapped - this shouldn't happen for a static global, but handle it anyway
-    fprintf(stderr, "[GFX-CTX] WARNING: Memory at 0x%08X not mapped! This is unexpected.\n", CTX_ADDR);
-    KernelTraceHostOpF("HOST.GfxContext.not_mapped ea=%08X", CTX_ADDR);
+    // CRITICAL: Initialize the spinlock at context+0x2898
+    // The graphics callback acquires this spinlock via KeAcquireSpinLockAtRaisedIrql
+    // If not initialized, it will corrupt memory or crash
+    constexpr uint32_t SPINLOCK_OFFSET = 0x2898;
+    uint32_t* spinlock_ptr = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(ctx_host) + SPINLOCK_OFFSET);
+    *spinlock_ptr = 0;  // Initialize to unlocked state
 
-    // Try to allocate memory and hope it gets mapped at the right address
-    // Note: MmAllocatePhysicalMemoryEx ignores min/max address, so this likely won't work
-    uint32_t allocated = MmAllocatePhysicalMemoryEx(
-        0,                  // flags
-        CTX_SIZE,           // size
-        PAGE_READWRITE,     // protect
-        CTX_ADDR,           // minAddress (ignored by current implementation)
-        CTX_ADDR,           // maxAddress (ignored by current implementation)
-        0x1000              // alignment (4KB page)
-    );
+    fprintf(stderr, "[GFX-CTX] Initialized spinlock at context+0x%04X\n", SPINLOCK_OFFSET);
+    KernelTraceHostOpF("HOST.GfxContext.spinlock_initialized offset=%04X", SPINLOCK_OFFSET);
 
-    fprintf(stderr, "[GFX-CTX] Allocated at 0x%08X (wanted 0x%08X)\n", allocated, CTX_ADDR);
-    KernelTraceHostOpF("HOST.GfxContext.allocated ea=%08X wanted=%08X", allocated, CTX_ADDR);
+    // CRITICAL: Initialize other context members accessed by the callback
+    // The callback accesses these members after acquiring the spinlock
+    // If not initialized, the callback will behave unpredictably
 
-    if (allocated != CTX_ADDR) {
-        fprintf(stderr, "[GFX-CTX] ERROR: Cannot allocate at exact address 0x%08X\n", CTX_ADDR);
-        fprintf(stderr, "[GFX-CTX] The game will likely crash when the callback is invoked.\n");
-        KernelTraceHostOpF("HOST.GfxContext.alloc_wrong_addr got=%08X wanted=%08X", allocated, CTX_ADDR);
-    }
+    // Counter at +0x3CF0: Incremented by callback each invocation
+    uint32_t* ctx_3CF0 = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(ctx_host) + 0x3CF0);
+    *ctx_3CF0 = 0;
+
+    // Counter at +0x3CF8: Decremented by callback, triggers logic when zero
+    uint32_t* ctx_3CF8 = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(ctx_host) + 0x3CF8);
+    *ctx_3CF8 = 0;  // Start at 0 (won't decrement, won't trigger special logic)
+
+    // Value at +0x3CEC: If non-zero, triggers additional processing
+    uint32_t* ctx_3CEC = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(ctx_host) + 0x3CEC);
+    *ctx_3CEC = 0;  // No pending work
+
+    // Value at +0x3CF4: Written by callback
+    uint32_t* ctx_3CF4 = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(ctx_host) + 0x3CF4);
+    *ctx_3CF4 = 0;
+
+    // Value at +0x3CFC: Read by callback when +0x3CEC is non-zero
+    uint32_t* ctx_3CFC = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(ctx_host) + 0x3CFC);
+    *ctx_3CFC = 0;
+
+    fprintf(stderr, "[GFX-CTX] Initialized context members: +0x3CEC, +0x3CF0, +0x3CF4, +0x3CF8, +0x3CFC\n");
+    KernelTraceHostOpF("HOST.GfxContext.members_initialized count=5");
+
+    return ctx_ea;
 }
 
 static void Mw05ForceRegisterGfxNotifyIfRequested() {
@@ -6341,7 +6390,12 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
 
     // CRITICAL: Ensure the graphics context structure is allocated BEFORE registering the callback
     // The callback at 0x825979A8 accesses memory at context+0x3CEC, which will crash if not allocated
-    Mw05EnsureGraphicsContextAllocated();
+    // Following Xenia's approach: allocate on heap and use the returned address
+    uint32_t ctx = Mw05EnsureGraphicsContextAllocated();
+    if (ctx == 0) {
+        fprintf(stderr, "[GFX-REG] ERROR: Failed to allocate graphics context, cannot register callback\n");
+        return;
+    }
 
     // CRITICAL: Call VD initialization functions before registering the callback
     // The game's natural flow calls these before VdSetGraphicsInterruptCallback
@@ -6353,7 +6407,7 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
 
     fprintf(stderr, "[GFX-REG] Calling VdInitializeEngines before callback registration\n");
     fflush(stderr);
-    VdInitializeEngines();
+    VdInitializeEngines(0, 0, 0, 0, 0);  // Call with all zeros to trigger callback injection
     fprintf(stderr, "[GFX-REG] VdInitializeEngines completed\n");
     fflush(stderr);
 
@@ -6362,7 +6416,7 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
     if (const char* s = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_EA")) {
         cb_ea = (uint32_t)std::strtoul(s, nullptr, 0);
     }
-    uint32_t ctx = 0x40007180u;  // Changed default from 1 to the actual context address
+    // Use the heap-allocated context address (can be overridden by env var for testing)
     if (const char* c = std::getenv("MW05_FORCE_GFX_NOTIFY_CB_CTX")) {
         ctx = (uint32_t)std::strtoul(c, nullptr, 0);
     }
@@ -6454,11 +6508,19 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
     // Initialize the context structure
     // The render thread expects context+0 to point to a graphics/scheduler context
     // From analysis: r27 = Load32(context+0), then Load32(r27+628) is checked
-    // The graphics context is at 0x40007180 (16KB structure)
-    uint32_t gfx_ctx = 0x40007180u;  // Graphics context address
+    // Following Xenia's approach: use heap-allocated graphics context
+    uint32_t gfx_ctx = g_graphics_context_ea;
+    if (gfx_ctx == 0) {
+        // Context not yet allocated - allocate it now
+        gfx_ctx = Mw05EnsureGraphicsContextAllocated();
+        if (gfx_ctx == 0) {
+            fprintf(stderr, "[RENDER-THREAD] ERROR: Failed to allocate graphics context\n");
+            return;
+        }
+    }
     if (auto* ctx_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ctx))) {
         *ctx_ptr = be<uint32_t>(gfx_ctx);  // Set pointer to graphics context
-        fprintf(stderr, "[RENDER-THREAD] Initialized context+0 at 0x%08X to point to gfx_ctx=0x%08X\n", ctx, gfx_ctx);
+        fprintf(stderr, "[RENDER-THREAD] Initialized context+0 at 0x%08X to point to gfx_ctx=0x%08X (heap-allocated)\n", ctx, gfx_ctx);
         fflush(stderr);
     }
 
@@ -6701,6 +6763,32 @@ void VdSetDisplayMode(uint32_t /*mode*/)
 
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 {
+    // CRITICAL FIX: Intercept static context address and replace with heap-allocated one
+    // The game has the static address 0x40007180 hardcoded in its code, but we've allocated
+    // the context on the heap (following Xenia's approach). We need to redirect the game's
+    // static address to our heap-allocated context.
+    constexpr uint32_t STATIC_CONTEXT_ADDRESS = 0x40007180;
+    uint32_t original_context = context;
+
+    if (context == STATIC_CONTEXT_ADDRESS) {
+        // Game is using the hardcoded static address - redirect to heap-allocated context
+        uint32_t heap_ctx = g_graphics_context_ea;
+        if (heap_ctx == 0) {
+            // Context not yet allocated - allocate it now
+            heap_ctx = Mw05EnsureGraphicsContextAllocated();
+            if (heap_ctx == 0) {
+                fprintf(stderr, "[VdSetGraphicsInterruptCallback] ERROR: Failed to allocate graphics context\n");
+                fflush(stderr);
+                return;
+            }
+        }
+
+        fprintf(stderr, "[VdSetGraphicsInterruptCallback] REDIRECTING context: 0x%08X -> 0x%08X (heap-allocated)\n",
+                context, heap_ctx);
+        fflush(stderr);
+        context = heap_ctx;
+    }
+
     g_VdGraphicsCallback = callback;
     g_VdGraphicsCallbackCtx = context;
 
@@ -6712,7 +6800,8 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
         fprintf(stderr, "========================================\n");
         fprintf(stderr, "[NATURAL-REG] Game naturally registered graphics callback!\n");
         fprintf(stderr, "[NATURAL-REG]   Callback: 0x%08X\n", callback);
-        fprintf(stderr, "[NATURAL-REG]   Context:  0x%08X\n", context);
+        fprintf(stderr, "[NATURAL-REG]   Context (original):  0x%08X\n", original_context);
+        fprintf(stderr, "[NATURAL-REG]   Context (redirected): 0x%08X\n", context);
         fprintf(stderr, "[NATURAL-REG]   Tick:     %u\n", g_vblankTicks.load());
         fprintf(stderr, "========================================\n");
         fprintf(stderr, "\n");
@@ -6724,6 +6813,29 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 }
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context)
 {
+    // CRITICAL FIX: Intercept static context address and replace with heap-allocated one
+    // Same redirection logic as VdSetGraphicsInterruptCallback
+    constexpr uint32_t STATIC_CONTEXT_ADDRESS = 0x40007180;
+
+    if (context == STATIC_CONTEXT_ADDRESS) {
+        // Game is using the hardcoded static address - redirect to heap-allocated context
+        uint32_t heap_ctx = g_graphics_context_ea;
+        if (heap_ctx == 0) {
+            // Context not yet allocated - allocate it now
+            heap_ctx = Mw05EnsureGraphicsContextAllocated();
+            if (heap_ctx == 0) {
+                fprintf(stderr, "[VdRegisterGraphicsNotificationRoutine] ERROR: Failed to allocate graphics context\n");
+                fflush(stderr);
+                return;
+            }
+        }
+
+        fprintf(stderr, "[VdRegisterGraphicsNotificationRoutine] REDIRECTING context: 0x%08X -> 0x%08X (heap-allocated)\n",
+                context, heap_ctx);
+        fflush(stderr);
+        context = heap_ctx;
+    }
+
     KernelTraceHostOpF("HOST.VdRegisterGraphicsNotificationRoutine cb=%08X ctx=%08X", callback, context);
     {
         std::scoped_lock lk(g_VdNotifMutex);
@@ -6794,8 +6906,17 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
         if (inject_enabled) {
             // Use the known-good callback address from Xenia traces
             callback_ea = 0x825979A8u;
-            // Use the graphics context address as the callback argument
-            callback_arg = 0x40007180u;
+            // Use the heap-allocated graphics context address as the callback argument
+            // Following Xenia's approach: allocate on heap instead of using static address
+            callback_arg = g_graphics_context_ea;
+            if (callback_arg == 0) {
+                // Context not yet allocated - allocate it now
+                callback_arg = Mw05EnsureGraphicsContextAllocated();
+                if (callback_arg == 0) {
+                    fprintf(stderr, "[VdInitEngines #%d] ERROR: Failed to allocate graphics context\n", call_count);
+                    return;
+                }
+            }
 
             fprintf(stderr, "[VdInitEngines #%d] INJECTING default callback: cb=0x%08X arg=0x%08X (was cb=0)\n",
                     call_count, callback_ea, callback_arg);
@@ -6840,9 +6961,20 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
 
         // Get current PPC context to call the callback
         PPCContext* ctx_ptr = GetPPCContext();
-        if (ctx_ptr) {
-            fprintf(stderr, "[VdInitEngines #%d] Got context, calling callback...\n", call_count);
+        fprintf(stderr, "[VdInitEngines #%d] GetPPCContext() returned %p (tid=%lx)\n",
+                call_count, (void*)ctx_ptr, GetCurrentThreadId());
+        fflush(stderr);
+
+        if (!ctx_ptr) {
+            // No PPC context - this is being called from a host/system thread, not a guest thread
+            // Skip the callback invocation - it's only needed when the game calls VdInitializeEngines
+            fprintf(stderr, "[VdInitEngines #%d] No PPC context (host thread), skipping callback\n", call_count);
             fflush(stderr);
+            return;
+        }
+
+        fprintf(stderr, "[VdInitEngines #%d] Got context, calling callback...\n", call_count);
+        fflush(stderr);
 
             // Save original context
             PPCContext saved_ctx = *ctx_ptr;
@@ -6862,10 +6994,6 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
 
             fprintf(stderr, "[VdInitEngines #%d] Callback returned r3=0x%08X\n", call_count, return_value);
             fflush(stderr);
-        } else {
-            fprintf(stderr, "[VdInitEngines #%d] ERROR: No current thread context!\n", call_count);
-            fflush(stderr);
-        }
 }
 
 uint32_t VdIsHSIOTrainingSucceeded()
@@ -7578,39 +7706,26 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
         s_isr_present_counter++;
         if (s_isr_present_counter >= s_isr_present_interval) {
             s_isr_present_counter = 0;
-            // Get r31 (graphics device structure) from global pointer
-            // r31 is loaded from either (0x82000000+2884), (0x82000000+2888), or (0x82000000+10388) depending on process type
-            // The global contains either a HANDLE (object index) or a direct pointer to the structure
+
+            // CRITICAL FIX: Use heap-allocated graphics context instead of static globals
+            // Following Xenia's approach: the graphics device structure pointer is at context+0x2894
             uint32_t r31_ea = 0;
-            for (uint32_t offset : {2884u, 2888u, 10388u}) {  // 10388 = 0x2894
-                uint32_t ptr_ea = 0x82000000u + offset;
-                if (auto* ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ptr_ea))) {
-                    uint32_t value = ptr->get();
-
-                    // Check if it's a direct pointer (in guest memory range)
-                    if (value >= 0x1000 && value < 0x90000000) {
-                        r31_ea = value;
-                        fprintf(stderr, "[ISR-PRESENT-DEBUG] Found r31=0x%08X (direct pointer) at offset=%u\n", r31_ea, offset);
-                        fflush(stderr);
-                        break;
-                    }
-
-                    // Otherwise try to dereference as a handle
-                    if (value >= 0x100 && value < 0x10000) {
-                        if (auto* struct_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(value))) {
-                            r31_ea = struct_ptr->get();
-                            if (r31_ea >= 0x1000 && r31_ea < 0x90000000) {
-                                fprintf(stderr, "[ISR-PRESENT-DEBUG] Found r31=0x%08X via handle=0x%08X at offset=%u\n", r31_ea, value, offset);
-                                fflush(stderr);
-                                break;
-                            }
-                        }
-                    }
-                }
+            uint32_t gfx_ctx = g_graphics_context_ea;
+            if (gfx_ctx == 0) {
+                fprintf(stderr, "[ISR-PRESENT] Graphics context not allocated yet\n");
+                fflush(stderr);
+                return;
             }
 
-            if (r31_ea == 0) {
-                fprintf(stderr, "[ISR-PRESENT] Failed to find graphics device structure pointer (not initialized yet?)\n");
+            // Load the structure pointer from context+0x2894
+            if (auto* ctx_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(gfx_ctx + 0x2894))) {
+                r31_ea = ctx_ptr->get();
+                fprintf(stderr, "[ISR-PRESENT-DEBUG] Loaded r31=0x%08X from heap context+0x2894 (ctx=0x%08X)\n", r31_ea, gfx_ctx);
+                fflush(stderr);
+            }
+
+            if (r31_ea == 0 || r31_ea < 0x1000 || r31_ea >= 0x90000000) {
+                fprintf(stderr, "[ISR-PRESENT] Invalid graphics device structure pointer r31=0x%08X (not initialized yet?)\n", r31_ea);
                 fflush(stderr);
                 return;
             }
@@ -7696,7 +7811,11 @@ uint32_t MmAllocatePhysicalMemoryEx
                 size, size / (1024.0 * 1024.0));
         fflush(stderr);
     } else {
-        fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p\n",
+        // CRITICAL FIX: Zero-initialize allocated memory to prevent crashes from uninitialized vtable pointers
+        // The game expects allocated memory to be zero-initialized, especially for structures with vtables
+        memset(ptr, 0, size);
+
+        fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p (ZERO-INITIALIZED)\n",
                 size, size / (1024.0 * 1024.0), result, ptr);
         fflush(stderr);
 
@@ -9203,25 +9322,15 @@ void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
             depth, size, size, size/1024, flags);
     fflush(stderr);
 
-    // INTERCEPT: Handle memory allocation ourselves like Xenia does
-    // Instead of calling the game's broken allocator, use our own memory allocation
-    uint32_t alignment = 0x1000;  // 4KB default
-    if (size >= 64 * 1024) {
-        alignment = 0x10000;  // 64KB for large allocations
-    }
+    // CRITICAL FIX: Call the ORIGINAL game allocator instead of bypassing it!
+    // The game's allocator (sub_8215CB08) performs important initialization on first call
+    // by calling sub_8215FDC0, which sets up internal data structures.
+    // Bypassing this causes crashes due to uninitialized static globals.
+    __imp__sub_8215CB08(ctx, base);
 
-    // Allocate from physical memory using MmAllocatePhysicalMemoryEx
-    uint32_t result = MmAllocatePhysicalMemoryEx(0, size, PAGE_READWRITE, 0, 0xFFFFFFFF, alignment);
-
-    if (result == 0) {
-        fprintf(stderr, "[MW05_DEBUG] [depth=%d] FAILED sub_8215CB08 - MmAllocatePhysicalMemoryEx returned 0 for size=%u\n",
-                depth, size);
-    } else {
-        fprintf(stderr, "[MW05_DEBUG] [depth=%d] SUCCESS sub_8215CB08 - allocated %u bytes at %08X\n",
-                depth, size, result);
-    }
-
-    ctx.r3.u32 = result;
+    uint32_t result = ctx.r3.u32;
+    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT sub_8215CB08 - allocated %u bytes at %08X\n",
+            depth, size, result);
     fflush(stderr);
     s_debug_call_depth.fetch_sub(1);
 }

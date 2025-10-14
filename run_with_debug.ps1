@@ -1,5 +1,8 @@
+# Log directory for debug outputs
+$LogDir = ".\out\build\x64-Clang-Debug\Mw05Recomp"
+
 # Try unblocking main thread to see if game progresses to graphics init
-$env:MW05_BREAK_82813514 = "1"                           # ESSENTIAL: Break worker thread infinite loop
+$env:MW05_BREAK_82813514 = "0"                           # DISABLED: Let worker thread run continuously
 $env:MW05_FAKE_ALLOC_SYSBUF = "1"                        # ESSENTIAL: Fake system buffer allocation
 $env:MW05_UNBLOCK_MAIN = "1"                             # Try unblocking main thread
 $env:MW05_TRACE_KERNEL = "1"                             # Enable kernel tracing
@@ -81,16 +84,16 @@ $env:MW05_ISR_PRESENT_INTERVAL = "10"  # Call every 10 frames (~166ms at 60Hz)
 
 
 
-$p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.exe" -PassThru -икс ".\debug_stderr.txt"
+$p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.exe" -PassThru -RedirectStandardError "$LogDir\debug_stderr.txt"
 Start-Sleep -Seconds 20
 Stop-Process -Id $p.Id -Force
 Start-Sleep -Seconds 2
 Write-Host "`n=== STDERR DEBUG OUTPUT ==="
-Get-Content ".\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "RENDER-DEBUG"
+Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "RENDER-DEBUG"
 Write-Host "`n=== ANALYSIS ==="
-$beginCount = (Get-Content ".\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "BeginCommandList").Count
-$procBeginCount = (Get-Content ".\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ProcBeginCommandList").Count
-$applyCount = (Get-Content ".\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ApplyColorSurface").Count
+$beginCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "BeginCommandList").Count
+$procBeginCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ProcBeginCommandList").Count
+$applyCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ApplyColorSurface").Count
 Write-Host "BeginCommandList calls: $beginCount"
 Write-Host "ProcBeginCommandList calls: $procBeginCount"
 Write-Host "ApplyColorSurface calls: $applyCount"

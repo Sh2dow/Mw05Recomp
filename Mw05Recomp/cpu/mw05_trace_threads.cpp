@@ -28,6 +28,7 @@ extern "C" {
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
     void Mw05ForceVdInitOnce();
     void Mw05LogIsrIfRegisteredOnce();
+    uint32_t Mw05GetGraphicsContextAddress();  // Get heap-allocated graphics context address
 
     // Minimal host-side kick (idempotent) to initialize system command buffer.
     // Host Vd helper forward-decl (defined in kernel/imports.cpp)
@@ -78,14 +79,19 @@ static void UnblockThreadFunc() {
 	}
 
 	// Check the VD callback function pointer that creates the render thread
-	// Graphics context is at 0x40007180
-	// r10 = *(0x40007180 + 10388) = *(0x40009994)
+	// Graphics context is heap-allocated (following Xenia's approach)
+	// r10 = *(gfx_ctx + 10388)
 	// r30 = *(r10 + 16) - this is the function pointer
-	const uint32_t gfx_ctx_ea = 0x40007180;
+	const uint32_t gfx_ctx_ea = Mw05GetGraphicsContextAddress();
+	if (gfx_ctx_ea == 0) {
+		fprintf(stderr, "[UNBLOCK-DEBUG] Graphics context not yet allocated\n");
+		fflush(stderr);
+		return;
+	}
 	uint32_t* gfx_ctx_ptr = static_cast<uint32_t*>(g_memory.Translate(gfx_ctx_ea + 10388));
 	if (gfx_ctx_ptr) {
 		uint32_t r10_value = __builtin_bswap32(*gfx_ctx_ptr);  // Big-endian
-		fprintf(stderr, "[UNBLOCK-DEBUG] GFX context+10388 = %08X\n", r10_value);
+		fprintf(stderr, "[UNBLOCK-DEBUG] GFX context (heap=0x%08X) +10388 = %08X\n", gfx_ctx_ea, r10_value);
 		fflush(stderr);
 
 		if (r10_value != 0) {

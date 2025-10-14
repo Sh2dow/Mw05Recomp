@@ -36,6 +36,7 @@
 #include <ppc/ppc_context.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <unordered_map>
 
 // Forward declarations for kernel functions
@@ -224,6 +225,48 @@ void KiSystemStartup()
         XamRegisterContent(XamMakeContent(XCONTENTTYPE_SAVEDATA, "SYS-DATA"), (const char*)(savePathU8.c_str()));
     }
 
+    // CRITICAL FIX: Create user profile directory and dummy .gpd files
+    // The game expects profile files to exist before it will load resources
+    // Profile files are stored in the save directory (XCONTENTTYPE_SAVEDATA)
+    // Based on Xenia log analysis: HostPathDevice::ResolvePath(\FFFE07D1.gpd) and (\454107D9.gpd)
+    {
+        const std::filesystem::path savePath = GetSavePath(true);
+        std::error_code ec;
+        std::filesystem::create_directories(savePath, ec);
+
+        fprintf(stderr, "[BOOT] Creating user profile directory: %s\n", savePath.string().c_str());
+        fflush(stderr);
+
+        // Create dummy profile files that the game expects
+        // These are the files Xenia creates: FFFE07D1.gpd and 454107D9.gpd
+        const std::vector<std::string> profileFiles = {
+            "FFFE07D1.gpd",  // User profile data
+            "454107D9.gpd"   // Game-specific profile data (NFS Most Wanted title ID)
+        };
+
+        for (const auto& filename : profileFiles) {
+            const std::filesystem::path profilePath = savePath / filename;
+            if (!std::filesystem::exists(profilePath)) {
+                // Create a minimal dummy .gpd file (just a header)
+                std::ofstream file(profilePath, std::ios::binary);
+                if (file.is_open()) {
+                    // Write a minimal GPD header (16 bytes of zeros is enough for now)
+                    const char header[16] = {0};
+                    file.write(header, sizeof(header));
+                    file.close();
+                    fprintf(stderr, "[BOOT] Created dummy profile file: %s\n", filename.c_str());
+                    fflush(stderr);
+                } else {
+                    fprintf(stderr, "[BOOT] WARNING: Failed to create profile file: %s\n", filename.c_str());
+                    fflush(stderr);
+                }
+            } else {
+                fprintf(stderr, "[BOOT] Profile file already exists: %s\n", filename.c_str());
+                fflush(stderr);
+            }
+        }
+    }
+
     // Mount game
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'game'");
     XamContentCreateEx(0, "game", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
@@ -254,6 +297,82 @@ void KiSystemStartup()
     Mw05AutoVideoInitIfNeeded();  // Initialize video system (ring buffer, etc.)
     Mw05StartVblankPumpOnce();    // Start VBlank ticks
     KernelTraceHostOpF("HOST.KiSystemStartup VBlank pump started");
+
+    // CRITICAL FIX: Initialize the VD ISR flag that enables frame callbacks
+    // The VD interrupt callback at sub_825979A8 checks this flag at 0x7FC86544
+    // If set, it calls the frame callback that sets dword_82A2CF40 each frame
+    // This is what keeps the main game loop running naturally
+    {
+        const uint32_t vd_isr_flag_ea = 0x7FC86544;
+        uint32_t* vd_isr_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(vd_isr_flag_ea));
+        if (vd_isr_flag_ptr) {
+            #if defined(_MSC_VER)
+                *vd_isr_flag_ptr = _byteswap_ulong(1);  // Set flag (big-endian)
+            #else
+                *vd_isr_flag_ptr = __builtin_bswap32(1);  // Set flag (big-endian)
+            #endif
+            fprintf(stderr, "[INIT] Set VD ISR flag at 0x%08X to 1 (enables frame callbacks)\n", vd_isr_flag_ea);
+            fflush(stderr);
+            KernelTraceHostOpF("HOST.Init.VdIsrFlag addr=%08X value=1", vd_isr_flag_ea);
+        } else {
+            fprintf(stderr, "[INIT] ERROR: Failed to translate VD ISR flag address 0x%08X\n", vd_isr_flag_ea);
+            fflush(stderr);
+        }
+    }
+
+    // CRITICAL FIX: Register the VD ISR callback that the game expects
+    // The game should call VdSetGraphicsInterruptCallback itself, but it's stuck in a loop
+    // waiting for the callback to be called. This is a chicken-and-egg problem.
+    // Solution: Register the callback during initialization, before the game enters the main loop.
+    {
+        extern void VdSetGraphicsInterruptCallback(uint32_t callback_ea, uint32_t context_ea);
+        const uint32_t vd_isr_callback_ea = 0x825979A8;  // sub_825979A8
+        const uint32_t vd_isr_context_ea = 0x40007180;   // Graphics context (allocated earlier)
+
+        fprintf(stderr, "[INIT] Registering VD ISR callback at 0x%08X with context 0x%08X\n",
+                vd_isr_callback_ea, vd_isr_context_ea);
+        fflush(stderr);
+
+        VdSetGraphicsInterruptCallback(vd_isr_callback_ea, vd_isr_context_ea);
+
+        fprintf(stderr, "[INIT] VD ISR callback registered successfully\n");
+        fflush(stderr);
+        KernelTraceHostOpF("HOST.Init.VdIsrCallback cb=%08X ctx=%08X", vd_isr_callback_ea, vd_isr_context_ea);
+
+        // CRITICAL FIX: Initialize the frame callback pointer in the GAME'S graphics context
+        // The game uses a graphics context at 0x00061000 (static variable in XEX data section)
+        // The VD ISR callback at sub_825979A8 checks context[3899] for a frame callback pointer
+        // If set, it calls this function each frame to update the main loop flag at 0x82A2CF40
+        // context[3899] = *(0x00061000 + 0x3CEC) = *(0x00064CEC)
+        // We need to set this to point to a function that sets dword_82A2CF40
+        // For now, we'll set the flag directly during initialization
+        {
+            const uint32_t game_gfx_context_ea = 0x00061000;  // Game's graphics context (static variable)
+            const uint32_t frame_callback_ptr_ea = game_gfx_context_ea + 0x3CEC;  // context[3899]
+            const uint32_t main_loop_flag_ea = 0x82A2CF40;
+
+            // Set the main loop flag to 1 to unblock the main loop
+            uint32_t* main_loop_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(main_loop_flag_ea));
+            if (main_loop_flag_ptr) {
+                #if defined(_MSC_VER)
+                    *main_loop_flag_ptr = _byteswap_ulong(1);  // Set flag (big-endian)
+                #else
+                    *main_loop_flag_ptr = __builtin_bswap32(1);  // Set flag (big-endian)
+                #endif
+                fprintf(stderr, "[INIT] Set main loop flag at 0x%08X to 1 (unblocks main loop)\n", main_loop_flag_ea);
+                fflush(stderr);
+                KernelTraceHostOpF("HOST.Init.MainLoopFlag addr=%08X value=1", main_loop_flag_ea);
+            } else {
+                fprintf(stderr, "[INIT] ERROR: Failed to translate main loop flag address 0x%08X\n", main_loop_flag_ea);
+                fflush(stderr);
+            }
+
+            // TODO: Find the real frame callback function and set it at frame_callback_ptr_ea
+            // For now, the main loop flag is set once during initialization
+            // The game might clear it and expect the VD ISR to set it again each frame
+            // If that happens, we'll need to implement a proper frame callback
+        }
+    }
 
     // EXPERIMENTAL: Send notification that the game is waiting for
     // Send it from a background thread with a delay to ensure the game has created listeners
@@ -509,7 +628,58 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     // CRITICAL: Process import table BEFORE returning
     // This patches the game's import table with addresses of our kernel function hooks
     // Matches Xenia's behavior where imports are resolved before game execution starts
+    fprintf(stderr, "[BOOT] About to call ProcessImportTable...\n");
+    fflush(stderr);
     ProcessImportTable(loadResult.data(), security->loadAddress.get());
+    fprintf(stderr, "[BOOT] ProcessImportTable returned successfully\n");
+    fflush(stderr);
+
+    // CRITICAL FIX: Create notification listener automatically during initialization
+    // The game has a chicken-and-egg problem:
+    // - Function sub_82849BF8 polls for XN_SYS_SIGNINCHANGED (0x11) notification
+    // - But this happens BEFORE the game creates listeners via XamNotifyCreateListener
+    // - Solution: Create listener automatically, matching Xenia's behavior
+    //
+    // The game expects to listen to area bits 0 and 2 (qwAreas = 0x5):
+    // - Bit 0: System notifications (XN_SYS_*)
+    // - Bit 2: User notifications (XN_LIVE_*)
+    //
+    // This allows the game to receive XN_SYS_SIGNINCHANGED during initialization
+    // and progress to the point where it creates its own listeners
+    fprintf(stderr, "[BOOT] About to create notification listener...\n");
+    fflush(stderr);
+    const uint64_t qwAreas = 0x5;  // Listen to areas 0 and 2
+    const uint32_t listener_handle = XamNotifyCreateListener(qwAreas);
+    fprintf(stderr, "[BOOT] Auto-created notification listener: handle=0x%08X areas=0x%llX\n",
+            listener_handle, (unsigned long long)qwAreas);
+    fflush(stderr);
+
+    // CRITICAL FIX: Initialize worker thread system
+    // The game has a worker thread that checks qword_828F1F98 and exits if it's 0.
+    // The initialization function sub_82813598 should be called to set this flag,
+    // but the call chain (sub_823B0190 -> sub_823AF590 -> sub_8245FBD0 -> sub_82813598)
+    // is never executed because sub_823B0190 is not being called.
+    //
+    // Solution: Force call sub_82813598 directly to initialize the worker thread system.
+    // This function:
+    // 1. Initializes qword_828F1F98 to a non-zero value (frame interval)
+    // 2. Creates the worker thread via sub_82813418
+    // 3. Sets up the worker thread event system
+    //
+    // Parameter: r3 = frame rate (100 Hz for 10ms intervals)
+    fprintf(stderr, "[BOOT] About to initialize worker thread system...\n");
+    fflush(stderr);
+
+    // Set up PPC context for the call
+    PPCContext worker_ctx{};
+    worker_ctx.r3.u32 = 100;  // 100 Hz frame rate (10ms intervals)
+
+    // Call the initialization function
+    extern void sub_82813598(PPCContext&, uint8_t*);
+    sub_82813598(worker_ctx, g_memory.base);
+
+    fprintf(stderr, "[BOOT] Worker thread system initialized\n");
+    fflush(stderr);
 
     return entry;
 }
@@ -956,11 +1126,10 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] Installing sub_8262D998_wrapper (protects qword_828F1F98)\n"); fflush(stderr);
     g_memory.InsertFunction(0x8262D998, sub_8262D998_wrapper);
     fprintf(stderr, "[MAIN] sub_8262D998_wrapper installed\n"); fflush(stderr);
-    fprintf(stderr, "[MAIN] before_sub_82813598_install (worker init)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x82813598, sub_82813598);
-    fprintf(stderr, "[MAIN] after_sub_82813598_install\n"); fflush(stderr);
-    fprintf(stderr, "[MAIN] before_sub_82813678_install (worker shutdown)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x82813678, sub_82813678);
+    fprintf(stderr, "[MAIN] DISABLED sub_82813598 hook - letting recompiled code run naturally\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x82813598, sub_82813598);  // DISABLED - recompiler bugs fixed
+    fprintf(stderr, "[MAIN] DISABLED sub_82813678 hook - letting recompiled code run naturally\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x82813678, sub_82813678);  // DISABLED - recompiler bugs fixed
     fprintf(stderr, "[MAIN] before_sub_82814068_install (init func)\n"); fflush(stderr);
     g_memory.InsertFunction(0x82814068, sub_82814068_wrapper);
     fprintf(stderr, "[MAIN] before_sub_8284E6C0_install (event create)\n"); fflush(stderr);
@@ -1013,6 +1182,44 @@ int main(int argc, char *argv[])
         Mw05CreateSystemThreads();
     }
     fprintf(stderr, "[MAIN] System threads created\n"); fflush(stderr);
+
+    // CRITICAL FIX #5: Initialize dword_82A2D1AC (graphics settings pointer)
+    // This global is used by graphics/video mode functions during boot
+    // Must be initialized AFTER XEX data section is loaded, BEFORE guest code starts
+    {
+        const uint32_t gfx_settings_addr = 0x82A2D1AC;
+
+        // Read current value BEFORE initialization
+        uint32_t old_value = LoadBE32_Watched(g_memory.base, gfx_settings_addr);
+        fprintf(stderr, "[BOOT] dword_82A2D1AC BEFORE init = %08X\n", old_value);
+        fflush(stderr);
+
+        // Allocate a graphics settings structure (256 bytes should be enough)
+        void* gfx_obj_host = g_userHeap.AllocPhysical(256, 16);
+        uint32_t gfx_obj_ptr = g_memory.MapVirtual(gfx_obj_host);
+
+        if (gfx_obj_ptr != 0) {
+            // Store the graphics settings pointer in the global
+            StoreBE32_Watched(g_memory.base, gfx_settings_addr, gfx_obj_ptr);
+
+            // Verify the write succeeded
+            uint32_t verify_value = LoadBE32_Watched(g_memory.base, gfx_settings_addr);
+            fprintf(stderr, "[BOOT] dword_82A2D1AC AFTER write = %08X (expected %08X)\n", verify_value, gfx_obj_ptr);
+            fflush(stderr);
+
+            // Initialize the graphics settings structure
+            // Based on decompilation, offset +0 contains a mode value (0-5)
+            // Set it to 4 (default mode)
+            memset(gfx_obj_host, 0, 256);
+            StoreBE32_Watched(g_memory.base, gfx_obj_ptr + 0, 4);  // mode = 4
+
+            fprintf(stderr, "[BOOT] Initialized dword_82A2D1AC = %08X (graphics settings)\n", gfx_obj_ptr);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[BOOT] ERROR: Failed to allocate graphics settings object!\n");
+            fflush(stderr);
+        }
+    }
 
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events

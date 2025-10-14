@@ -171,6 +171,15 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX handle=%08X",
                       (unsigned long long)qwAreas, GetKernelHandle(listener));
 
+    // CRITICAL FIX: Send XN_SYS_SIGNINCHANGED (0x11) notification when listener is created
+    // The game waits for this notification before progressing to file I/O and rendering
+    // This notification indicates that a user has signed in (area 0, message 17)
+    if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
+        const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
+        XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 0);  // param=0 (user index 0)
+        KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
+    }
+
     const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
     const char* listShims = std::getenv("MW05_LIST_SHIMS");
     if ((fakeNotify && fakeNotify[0] && fakeNotify[0] != '0') || (listShims && listShims[0] && listShims[0] != '0')) {
@@ -220,7 +229,40 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
 
     static int call_count = 0;
     static int last_log_count = 0;
+    static bool dummy_notification_sent = false;
+    static int empty_queue_count = 0;
     call_count++;
+
+    // MW05_FIX: After 10 consecutive polling attempts with empty queue, send a dummy notification to unblock the thread
+    // The notification polling thread (sub_82849D40) gets stuck waiting for notifications that never arrive
+    // Xenia doesn't create this thread at all, so we need to unblock it to let the game progress
+    // The game is polling for notification ID 0x00000011, so we send that specific notification
+    if (listener.notifications.empty()) {
+        empty_queue_count++;
+    } else {
+        empty_queue_count = 0;  // Reset counter if queue is not empty
+    }
+
+    // Log the first 15 calls to debug the dummy notification logic
+    if (call_count <= 15) {
+        fprintf(stderr, "[MW05_DEBUG] XNotifyGetNext call=%d empty_count=%d queue_size=%zu filter=%08X dummy_sent=%d\n",
+                call_count, empty_queue_count, listener.notifications.size(), dwMsgFilter, dummy_notification_sent);
+        fflush(stderr);
+    }
+
+    if (!dummy_notification_sent && empty_queue_count >= 10 && dwMsgFilter == 0x00000011) {
+        fprintf(stderr, "[MW05_FIX] XNotifyGetNext: Sending dummy notification id=0x%08X to unblock polling thread (call_count=%d, empty_queue_count=%d)\n", dwMsgFilter, call_count, empty_queue_count);
+        fflush(stderr);
+
+        // Send the notification the game is waiting for (id=0x00000011, param=0)
+        // This should allow the thread to exit the polling loop
+        listener.notifications.push_back(std::make_tuple(dwMsgFilter, 0));
+        dummy_notification_sent = true;
+        empty_queue_count = 0;  // Reset counter after sending
+
+        KernelTraceHostOpF("HOST.XNotifyGetNext DUMMY_NOTIFICATION_SENT id=%08X param=%08X",
+                          dwMsgFilter, 0);
+    }
 
     // Log first 10 calls and every 100th call
     bool should_log = (call_count <= 10) || (call_count % 100 == 0);
@@ -357,9 +399,15 @@ uint32_t XamShowMessageBoxUI(uint32_t dwUserIndex, be<uint16_t>* wszTitle, be<ui
 uint32_t XamContentCreateEnumerator(uint32_t dwUserIndex, uint32_t DeviceID, uint32_t dwContentType,
     uint32_t dwContentFlags, uint32_t cItem, be<uint32_t>* pcbBuffer, be<uint32_t>* phEnum)
 {
+    LOGFN("XamContentCreateEnumerator: userIndex={} deviceID={} contentType={} flags={:X} cItem={}",
+          dwUserIndex, DeviceID, dwContentType, dwContentFlags, cItem);
+    KernelTraceHostOpF("HOST.XamContentCreateEnumerator userIndex=%u deviceID=%u contentType=%u flags=%08X cItem=%u",
+                       dwUserIndex, DeviceID, dwContentType, dwContentFlags, cItem);
+
     if (dwUserIndex != 0)
     {
         GuestThread::SetLastError(ERROR_NO_SUCH_USER);
+        LOGFN_ERROR("XamContentCreateEnumerator: invalid user index {}", dwUserIndex);
         return 0xFFFFFFFF;
     }
 
@@ -377,6 +425,9 @@ uint32_t XamContentCreateEnumerator(uint32_t dwUserIndex, uint32_t DeviceID, uin
         *pcbBuffer = sizeof(_XCONTENT_DATA) * cItem;
 
     *phEnum = GetKernelHandle(enumerator);
+
+    LOGFN("XamContentCreateEnumerator: created enumerator handle={:X} with {} items", (uint32_t)*phEnum, registry.size());
+    KernelTraceHostOpF("HOST.XamContentCreateEnumerator.result handle=%08X items=%u", (uint32_t)*phEnum, (unsigned int)registry.size());
 
     return 0;
 }

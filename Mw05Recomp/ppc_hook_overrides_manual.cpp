@@ -97,6 +97,8 @@ static void RegisterHookOverridesManual() {
     g_memory.InsertFunction(0x825CEE18, sub_825CEE18_stub);
     g_memory.InsertFunction(0x825CEE28, sub_825CEE28_stub);
 
+    // NOTE: sub_82849D40 is auto-registered by gen_ppc_overrides.py, no need to register manually
+
     // CRITICAL: NULL vtable method stubs - these are optional vtable methods that some objects don't implement
     // Register at fake addresses that can be used to replace NULL pointers in vtables
     g_memory.InsertFunction(0x82FF2000, vtable_method_stub_noop);  // Stub for vtable method at offset +0x50
@@ -107,6 +109,7 @@ static void RegisterHookOverridesManual() {
     // g_memory.InsertFunction(0x82885A70, MW05Shim_sub_82885A70);
 
     // Install a host allocator callback at a stable guest EA for MW05 to call if its fp is null
+    // Using address in the gap after code section (will be covered by extended PPC_CODE_SIZE)
     extern void MW05HostAllocCb(PPCContext& ctx, uint8_t* base);
     g_memory.InsertFunction(0x82FF1000, MW05HostAllocCb);
 }

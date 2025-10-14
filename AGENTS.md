@@ -43,7 +43,37 @@
 
 ## Critical Debugging Information
 
-### Current Status: ROOT CAUSE FOUND - Invalid Structure Pointer!
+### Current Status: FUNCTION TABLE BUG FIXED - PPC_LOOKUP_FUNC!
+**DATE**: 2025-10-14
+**FUNCTION TABLE BUG**: The `PPC_LOOKUP_FUNC` macro was calculating incorrect offsets, causing crashes when calling indirect functions!
+  - **File**: `tools/XenonRecomp/XenonUtils/ppc_context.h` line 128
+  - **Bug**: `#define PPC_LOOKUP_FUNC(x, y) *(PPCFunc**)(x + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + (uint64_t(uint32_t(y) - PPC_CODE_BASE) * 2))`
+  - **Fix**: `#define PPC_LOOKUP_FUNC(x, y) *(PPCFunc**)(x + PPC_IMAGE_SIZE + (uint64_t(uint32_t(y) - PPC_CODE_BASE) * sizeof(PPCFunc*)))`
+  - **Impact**: The old formula added `PPC_IMAGE_BASE` (0x82000000) to the host base pointer, causing the function table offset to overflow beyond 4GB!
+  - **Example**:
+    - Target address: 0x828134E0
+    - Old offset: `base + 0x82000000 + 0xCD0000 + ((0x828134E0 - 0x820E0000) * 2)` = `base + 0x83B969C0` (OVERFLOW!)
+    - New offset: `base + 0xCD0000 + ((0x828134E0 - 0x820E0000) * 8)` = `base + 0x4667700` (CORRECT!)
+  - **Root Cause**: The function table is stored AFTER the image data in HOST memory at `base + PPC_IMAGE_SIZE`, not at `base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE`
+  - **Result**: Indirect function calls (via `bctrl`) now work correctly, game runs without crashes!
+  - **Total Bugs Fixed**: 39 (38 recompiler instruction bugs + 1 function table bug)
+
+### Previous Status: RECOMPILER BUG #38 FIXED - LIS Instruction!
+**DATE**: 2025-10-14
+**RECOMPILER BUG #38**: The `LIS` (Load Immediate Shifted) instruction was using `.s64` instead of `.u32`!
+  - **File**: `tools/XenonRecomp/XenonRecomp/recompiler.cpp` line 1241
+  - **Bug**: `println("\t{}.s64 = {}; // LIS_FIX_MARK", r(insn.operands[0]), upper);`
+  - **Fix**: `println("\t{}.u32 = {}u; // LIS_FIX_MARK", r(insn.operands[0]), static_cast<uint32_t>(upper));`
+  - **Impact**: This caused ALL address calculations using `lis` + `addi` to produce GARBAGE addresses!
+  - **Example**:
+    - Original assembly: `lis r11, -32249` (load 0x82170000 into upper 16 bits)
+    - Buggy generated code: `ctx.r11.s64 = -2113470464;` (sign-extends to 0xFFFFFFFF82170000)
+    - Fixed generated code: `ctx.r11.u32 = 2181496832u;` (correct 32-bit value 0x82170000)
+  - **Root Cause**: Same class of bug as the previous 37 fixes - using 64-bit operations for 32-bit PowerPC instructions
+  - **Result**: String pointers in `sub_82144CA0` were computed incorrectly, causing crash in `sub_8214B3F8` (strlen function)
+  - **Total Instructions Fixed**: 38 (37 from previous rounds + 1 LIS instruction)
+
+### Previous Status: ROOT CAUSE FOUND - Invalid Structure Pointer!
 **XENIA DEBUG COMPLETE**: Analyzed Thread #2 (0x82812ED0) with assembly disassembly and memory dumps.
 **FUNCTION ANALYSIS**: `sub_82812ED0` is a TRAMPOLINE function that:
   1. Takes context structure pointer in r3

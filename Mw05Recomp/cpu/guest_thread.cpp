@@ -26,19 +26,25 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
     memset(thread, 0, TOTAL_SIZE);
 
-    *(uint32_t*)thread = ByteSwap(g_memory.MapVirtual(thread + PCR_SIZE)); // tls pointer
-    *(uint32_t*)(thread + 0x100) = ByteSwap(g_memory.MapVirtual(thread + PCR_SIZE + TLS_SIZE)); // teb pointer
+    // CRITICAL: Store pointers in BIG-ENDIAN format (will be byte-swapped when loaded by PPC_LOAD_U32)
+    *(uint32_t*)thread = __builtin_bswap32(g_memory.MapVirtual(thread + PCR_SIZE)); // tls pointer at PCR+0
+    *(uint32_t*)(thread + 0x100) = __builtin_bswap32(g_memory.MapVirtual(thread + PCR_SIZE + TLS_SIZE)); // teb pointer at PCR+0x100 (256)
     *(thread + 0x10C) = cpuNumber;
 
+    // Initialize PCR+0x150 (336) to 1 to disable error handling in sub_8262EEE0/sub_8262EEF8
+    // When this is non-zero, the error handling code is skipped (early return)
+    // IMPORTANT: Store in BIG-ENDIAN format (0x00000001 in memory, will be read as 1 by PPC_LOAD_U32)
+    *(uint32_t*)(thread + 0x150) = 0x01000000; // Big-endian 1
+
     *(uint32_t*)(thread + PCR_SIZE + 0x10) = 0xFFFFFFFF; // that one TLS entry that felt quirky
-    *(uint32_t*)(thread + PCR_SIZE + TLS_SIZE + 0x14C) = ByteSwap(GuestThread::GetCurrentThreadId()); // thread id
+    *(uint32_t*)(thread + PCR_SIZE + TLS_SIZE + 0x14C) = __builtin_bswap32(GuestThread::GetCurrentThreadId()); // thread id
 
     ppcContext.r1.u64 = g_memory.MapVirtual(thread + PCR_SIZE + TLS_SIZE + TEB_SIZE + STACK_SIZE); // stack pointer
     ppcContext.r13.u64 = g_memory.MapVirtual(thread);
     ppcContext.fpscr.loadFromHost();
 
-    fprintf(stderr, "[GUEST_CTX] Creating context for tid=%08X cpu=%u (before SetPPCContext)\n",
-            GuestThread::GetCurrentThreadId(), cpuNumber);
+    fprintf(stderr, "[GUEST_CTX] Creating context for tid=%08X cpu=%u r13=0x%08X PCR+0x150=0x%08X (before SetPPCContext)\n",
+            GuestThread::GetCurrentThreadId(), cpuNumber, ppcContext.r13.u32, *(uint32_t*)(thread + 0x150));
     fflush(stderr);
 
     assert(GetPPCContext() == nullptr);
@@ -185,6 +191,22 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
 
     GuestThreadContext ctx(cpuNumber);
     ctx.ppcContext.r3.u64 = params.value;
+
+    // DEBUG: Log the function address and calculation details
+    fprintf(stderr, "[DEBUG] FindFunction called with guest=0x%08X\n", params.function);
+    fprintf(stderr, "[DEBUG] PPC_CODE_BASE=0x%08X PPC_IMAGE_SIZE=0x%08X\n", PPC_CODE_BASE, PPC_IMAGE_SIZE);
+    fprintf(stderr, "[DEBUG] base=%p\n", g_memory.base);
+
+    uint32_t offset_from_code_base = params.function - PPC_CODE_BASE;
+    fprintf(stderr, "[DEBUG] offset_from_code_base=0x%08X (%u)\n", offset_from_code_base, offset_from_code_base);
+
+    uint64_t table_offset = uint64_t(offset_from_code_base) * sizeof(PPCFunc*);
+    fprintf(stderr, "[DEBUG] table_offset=0x%016llX (%llu)\n", table_offset, table_offset);
+
+    void* func_table_ptr = (void*)(g_memory.base + PPC_IMAGE_SIZE + table_offset);
+    fprintf(stderr, "[DEBUG] func_table_ptr=%p\n", func_table_ptr);
+    fflush(stderr);
+
     if (auto entryFunc = g_memory.FindFunction(params.function))
     {
         KernelTraceHostOpF("HOST.TitleEntry.enter entry=%08X", params.function);

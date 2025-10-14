@@ -2027,6 +2027,9 @@ void Mw05StartVblankPumpOnce() {
                             return false;
                         }();
 
+                        // NOTE: dword_82A2D1AC initialization moved to KiSystemStartup() in main.cpp
+                        // to ensure it's initialized BEFORE guest code starts executing
+
                         if (s_break_wait_loop) {
                             // Allocate a fake wait object (64 bytes should be enough)
                             extern Heap g_userHeap;
@@ -4868,12 +4871,18 @@ void __C_specific_handler_x()
 
 uint32_t RtlNtStatusToDosError(uint32_t Status)
 {
+    fprintf(stderr, "[RtlNtStatusToDosError] CALLED: Status=0x%08X\n", Status);
+    fflush(stderr);
+
     // For now, pass through common success and map unknown NTSTATUS to generic ERROR_GEN_FAILURE.
     // Titles often just check for zero/non-zero.
     if (Status == STATUS_SUCCESS) return 0;
     // If it's already a small Win32 error-style code, pass through.
     if ((Status & 0xFFFF0000u) == 0) return Status;
     // Generic failure (31).
+
+    fprintf(stderr, "[RtlNtStatusToDosError] Returning 31\n");
+    fflush(stderr);
     return 31u;
 }
 
@@ -6792,6 +6801,29 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
     g_VdGraphicsCallback = callback;
     g_VdGraphicsCallbackCtx = context;
 
+    // CRITICAL FIX: Initialize the frame callback pointer in the graphics context
+    // The VD ISR callback at sub_825979A8 checks context[3899] for a frame callback pointer
+    // If set, it calls this function each frame to update the main loop flag at 0x82A2CF40
+    // We need to set this pointer to enable the frame callback mechanism
+    // context[3899] = *(context + 0x3CEC)
+    {
+        const uint32_t frame_callback_ptr_offset = 0x3CEC;  // Offset to context[3899]
+        const uint32_t frame_callback_ptr_ea = context + frame_callback_ptr_offset;
+        const uint32_t main_loop_flag_ea = 0x82A2CF40;  // Main loop flag address
+
+        // For now, just set the main loop flag to 1 to unblock the main loop
+        // TODO: Find the real frame callback function and set it at frame_callback_ptr_ea
+        if (void* flag_ptr = g_memory.Translate(main_loop_flag_ea)) {
+            #if defined(_MSC_VER)
+                *static_cast<uint32_t*>(flag_ptr) = _byteswap_ulong(1);
+            #else
+                *static_cast<uint32_t*>(flag_ptr) = __builtin_bswap32(1);
+            #endif
+            fprintf(stderr, "[VdSetGraphicsInterruptCallback] Set main loop flag at 0x%08X to 1\n", main_loop_flag_ea);
+            fflush(stderr);
+        }
+    }
+
     // Monitor when the game NATURALLY registers a callback (not forced by us)
     static bool s_first_natural_registration = true;
     if (s_first_natural_registration) {
@@ -7293,7 +7325,8 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                     }
                 }
 
-                // Emulate global render flag that ISR tests at 0x7FE86544 (bit0 must be set)
+                // Emulate global render flag that ISR tests at 0x7FC86544 (bit0 must be set)
+                // CORRECTED: The address is 0x7FC86544, not 0x7FE86544 (verified from IDA decompilation)
                 static const bool s_set_render_flag = [](){
                     if (const char* v = std::getenv("MW05_SET_RENDER_FLAG")) return !(v[0]=='0' && v[1]=='\0');
                     return true; // default ON during bring-up
@@ -7302,7 +7335,7 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                     uint32_t ea_flag = [](){
                         if (const char* v = std::getenv("MW05_RENDER_FLAG_ADDR"))
                             return (uint32_t)std::strtoul(v, nullptr, 0);
-                        return 0x7FE86544u; // from ISR disasm: lis r11,0x7FE8; lwz 25924(r11)
+                        return 0x7FC86544u; // CORRECTED from 0x7FE86544 (verified from IDA decompilation of sub_825979A8)
                     }();
                     if (GuestOffsetInRange(ea_flag, 4)) {
                         if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(ea_flag))) {
@@ -7330,6 +7363,66 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                     GuestToHostFunction<void>(cb, ctx, source);
                 } else {
                     GuestToHostFunction<void>(cb, source, ctx);
+                }
+
+                // CRITICAL FIX: Set the main loop flag EVERY FRAME after the VD ISR callback
+                // The main loop at sub_82441CF0 waits for dword_82A2CF40 to be non-zero
+                // Normally, this flag is set by a frame callback invoked by the VD ISR
+                // But the frame callback pointer at context[3899] is not initialized yet
+                // Solution: Set the flag directly after each VD ISR callback invocation
+                // This keeps the main loop running until the game initializes the frame callback
+                if (source == 0) {  // Only for VBlank interrupts (source==0)
+                    // NEW FIX: Check if the game has registered a frame callback at context[3899]
+                    // If so, invoke it instead of manually setting the flag
+                    // This allows the game to progress naturally once it initializes the callback
+                    bool frame_callback_invoked = false;
+                    if (ctx && GuestOffsetInRange(ctx, 16000)) {
+                        if (void* ctx_base = g_memory.Translate(ctx)) {
+                            auto* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_base);
+                            // Check if frame callback is registered at context[3899]
+                            #if defined(_MSC_VER)
+                                const uint32_t callback_flag = _byteswap_ulong(ctx_u32[3899]);
+                            #else
+                                const uint32_t callback_flag = __builtin_bswap32(ctx_u32[3899]);
+                            #endif
+
+                            if (callback_flag != 0) {
+                                // Frame callback is registered! Log this important event
+                                static bool s_logged_callback_registered = false;
+                                if (!s_logged_callback_registered) {
+                                    s_logged_callback_registered = true;
+                                    fprintf(stderr, "[VD-ISR] FRAME CALLBACK REGISTERED! context[3899]=0x%08X\n", callback_flag);
+                                    fflush(stderr);
+                                    KernelTraceHostOpF("HOST.VdISR.frame_callback_registered flag=%08X", callback_flag);
+                                }
+
+                                // The game has registered a frame callback - let the VD ISR handle it naturally
+                                // Don't manually set the main loop flag anymore
+                                frame_callback_invoked = true;
+                            }
+                        }
+                    }
+
+                    // If frame callback is not registered yet, manually set the main loop flag
+                    // This is a temporary workaround until the game initializes the callback
+                    if (!frame_callback_invoked) {
+                        const uint32_t main_loop_flag_ea = 0x82A2CF40;
+                        if (void* flag_ptr = g_memory.Translate(main_loop_flag_ea)) {
+                            #if defined(_MSC_VER)
+                                *static_cast<uint32_t*>(flag_ptr) = _byteswap_ulong(1);
+                            #else
+                                *static_cast<uint32_t*>(flag_ptr) = __builtin_bswap32(1);
+                            #endif
+                            // Only log the first few times to avoid spam
+                            static uint32_t s_flag_set_count = 0;
+                            if (s_flag_set_count < 5) {
+                                fprintf(stderr, "[VD-ISR] Set main loop flag at 0x%08X to 1 (frame #%u)\n",
+                                        main_loop_flag_ea, s_callback_count);
+                                fflush(stderr);
+                                s_flag_set_count++;
+                            }
+                        }
+                    }
                 }
 
                 s_callback_count++;

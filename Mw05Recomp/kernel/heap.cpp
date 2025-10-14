@@ -683,6 +683,35 @@ void MW05Shim_sub_82849BF8(PPCContext& ctx, uint8_t* base)
 }
 
 GUEST_FUNCTION_HOOK(__imp__sub_82849BF8, MW05Shim_sub_82849BF8);
+GUEST_FUNCTION_HOOK(sub_82849BF8, MW05Shim_sub_82849BF8);  // Also hook direct calls
+
+// Stub sub_82441C70 - NULL pointer dereference at dword_82A2D1AC
+void MW05Shim_sub_82441C70(PPCContext& ctx, uint8_t* base)
+{
+    static int call_count = 0;
+    if (call_count++ < 3) {
+        fprintf(stderr, "[heap] sub_82441C70 STUBBED (NULL pointer at dword_82A2D1AC) r3=%08X\n", ctx.r3.u32);
+        fflush(stderr);
+    }
+    // Return success
+    ctx.r3.u32 = 0;
+}
+
+GUEST_FUNCTION_HOOK(sub_82441C70, MW05Shim_sub_82441C70);
+
+// Stub sub_82596900 - Invalid address calculation
+void MW05Shim_sub_82596900(PPCContext& ctx, uint8_t* base)
+{
+    static int call_count = 0;
+    if (call_count++ < 3) {
+        fprintf(stderr, "[heap] sub_82596900 STUBBED (invalid address calculation) r3=%08X r31=%08X\n", ctx.r3.u32, ctx.r31.u32);
+        fflush(stderr);
+    }
+    // Return success
+    ctx.r3.u32 = 0;
+}
+
+GUEST_FUNCTION_HOOK(sub_82596900, MW05Shim_sub_82596900);
 
 #if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_HOOK(sub_82BD7D30, RtlAllocateHeap);

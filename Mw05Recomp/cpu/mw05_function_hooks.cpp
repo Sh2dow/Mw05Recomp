@@ -236,34 +236,11 @@ void sub_82112168_hook(PPCContext& ctx, uint8_t* base) {
 
 // Register the hook at static initialization time
 static void RegisterMw05FunctionHooks() {
-    fprintf(stderr, "[MW05-HOOKS] Registering function hooks...\n");
+    fprintf(stderr, "[MW05-HOOKS] Function hooks DISABLED - letting recompiled code run naturally\n");
     fflush(stderr);
 
-    // Override sub_82112168 with our hook
-    g_memory.InsertFunction(0x82112168, sub_82112168_hook);
-
-    // Override sub_82813598 with our hook
-    g_memory.InsertFunction(0x82813598, sub_82813598_hook);
-
-    // Override sub_8215FDC0 with our hook
-    g_memory.InsertFunction(0x8215FDC0, sub_8215FDC0_hook);
-
-    // Override sub_8215CB08 with our hook
-    g_memory.InsertFunction(0x8215CB08, sub_8215CB08_hook);
-
-    // Override sub_8211E470 with our hook
-    g_memory.InsertFunction(0x8211E470, sub_8211E470_hook);
-
-    // Override sub_820EA958 with our hook
-    g_memory.InsertFunction(0x820EA958, sub_820EA958_hook);
-
-    fprintf(stderr, "[MW05-HOOKS] sub_82112168 hook installed at 0x82112168\n");
-    fprintf(stderr, "[MW05-HOOKS] sub_82813598 hook installed at 0x82813598\n");
-    fprintf(stderr, "[MW05-HOOKS] sub_8215FDC0 hook installed at 0x8215FDC0\n");
-    fprintf(stderr, "[MW05-HOOKS] sub_8215CB08 hook installed at 0x8215CB08\n");
-    fprintf(stderr, "[MW05-HOOKS] sub_8211E470 hook installed at 0x8211E470\n");
-    fprintf(stderr, "[MW05-HOOKS] sub_820EA958 hook installed at 0x820EA958\n");
-    fflush(stderr);
+    // All hooks disabled - recompiler bugs have been fixed
+    // The recompiled code should work correctly now with the DIVW/DIVWU fixes
 }
 
 // Use static constructor to register hooks early

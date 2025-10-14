@@ -36,7 +36,7 @@ $env:MW05_FAST_BOOT = "0"
 $env:MW05_FAST_RET = "0"
 
 Write-Host "=== MW05 DEEP DEBUGGING SESSION ===" -ForegroundColor Cyan
-Write-Host "This will run the game for 30 seconds with detailed tracing enabled."
+Write-Host "This will run the game for 60 seconds with detailed tracing enabled."
 Write-Host "Press Ctrl+C to stop early if needed."
 Write-Host ""
 
@@ -55,8 +55,8 @@ $p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.
                    -PassThru `
                    -RedirectStandardError ".\debug_stderr.txt"
 
-# Wait for 30 seconds
-Start-Sleep -Seconds 30
+# Wait for 60 seconds
+Start-Sleep -Seconds 60
 
 Write-Host "Stopping game..." -ForegroundColor Yellow
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

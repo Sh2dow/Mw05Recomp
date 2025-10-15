@@ -86,12 +86,25 @@ static size_t GetStackSize()
 
 static void* GuestThreadFunc(void* arg)
 {
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER] Entry point reached, arg=%p\n", arg);
+    fflush(stderr);
+
     GuestThreadHandle* hThread = (GuestThreadHandle*)arg;
+
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER] hThread=%p, checking suspended flag...\n", (void*)hThread);
+    fflush(stderr);
 #else
 static void GuestThreadFunc(GuestThreadHandle* hThread)
 {
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER] Entry point reached, hThread=%p\n", (void*)hThread);
+    fflush(stderr);
 #endif
     const bool was_suspended = hThread->suspended.load();
+
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER] suspended=%d, tid=%08X, entry=%08X\n",
+            was_suspended, hThread->GetThreadId(), hThread->params.function);
+    fflush(stderr);
+
     if (was_suspended) {
         fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X WAITING for resume...\n",
             hThread->GetThreadId(), hThread->params.function);
@@ -121,18 +134,41 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
     : params(params), suspended((params.flags & 0x1) != 0)  // Honor CREATE_SUSPENDED flag - game calls NtResumeThread to resume
 #ifdef USE_PTHREAD
 {
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] Constructor ENTER: entry=0x%08X flags=0x%08X suspended=%d\n",
+            params.function, params.flags, suspended.load());
+    fflush(stderr);
+
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GetStackSize());
+
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] About to call pthread_create with GuestThreadFunc=%p this=%p\n",
+            (void*)GuestThreadFunc, (void*)this);
+    fflush(stderr);
+
     const auto ret = pthread_create(&thread, &attr, GuestThreadFunc, this);
     if (ret != 0) {
         fprintf(stderr, "pthread_create failed with error code 0x%X.\n", ret);
         return;
     }
+
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] pthread_create succeeded, thread=%p\n", (void*)thread);
+    fflush(stderr);
 }
 #else
-      , thread(GuestThreadFunc, this)
 {
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] Constructor ENTER: entry=0x%08X flags=0x%08X suspended=%d\n",
+            params.function, params.flags, suspended.load());
+    fflush(stderr);
+
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] About to create std::thread with GuestThreadFunc=%p this=%p\n",
+            (void*)GuestThreadFunc, (void*)this);
+    fflush(stderr);
+
+    thread = std::thread(GuestThreadFunc, this);
+
+    fprintf(stderr, "[GUEST_THREAD_HANDLE] std::thread created successfully\n");
+    fflush(stderr);
 }
 #endif
 
@@ -209,8 +245,22 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
 
     if (auto entryFunc = g_memory.FindFunction(params.function))
     {
+        fprintf(stderr, "[DEBUG] entryFunc=%p (found for guest=0x%08X)\n", (void*)entryFunc, params.function);
+        fflush(stderr);
+
+        fprintf(stderr, "[DEBUG] About to call entryFunc...\n");
+        fflush(stderr);
+
         KernelTraceHostOpF("HOST.TitleEntry.enter entry=%08X", params.function);
+
+        fprintf(stderr, "[DEBUG] Calling entryFunc NOW...\n");
+        fflush(stderr);
+
         entryFunc(ctx.ppcContext, g_memory.base);
+
+        fprintf(stderr, "[DEBUG] entryFunc returned successfully\n");
+        fflush(stderr);
+
         KernelTraceHostOpF("HOST.TitleEntry.exit entry=%08X", params.function);
     }
     else
@@ -227,7 +277,14 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
 
 GuestThreadHandle* GuestThread::Start(const GuestThreadParams& params, uint32_t* threadId)
 {
+    fprintf(stderr, "[GUEST_THREAD_START] BEFORE CreateKernelObject: entry=0x%08X flags=0x%08X\n",
+            params.function, params.flags);
+    fflush(stderr);
+
     auto hThread = CreateKernelObject<GuestThreadHandle>(params);
+
+    fprintf(stderr, "[GUEST_THREAD_START] AFTER CreateKernelObject: hThread=%p\n", (void*)hThread);
+    fflush(stderr);
 
     if (threadId != nullptr)
     {

@@ -1031,6 +1031,28 @@ int main(int argc, char *argv[])
         std::_Exit(1);
     }
 
+    // CRITICAL FIX #6: Initialize dword_828E14E0 (thread context index)
+    // This global is used by sub_826BE2C0() which is called by thread entry point sub_828508A8
+    // The thread entry point calls sub_826BE2B0(sub_826BE2C0()), which uses the index to
+    // look up a function pointer from a table at off_828EE5E8
+    // Must be initialized to 0 (or another valid index) AFTER XEX is loaded but BEFORE threads are created
+    {
+        const uint32_t thread_ctx_index_addr = 0x828E14E0;
+
+        // Read current value AFTER XEX load
+        uint32_t old_value = LoadBE32_Watched(g_memory.base, thread_ctx_index_addr);
+        KernelTraceHostOpF("HOST.Init.dword_828E14E0 BEFORE = %08X", old_value);
+
+        // Initialize to 0 (first entry in the function pointer table)
+        // The game will set this to the correct value during initialization
+        // But we need a valid value to prevent crashes when threads are created early
+        StoreBE32_Watched(g_memory.base, thread_ctx_index_addr, 0);
+
+        // Verify the write succeeded
+        uint32_t verify_value = LoadBE32_Watched(g_memory.base, thread_ctx_index_addr);
+        KernelTraceHostOpF("HOST.Init.dword_828E14E0 AFTER = %08X (expected 00000000)", verify_value);
+    }
+
     KernelTraceHostOpF("HOST.main.runInstallerWizard=%d", runInstallerWizard ? 1 : 0);
     if (!runInstallerWizard)
     {

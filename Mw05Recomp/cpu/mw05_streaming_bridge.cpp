@@ -396,9 +396,11 @@ namespace {
                             uint32_t toRead = fbSize;
                             std::error_code ec{};
                             auto fsz = std::filesystem::file_size(resolved, ec);
+                            KernelTraceHostOpF("HOST.StreamBridge.io.fallback.size cand='%s' fbSize=%u fileSize=%llu ec=%d", cand, (unsigned)fbSize, (unsigned long long)fsz, ec.value());
                             if (!ec) {
                                 if (fsz == 0) continue;
-                                if (fsz < toRead) toRead = (uint32_t)std::min<uint64_t>(fsz, 0x400000ull);
+                                // Read the FULL file, not just fbSize
+                                toRead = (uint32_t)std::min<uint64_t>(fsz, 0x400000ull);
                             }
                             KernelTraceHostOpF("HOST.StreamBridge.io.try.fallback cand='%s' buf=%08X size=%u", cand, fbBufEA, (unsigned)toRead);
                             FileHandle* fh = XCreateFileA(cand, /*GENERIC_READ*/ 0x80000000u | 0x00000001u, /*share read*/ 0x1u, nullptr, /*OPEN_EXISTING*/ 3u, 0u);

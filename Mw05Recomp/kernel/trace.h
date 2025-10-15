@@ -142,6 +142,31 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     static bool banner = (KernelTraceHostOp("HOST.watch.store override ACTIVE"), true);
     (void)banner;
 
+    // Log all stores from sub_82849DE8 function (worker thread initialization)
+    // This function is at 0x82849DE8-0x82849F78, so lr should be in range 0x82849DE8-0x82849F7C
+    if (auto* c = GetPPCContext()) {
+        uint32_t lr = c->lr;
+        if (lr >= 0x82849DE8 && lr <= 0x82849F7C) {
+            KernelTraceHostOpF("HOST.Store32.sub_82849DE8 ea=%08X val=%08X lr=%08X r30=%08X r31=%08X",
+                               ea, v, lr, c->r30.u32, c->r31.u32);
+        }
+        // Also log stores from sub_8284D168 (the function that calls sub_82849DE8)
+        if (lr >= 0x8284D168 && lr <= 0x8284D218) {
+            KernelTraceHostOpF("HOST.Store32.sub_8284D168 ea=%08X val=%08X lr=%08X r29=%08X r30=%08X r31=%08X",
+                               ea, v, lr, c->r29.u32, c->r30.u32, c->r31.u32);
+        }
+        // Also log stores from sub_82548A08 (calls sub_8284D168)
+        if (lr >= 0x82548A08 && lr <= 0x82548AC0) {
+            KernelTraceHostOpF("HOST.Store32.sub_82548A08 ea=%08X val=%08X lr=%08X r28=%08X r29=%08X r30=%08X r31=%08X",
+                               ea, v, lr, c->r28.u32, c->r29.u32, c->r30.u32, c->r31.u32);
+        }
+        // Also log stores from sub_8284D218 (calls sub_8284D168)
+        if (lr >= 0x8284D218 && lr <= 0x8284D268) {
+            KernelTraceHostOpF("HOST.Store32.sub_8284D218 ea=%08X val=%08X lr=%08X r29=%08X r30=%08X r31=%08X",
+                               ea, v, lr, c->r29.u32, c->r30.u32, c->r31.u32);
+        }
+    }
+
     const uint32_t watch = g_watchEA.load(std::memory_order_relaxed);
     if (watch && ea == watch) {
         if (auto* c = GetPPCContext())
@@ -286,6 +311,9 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
 // 64-bit big-endian watched load (for debugging)
 inline uint64_t LoadBE64_Watched(uint8_t* base, uint32_t ea)
 {
+    // Memory barrier to ensure we see the latest stores from other threads
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
     // Load the value using BOTH methods to compare
     uint64_t value_translate = 0;
     uint64_t value_base = 0;
@@ -383,6 +411,9 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
         try_handle(ea + 4);
     }
     if (handled) {
+        if (ea == 0x828F1F98) {
+            KernelTraceHostOpF("HOST.Store64.828F1F98.SKIPPED handled=true lr=%08llX", lr);
+        }
         return;
     }
 
@@ -397,6 +428,17 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
         p[5] = uint8_t(v64 >> 16);
         p[6] = uint8_t(v64 >>  8);
         p[7] = uint8_t(v64 >>  0);
+
+        // Memory barrier to ensure store is visible to other threads
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        if (ea == 0x828F1F98) {
+            KernelTraceHostOpF("HOST.Store64.828F1F98.WRITTEN ptr=%p val=%016llX lr=%08llX", p, v64, lr);
+        }
+    } else {
+        if (ea == 0x828F1F98) {
+            KernelTraceHostOpF("HOST.Store64.828F1F98.NULL_PTR ea=%08X lr=%08llX", ea, lr);
+        }
     }
 }
 

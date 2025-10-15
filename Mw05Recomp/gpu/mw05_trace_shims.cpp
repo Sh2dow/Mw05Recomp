@@ -10,6 +10,26 @@ extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
 #include <kernel/memory.h>
 #include <atomic>
 
+// Type definitions for kernel functions
+#ifndef NTSTATUS
+  using NTSTATUS = long;
+  #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
+  #ifndef STATUS_USER_APC
+    #define STATUS_USER_APC ((NTSTATUS)0x000000C0L)
+  #endif
+  #define STATUS_ALERTED ((NTSTATUS)0x00000101L)
+#endif
+#ifndef BOOLEAN
+  using BOOLEAN = unsigned char;
+#endif
+#ifndef _KPROCESSOR_MODE_DEFINED
+  using KPROCESSOR_MODE = unsigned char;
+  #define _KPROCESSOR_MODE_DEFINED
+#endif
+
+// Forward declaration for KeDelayExecutionThread
+extern "C" NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE Mode, BOOLEAN Alertable, PLARGE_INTEGER IntervalGuest);
+
 // Forward declarations for GPU writeback access functions
 extern "C" uint32_t GetRbWriteBackPtr();
 extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr();
@@ -78,6 +98,8 @@ static inline void WriteBE32(uint32_t ea, uint32_t value) {
     #endif
     }
 }
+
+
 static inline void WriteBE16(uint32_t ea, uint16_t value) {
     if (!ea) return;
     if (auto* p = reinterpret_cast<uint16_t*>(g_memory.Translate(ea))) {
@@ -380,7 +402,53 @@ SHIM(sub_825A8040)
 SHIM(sub_825986F8)
 SHIM(sub_825987E0)
 SHIM(sub_825988B0)
-SHIM(sub_825A7A40)
+
+// Shim for sub_825A7A40 - viewport/aspect ratio calculation function
+// CRITICAL FIX: This function has a divide-by-zero bug when viewport dimensions are invalid
+// The game sometimes passes all-zero viewport dimensions, causing crash at 0x825A7AEC (divwu r30, r9, r10)
+// We add a safety check to prevent the crash
+void MW05Shim_sub_825A7A40(PPCContext& ctx, uint8_t* base) {
+    // Read parameters
+    uint32_t r6 = ctx.r6.u32;  // input viewport struct pointer
+    uint32_t r7 = ctx.r7.u32;  // output viewport struct pointer
+
+    // Read input viewport dimensions
+    uint32_t* input = reinterpret_cast<uint32_t*>(g_memory.Translate(r6));
+    if (!input) {
+        // Invalid pointer - just return
+        return;
+    }
+
+    // Read viewport bounds (big-endian)
+    uint32_t v16 = ReadBE32(r6 + 0);   // x_min
+    uint32_t v17 = ReadBE32(r6 + 4);   // y_min
+    uint32_t v18 = ReadBE32(r6 + 8);   // x_max
+    uint32_t v19 = ReadBE32(r6 + 12);  // y_max
+
+    // Calculate width and height
+    uint32_t width = v18 - v16;
+    uint32_t height = v19 - v17;
+
+    // CRITICAL FIX: Check for divide-by-zero condition
+    if (width == 0 || height == 0) {
+        // Invalid viewport dimensions - use default 1280x720
+        fprintf(stderr, "[sub_825A7A40] DIVIDE-BY-ZERO FIX: Invalid viewport dimensions (%u x %u), using defaults\n", width, height);
+        fflush(stderr);
+
+        // Set default viewport: 0,0 to 1280,720
+        WriteBE32(r7 + 0, 0);      // x_min = 0
+        WriteBE32(r7 + 4, 0);      // y_min = 0
+        WriteBE32(r7 + 8, 1280);   // x_max = 1280
+        WriteBE32(r7 + 12, 720);   // y_max = 720
+        WriteBE32(r7 + 16, ReadBE32(r6 + 16));  // copy field 4
+        WriteBE32(r7 + 20, ReadBE32(r6 + 20));  // copy field 5
+        return;
+    }
+
+    // Valid dimensions - call original function
+    __imp__sub_825A7A40(ctx, base);
+}
+
 SHIM(sub_825A7DE8)
 SHIM(sub_825A7E60)
 SHIM(sub_825A7EA0)
@@ -394,69 +462,77 @@ void MW05Shim_sub_8262F248(PPCContext& ctx, uint8_t* base) {
     __imp__sub_8262F248(ctx, base);
 }
 void MW05Shim_sub_8262F2A0(PPCContext& ctx, uint8_t* base) {
+    // RECOMPILER BUG FIX: This function has a bug in the auto-generated code
+    // The sleep loop doesn't exit when Alertable=FALSE because the recompiler
+    // generates incorrect code for the loop condition check.
+    //
+    // Original assembly (correct):
+    //   .text:8262F2EC    clrlwi    r31, r29, 24    # r31 = r29 & 0xFF (extract Alertable)
+    //   .text:8262F2F0 loc_8262F2F0:                 # Loop start
+    //   .text:8262F2FC    bl        KeDelayExecutionThread
+    //   .text:8262F300    cmplwi    cr6, r31, 0     # Compare r31 (Alertable) with 0
+    //   .text:8262F304    beq       cr6, loc_8262F310  # If r31==0, EXIT LOOP
+    //   .text:8262F308    cmpwi     cr6, r3, 0x101  # Compare return with STATUS_ALERTED
+    //   .text:8262F30C    beq       cr6, loc_8262F2F0  # If return==STATUS_ALERTED, loop back
+    //
+    // IDA decompilation (correct):
+    //   v10 = a2;  // v10 = Alertable
+    //   do
+    //     v11 = KeDelayExecutionThread(UserMode, a2, v9);
+    //   while ( v10 && v11 == 257 );  // Loop while Alertable AND return == STATUS_ALERTED
+    //
+    // The auto-generated code has a bug that prevents the loop from exiting.
+    // This replacement implements the correct logic.
+
     KernelTraceHostOpF("sub_8262F2A0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-    auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000 && ea < PPC_MEMORY_SIZE; };
-    uint32_t seed = ctx.r3.u32;
-    if (!looks_ptr(seed) && looks_ptr(ctx.r5.u32)) seed = ctx.r5.u32; // MW05: loop passes ctx in r5
-    if (looks_ptr(seed)) { MaybeLogSchedCapture(seed); s_lastSchedR3.store(seed, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
-    DumpEAWindow("8262F2A0.r3", ctx.r3.u32);
-    DumpEAWindow("8262F2A0.r4", ctx.r4.u32);
-    DumpEAWindow("8262F2A0.r5", ctx.r5.u32);
-    DumpSchedState("8262F2A0", seed);
 
-    // Optional: break the sleep loop after a few iterations to unblock threads (env: MW05_BREAK_SLEEP_LOOP[=1], MW05_BREAK_SLEEP_AFTER=N)
-    static thread_local uint32_t s_sleep_calls = 0;
-    static const bool s_break_sleep = [](){ if (const char* v = std::getenv("MW05_BREAK_SLEEP_LOOP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const uint32_t s_break_after = [](){ if (const char* v = std::getenv("MW05_BREAK_SLEEP_AFTER")) return (uint32_t)std::strtoul(v, nullptr, 0); return 5u; }();
-    if (s_break_sleep) {
-        ++s_sleep_calls;
-        if (s_sleep_calls > s_break_after) {
-            const uint32_t orig_r4 = ctx.r4.u32;
-            ctx.r4.u32 = 0; // Force exit condition in guest sleep loop (r31 == 0)
-            if (s_sleep_calls == s_break_after + 1) {
-                KernelTraceHostOpF("HOST.sub_8262F2A0.break_sleep after=%u orig_r4=%08X", (unsigned)s_break_after, orig_r4);
-                fprintf(stderr, "[BREAK_SLEEP] Forcing exit from sleep loop (after=%u, orig_r4=%08X)\n", (unsigned)s_break_after, orig_r4);
-                fflush(stderr);
-            }
-        }
+    // Extract parameters
+    int32_t timeout_ms = static_cast<int32_t>(ctx.r3.s32);
+    BOOLEAN alertable = static_cast<BOOLEAN>(ctx.r4.u32 & 0xFF);
+
+    // Prepare interval structure on stack
+    int64_t interval_value;
+    PLARGE_INTEGER interval_ptr;
+
+    if (timeout_ms == -1)
+    {
+        // Infinite timeout
+        interval_value = static_cast<int64_t>(0x8000000000000000ULL);
+        interval_ptr = reinterpret_cast<PLARGE_INTEGER>(&interval_value);
+    }
+    else
+    {
+        // Convert milliseconds to 100ns units (negative = relative)
+        interval_value = static_cast<int64_t>(timeout_ms) * -10000LL;
+        interval_ptr = reinterpret_cast<PLARGE_INTEGER>(&interval_value);
     }
 
-    static const bool s_loop_try_pm4_pre = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_PRE")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const bool s_loop_try_pm4 = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const bool s_loop_try_pm4_deep = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_DEEP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    // Sleep loop (FIXED VERSION)
+    NTSTATUS result;
+    do
+    {
+        result = KeDelayExecutionThread(static_cast<KPROCESSOR_MODE>(1), alertable, interval_ptr);  // WaitMode=1 (UserMode)
+    }
+    while (alertable && result == 0x101);  // Loop while Alertable AND return == STATUS_ALERTED (257)
 
-    if (s_loop_try_pm4_pre && looks_ptr(seed)) {
-        uint32_t saved_r3 = ctx.r3.u32;
-        ctx.r3.u32 = seed;
-        KernelTraceHostOpF("HOST.sub_8262F2A0.pre.try_825972B0 r3=%08X (seed)", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
-        if (s_loop_try_pm4_deep) {
-            KernelTraceHostOpF("HOST.sub_8262F2A0.pre.try_deep r3=%08X", ctx.r3.u32);
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
-            // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
-        }
-        ctx.r3.u32 = saved_r3;
+    // Return value logic
+    if (result == 0xC0)  // STATUS_USER_APC (192)
+    {
+        ctx.r3.u32 = 0xC0;
+    }
+    else
+    {
+        ctx.r3.u32 = 0;
     }
 
-    __imp__sub_8262F2A0(ctx, base);
-
-    if (s_loop_try_pm4 && looks_ptr(seed)) {
-        uint32_t saved_r3 = ctx.r3.u32;
-        ctx.r3.u32 = seed;
-        KernelTraceHostOpF("HOST.sub_8262F2A0.post.try_825972B0 r3=%08X (seed)", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
-        if (s_loop_try_pm4_deep) {
-            KernelTraceHostOpF("HOST.sub_8262F2A0.post.try_deep r3=%08X", ctx.r3.u32);
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
-            // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
-        }
-        ctx.r3.u32 = saved_r3;
+    // Debug logging (only log first few calls to avoid spam)
+    static std::atomic<int> call_count{0};
+    int count = call_count.fetch_add(1, std::memory_order_relaxed);
+    if (count < 10)
+    {
+        fprintf(stderr, "[SLEEP-FIX] sub_8262F2A0: timeout_ms=%d alertable=%u result=0x%X return=0x%X\n",
+                timeout_ms, static_cast<unsigned>(alertable), static_cast<unsigned>(result), ctx.r3.u32);
+        fflush(stderr);
     }
 }
 void MW05Shim_sub_8262F330(PPCContext& ctx, uint8_t* base) {
@@ -493,12 +569,17 @@ void MW05Shim_sub_82596978(PPCContext& ctx, uint8_t* base) {
 }
 
 void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
-    // CRITICAL FIX: Disable trace logging in graphics callback to prevent heap corruption
-    // The graphics callback is called from multiple threads, and KernelTraceHostOpF
-    // tries to write to a file, causing heap corruption when multiple threads access it
+    // DEBUG: Log first 10 calls to see if callback is being invoked
+    static std::atomic<int> s_gfx_call_count{0};
+    int gfx_count = s_gfx_call_count.fetch_add(1, std::memory_order_relaxed);
+    if (gfx_count < 10) {
+        fprintf(stderr, "[GFX-CB] Call #%d: source=%u ctx=%08X\n", gfx_count, ctx.r3.u32, ctx.r4.u32);
+        fflush(stderr);
+    }
+
     static const bool s_trace_gfx_callback = [](){
         if (const char* v = std::getenv("MW05_TRACE_GFX_CALLBACK")) return !(v[0]=='0' && v[1]=='\0');
-        return false; // Disabled by default to prevent crashes
+        return false;
     }();
 
     if (s_trace_gfx_callback) {

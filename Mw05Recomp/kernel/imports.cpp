@@ -2250,6 +2250,23 @@ void Mw05StartVblankPumpOnce() {
                     Mw05RunHostDefaultVdIsrNudge("vblank");
                 } else if (cb) {
                     const uint32_t ctx = VdGetGraphicsInterruptContext();
+
+                    // DEBUG: Check the VD ISR flag value before calling the callback
+                    static uint32_t s_debug_flag_check_count = 0;
+                    if (s_debug_flag_check_count < 5) {
+                        const uint32_t flag_ea = 0x7FC86544;
+                        if (void* flag_ptr = g_memory.Translate(flag_ea)) {
+                            uint32_t flag_value = *(volatile uint32_t*)flag_ptr;
+                            fprintf(stderr, "[VD-ISR-FLAG-CHECK] Before callback: ea=0x%08X value=0x%08X (count=%u)\n",
+                                    flag_ea, flag_value, s_debug_flag_check_count);
+                            fflush(stderr);
+                        } else {
+                            fprintf(stderr, "[VD-ISR-FLAG-CHECK] ERROR: Failed to translate flag address 0x%08X\n", flag_ea);
+                            fflush(stderr);
+                        }
+                        s_debug_flag_check_count++;
+                    }
+
                     // Gate guest ISR dispatch for a few ticks after startup to avoid early-boot crashes
                     static const uint32_t s_guest_isr_delay3 = [](){
                         if (const char* v = std::getenv("MW05_GUEST_ISR_DELAY_TICKS"))
@@ -6876,23 +6893,22 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 
     // CRITICAL FIX: Initialize the frame callback pointer in the graphics context
     // The VD ISR callback at sub_825979A8 checks context[3899] for a frame callback pointer
-    // If set, it calls this function each frame to update the main loop flag at 0x82A2CF40
+    // If set, it calls this function each frame (the present function at 0x82598A20)
     // We need to set this pointer to enable the frame callback mechanism
     // context[3899] = *(context + 0x3CEC)
     {
         const uint32_t frame_callback_ptr_offset = 0x3CEC;  // Offset to context[3899]
         const uint32_t frame_callback_ptr_ea = context + frame_callback_ptr_offset;
-        const uint32_t main_loop_flag_ea = 0x82A2CF40;  // Main loop flag address
+        const uint32_t present_function_ea = 0x82598A20;  // Present function address
 
-        // For now, just set the main loop flag to 1 to unblock the main loop
-        // TODO: Find the real frame callback function and set it at frame_callback_ptr_ea
-        if (void* flag_ptr = g_memory.Translate(main_loop_flag_ea)) {
+        // Set the frame callback pointer to the present function
+        if (void* callback_ptr = g_memory.Translate(frame_callback_ptr_ea)) {
             #if defined(_MSC_VER)
-                *static_cast<uint32_t*>(flag_ptr) = _byteswap_ulong(1);
+                *static_cast<uint32_t*>(callback_ptr) = _byteswap_ulong(present_function_ea);
             #else
-                *static_cast<uint32_t*>(flag_ptr) = __builtin_bswap32(1);
+                *static_cast<uint32_t*>(callback_ptr) = __builtin_bswap32(present_function_ea);
             #endif
-            fprintf(stderr, "[VdSetGraphicsInterruptCallback] Set main loop flag at 0x%08X to 1\n", main_loop_flag_ea);
+            fprintf(stderr, "[VdSetGraphicsInterruptCallback] Set frame callback at ctx+0x3CEC to 0x%08X (present function)\n", present_function_ea);
             fflush(stderr);
         }
     }

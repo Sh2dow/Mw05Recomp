@@ -4604,6 +4604,20 @@ static void ProcClear(const RenderCommand& cmd)
 static void SetViewport(GuestDevice* device, GuestViewport* viewport)
 {
     GpuTraceHostCall("HOST.SetViewport");
+
+    // Debug: Check if viewport pointer is NULL
+    if (!viewport) {
+        KernelTraceHostOpF("HOST.SetViewport.NULL_VIEWPORT device=%p", device);
+        return;
+    }
+
+    // Debug: Log viewport pointer and values
+    KernelTraceHostOpF("HOST.SetViewport.OK device=%p viewport=%p x=%u y=%u w=%u h=%u minZ=%f maxZ=%f",
+                       device, viewport,
+                       (uint32_t)viewport->x, (uint32_t)viewport->y,
+                       (uint32_t)viewport->width, (uint32_t)viewport->height,
+                       (float)viewport->minZ, (float)viewport->maxZ);
+
     RenderCommand cmd;
     cmd.type = RenderCommandType::SetViewport;
     cmd.setViewport.x = viewport->x;
@@ -8857,8 +8871,12 @@ GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);
 // They are automatically registered via the recompiled function table and don't need GUEST_FUNCTION_HOOK here
 
 // - Viewport setup: packs x/y/w/h + depth to command buffer
-//   sub_825A7B78 takes (device, GuestViewport*) among others; we only consume first two.
-GUEST_FUNCTION_HOOK(sub_825A7B78, SetViewport);
+//   sub_825A7B78 signature: sub_825A7B78(_DWORD *a1, int a2, int a3, _DWORD *a4)
+//   This is NOT a simple SetViewport(device, viewport*) function!
+//   It takes device pointer, two integers (a2, a3), and another pointer (a4).
+//   The function internally calls sub_825A7A40 and sub_825A74B8 to set up viewport.
+//   We should NOT hook this - let the recompiled code run naturally.
+// GUEST_FUNCTION_HOOK(sub_825A7B78, SetViewport);
 
 // Note: Additional MW05-specific hooks (CreateTexture/VertexBuffer/etc.)
 // should be added once their entrypoints are identified in MW05. For now,

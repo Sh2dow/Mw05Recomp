@@ -493,8 +493,18 @@ void MW05Shim_sub_82596978(PPCContext& ctx, uint8_t* base) {
 }
 
 void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOpF("sub_825979A8.lr=%08llX r3=%08X r4=%08X r5=%08X",
-                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    // CRITICAL FIX: Disable trace logging in graphics callback to prevent heap corruption
+    // The graphics callback is called from multiple threads, and KernelTraceHostOpF
+    // tries to write to a file, causing heap corruption when multiple threads access it
+    static const bool s_trace_gfx_callback = [](){
+        if (const char* v = std::getenv("MW05_TRACE_GFX_CALLBACK")) return !(v[0]=='0' && v[1]=='\0');
+        return false; // Disabled by default to prevent crashes
+    }();
+
+    if (s_trace_gfx_callback) {
+        KernelTraceHostOpF("sub_825979A8.lr=%08llX r3=%08X r4=%08X r5=%08X",
+                           (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+    }
 
     auto looks_ptr = [](uint32_t ea) {
         return ea >= 0x1000 && ea < PPC_MEMORY_SIZE;
@@ -510,7 +520,9 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
         const bool r3_ok = looks_ptr(ctx.r3.u32);
         const bool r4_ok = looks_ptr(ctx.r4.u32);
         if (!r3_ok && r4_ok) {
-            KernelTraceHostOp("HOST.sub_825979A8.swap@entry r3<->r4");
+            if (s_trace_gfx_callback) {
+                KernelTraceHostOp("HOST.sub_825979A8.swap@entry r3<->r4");
+            }
         #if defined(_MSC_VER)
             std::swap(ctx.r3.u32, ctx.r4.u32);
         #else
@@ -534,7 +546,9 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
             seed = s_lastSchedR3.load(std::memory_order_acquire);
         }
         if (looks_ptr(seed) && !looks_ptr(ctx.r3.u32)) {
-            KernelTraceHostOpF("HOST.sub_825979A8.force r3=%08X", seed);
+            if (s_trace_gfx_callback) {
+                KernelTraceHostOpF("HOST.sub_825979A8.force r3=%08X", seed);
+            }
             ctx.r3.u32 = seed;
         }
     }
@@ -556,7 +570,9 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
             // Known-good present function address from investigation: sub_82598A20
             const uint32_t kPresentFuncEA = 0x82598A20u;
             WriteBE32(present_fp_ea, kPresentFuncEA);
-            KernelTraceHostOpF("HOST.sub_825979A8.set_present_cb ptr@%08X=%08X", present_fp_ea, kPresentFuncEA);
+            if (s_trace_gfx_callback) {
+                KernelTraceHostOpF("HOST.sub_825979A8.set_present_cb ptr@%08X=%08X", present_fp_ea, kPresentFuncEA);
+            }
         }
     }
 

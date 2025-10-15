@@ -654,6 +654,10 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
             listener_handle, (unsigned long long)qwAreas);
     fflush(stderr);
 
+    // NOTE: Worker thread initialization is DISABLED because it causes BeginCommandList to drop to 0
+    // The game is supposed to initialize the worker thread naturally during execution
+    // Forcing initialization during boot interferes with the graphics pipeline
+    //
     // CRITICAL FIX: Initialize worker thread system
     // The game has a worker thread that checks qword_828F1F98 and exits if it's 0.
     // The initialization function sub_82813598 should be called to set this flag,
@@ -667,6 +671,7 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     // 3. Sets up the worker thread event system
     //
     // Parameter: r3 = frame rate (100 Hz for 10ms intervals)
+    /*
     fprintf(stderr, "[BOOT] About to initialize worker thread system...\n");
     fflush(stderr);
 
@@ -680,6 +685,7 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
 
     fprintf(stderr, "[BOOT] Worker thread system initialized\n");
     fflush(stderr);
+    */
 
     return entry;
 }

@@ -10,6 +10,7 @@ $env:MW05_HOST_TRACE_IMPORTS = "1"                       # Enable import tracing
 $env:MW05_TRACE_HEAP = "1"                               # Enable heap tracing
 $env:MW05_BREAK_SLEEP_LOOP = "1"                    # Break sleep loop in sub_8262F2A0 after a few iterations
 $env:MW05_BREAK_SLEEP_AFTER = "5"
+$env:MW05_FORCE_RENDER_THREADS = "1"                # CRITICAL: Force creation of render threads
 
 
 # Disable all other interventions
@@ -60,9 +61,9 @@ $env:MW05_FPW_KICK_PM4 = "1"
 
 # Force-create the render thread that issues draw commands
 $env:MW05_FORCE_RENDER_THREAD = "1"
-$env:MW05_FORCE_RENDER_THREAD_DELAY_TICKS = "400"  # Wait for graphics init to complete
+$env:MW05_FORCE_RENDER_THREAD_DELAY_TICKS = "150"  # Wait for graphics init to complete
 $env:MW05_RENDER_THREAD_ENTRY = "0x825AA970"       # From Xenia log
-$env:MW05_RENDER_THREAD_CTX = "0x7FEA17B0"         # From Xenia log
+$env:MW05_RENDER_THREAD_CTX = "0x40009D2C"         # CORRECT context from Xenia (was 0x7FEA17B0)
 
 # Signal the VD interrupt event to wake up the render thread
 $env:MW05_HOST_ISR_SIGNAL_VD_EVENT = "1"
@@ -84,17 +85,41 @@ $env:MW05_ISR_PRESENT_INTERVAL = "10"  # Call every 10 frames (~166ms at 60Hz)
 
 
 
-$p = Start-Process -FilePath ".\out\build\x64-Clang-Debug\Mw05Recomp\Mw05Recomp.exe" -PassThru -RedirectStandardError "$LogDir\debug_stderr.txt"
-Start-Sleep -Seconds 20
-Stop-Process -Id $p.Id -Force
+# NOTE: Use cmd.exe to run the executable so environment variables are inherited
+Write-Host "Starting game with environment variables..."
+$stderrPath = ".\out\build\x64-Clang-Debug\Mw05Recomp\debug_stderr.txt"
+
+# Clear old stderr
+if (Test-Path $stderrPath) {
+    Remove-Item $stderrPath -Force
+}
+
+# Run via cmd.exe which inherits environment variables
+$process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c run_with_env.cmd" -PassThru -WindowStyle Hidden
+
+Write-Host "Game started with PID $($process.Id). Waiting 60 seconds..."
+Start-Sleep -Seconds 60
+
+# Kill the process and any child processes
+Get-Process -Name "Mw05Recomp" -ErrorAction SilentlyContinue | Stop-Process -Force
+if (!$process.HasExited) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+}
 Start-Sleep -Seconds 2
-Write-Host "`n=== STDERR DEBUG OUTPUT ==="
-Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "RENDER-DEBUG"
-Write-Host "`n=== ANALYSIS ==="
-$beginCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "BeginCommandList").Count
-$procBeginCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ProcBeginCommandList").Count
-$applyCount = (Get-Content "$LogDir\debug_stderr.txt" -ErrorAction SilentlyContinue | Select-String "ApplyColorSurface").Count
-Write-Host "BeginCommandList calls: $beginCount"
-Write-Host "ProcBeginCommandList calls: $procBeginCount"
-Write-Host "ApplyColorSurface calls: $applyCount"
+
+# Analyze the trace log instead of stderr
+$traceLog = "$LogDir\mw05_host_trace.log"
+Write-Host "`n=== TRACE LOG ANALYSIS ==="
+if (Test-Path $traceLog) {
+    $beginCount = (Get-Content $traceLog -ErrorAction SilentlyContinue | Select-String "BeginCommandList").Count
+    $procBeginCount = (Get-Content $traceLog -ErrorAction SilentlyContinue | Select-String "ProcBeginCommandList").Count
+    $applyCount = (Get-Content $traceLog -ErrorAction SilentlyContinue | Select-String "ApplyColorSurface").Count
+    $fileIOCount = (Get-Content $traceLog -ErrorAction SilentlyContinue | Select-String "NtCreateFile|NtOpenFile|NtReadFile").Count
+    Write-Host "BeginCommandList calls: $beginCount"
+    Write-Host "ProcBeginCommandList calls: $procBeginCount"
+    Write-Host "ApplyColorSurface calls: $applyCount"
+    Write-Host "File I/O calls: $fileIOCount"
+} else {
+    Write-Host "Trace log not found at $traceLog"
+}
 

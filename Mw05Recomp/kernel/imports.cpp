@@ -4979,13 +4979,26 @@ uint32_t RtlUnicodeToMultiByteN(char* MultiByteString, uint32_t MaxBytesInMultiB
 // ---- FIXED KeDelayExecutionThread ----
 extern "C"
 NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
-                                BOOLEAN /*Alertable*/,
+                                BOOLEAN Alertable,
                                 PLARGE_INTEGER IntervalGuest)
 {
     // Mark that the last wait was a time delay, not a dispatcher; helps explain last==0
     g_lastWaitEventEA.store(0u, std::memory_order_release);
     g_lastWaitEventType.store(0xFFu, std::memory_order_release);
     KernelTraceHostOp("HOST.Wait.observe.KeDelayExecutionThread");
+
+    // CRITICAL FIX: Check for pending APCs BEFORE sleeping
+    // If the thread is alertable and there are pending APCs, process them and return STATUS_USER_APC
+    if (Alertable && ApcPendingForCurrentThread()) {
+        KernelTraceHostOp("HOST.KeDelayExecutionThread.APC_PENDING");
+
+        // Process the APC
+        if (ProcessPendingApcs()) {
+            // Return STATUS_USER_APC (0x101 / 257) to indicate that an APC was delivered
+            // This will cause the sleep loop in sub_8262F2A0 to continue looping
+            return STATUS_USER_APC;
+        }
+    }
 
     const bool fastBoot  = Mw05FastBootEnabled();
 
@@ -5047,6 +5060,14 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
             const int chunk_ms = std::min(ceil_ms_from_100ns(remaining100), 100);
             host_sleep(std::max(chunk_ms, 1));
             remaining100 -= int64_t(chunk_ms) * 10'000;
+
+            // CRITICAL FIX: Check for APCs after each sleep chunk
+            if (Alertable && ApcPendingForCurrentThread()) {
+                KernelTraceHostOp("HOST.KeDelayExecutionThread.APC_PENDING_AFTER_SLEEP");
+                if (ProcessPendingApcs()) {
+                    return STATUS_USER_APC;
+                }
+            }
         }
         return STATUS_SUCCESS;
     }
@@ -5059,6 +5080,14 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
         const int64_t remain100 = deadline100 - now100;
         const int chunk_ms = std::min(ceil_ms_from_100ns(remain100), 100);
         host_sleep(std::max(chunk_ms, 1));
+
+        // CRITICAL FIX: Check for APCs after each sleep chunk
+        if (Alertable && ApcPendingForCurrentThread()) {
+            KernelTraceHostOp("HOST.KeDelayExecutionThread.APC_PENDING_AFTER_SLEEP");
+            if (ProcessPendingApcs()) {
+                return STATUS_USER_APC;
+            }
+        }
     }
     return STATUS_SUCCESS;
 }
@@ -6479,7 +6508,15 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
 // This thread (entry=0x825AA970) is responsible for issuing draw commands
 static void Mw05ForceCreateRenderThreadIfRequested() {
     const char* en = std::getenv("MW05_FORCE_RENDER_THREAD");
-    if (!en || (en[0]=='0' && en[1]=='\0')) return;
+    if (!en || (en[0]=='0' && en[1]=='\0')) {
+        static bool s_logged_disabled = false;
+        if (!s_logged_disabled) {
+            fprintf(stderr, "[RENDER-THREAD-DEBUG] MW05_FORCE_RENDER_THREAD not set or disabled\n");
+            fflush(stderr);
+            s_logged_disabled = true;
+        }
+        return;
+    }
 
     // Check if we should delay thread creation until after graphics init
     static const uint32_t s_create_delay_ticks = [](){
@@ -6488,9 +6525,22 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
         return 200u; // default: wait 200 ticks to ensure graphics is initialized
     }();
 
+    static bool s_logged_config = false;
+    if (!s_logged_config) {
+        fprintf(stderr, "[RENDER-THREAD-DEBUG] MW05_FORCE_RENDER_THREAD enabled, delay_ticks=%u\n", s_create_delay_ticks);
+        fflush(stderr);
+        s_logged_config = true;
+    }
+
     const uint32_t current_tick = g_vblankTicks.load(std::memory_order_acquire);
     if (current_tick < s_create_delay_ticks) {
         // Too early - skip creation for now
+        static uint32_t s_last_logged_tick = 0;
+        if (current_tick >= s_last_logged_tick + 50) {
+            fprintf(stderr, "[RENDER-THREAD-DEBUG] Waiting for tick %u (current=%u)\n", s_create_delay_ticks, current_tick);
+            fflush(stderr);
+            s_last_logged_tick = current_tick;
+        }
         return;
     }
 
@@ -6499,8 +6549,17 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
     bool expected = false;
     if (!s_created.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         // Another thread is creating or has created the render thread
+        static bool s_logged_already_created = false;
+        if (!s_logged_already_created) {
+            fprintf(stderr, "[RENDER-THREAD-DEBUG] Render thread already created or being created\n");
+            fflush(stderr);
+            s_logged_already_created = true;
+        }
         return;
     }
+
+    fprintf(stderr, "[RENDER-THREAD-DEBUG] About to create render thread at tick=%u\n", current_tick);
+    fflush(stderr);
 
     // Get the render thread entry point from environment or use default
     uint32_t entry = 0x825AA970u;  // Default from Xenia log
@@ -6509,7 +6568,7 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
     }
 
     // Get the context pointer - this should be the scheduler context
-    uint32_t ctx = 0x7FEA17B0u;  // Default from Xenia log (context passed to thread 0x828508A8)
+    uint32_t ctx = 0x40009D2Cu;  // Default from Xenia log (correct context for render thread)
     if (const char* c = std::getenv("MW05_RENDER_THREAD_CTX")) {
         ctx = (uint32_t)std::strtoul(c, nullptr, 0);
     }
@@ -6530,6 +6589,20 @@ static void Mw05ForceCreateRenderThreadIfRequested() {
     if (auto* ctx_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(ctx))) {
         *ctx_ptr = be<uint32_t>(gfx_ctx);  // Set pointer to graphics context
         fprintf(stderr, "[RENDER-THREAD] Initialized context+0 at 0x%08X to point to gfx_ctx=0x%08X (heap-allocated)\n", ctx, gfx_ctx);
+        fflush(stderr);
+    }
+
+    // Initialize the event at ctx+0x20 (this is what the render thread waits on)
+    // From disassembly: addi r28, r26, 0x20 -> KeWaitForSingleObject(r28)
+    uint32_t event_ea = ctx + 0x20;  // 0x40009D2C + 0x20 = 0x40009D4C
+    if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(event_ea))) {
+        evt->Type = 0;  // Auto-reset event (Type 0 = NotificationEvent)
+        evt->SignalState = be<int32_t>(0);  // Not signaled initially
+        fprintf(stderr, "[RENDER-THREAD] Initialized event at 0x%08X (ctx+0x20) type=%u signal=%d\n",
+                event_ea, evt->Type, (int)evt->SignalState);
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[RENDER-THREAD] ERROR: Failed to translate event address 0x%08X\n", event_ea);
         fflush(stderr);
     }
 
@@ -7371,7 +7444,24 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                 // But the frame callback pointer at context[3899] is not initialized yet
                 // Solution: Set the flag directly after each VD ISR callback invocation
                 // This keeps the main loop running until the game initializes the frame callback
+
+                // DEBUG: Log to see if we reach this point
+                static uint32_t s_debug_log_count = 0;
+                if (s_debug_log_count < 3) {
+                    fprintf(stderr, "[VD-ISR-DEBUG] After callback invocation: source=%u ctx=0x%08X\n", source, ctx);
+                    fflush(stderr);
+                    s_debug_log_count++;
+                }
+
                 if (source == 0) {  // Only for VBlank interrupts (source==0)
+                    // DEBUG: Log to see if we reach this branch
+                    static uint32_t s_debug_source0_count = 0;
+                    if (s_debug_source0_count < 3) {
+                        fprintf(stderr, "[VD-ISR-DEBUG] source==0 branch reached (count=%u)\n", s_debug_source0_count);
+                        fflush(stderr);
+                        s_debug_source0_count++;
+                    }
+
                     // NEW FIX: Check if the game has registered a frame callback at context[3899]
                     // If so, invoke it instead of manually setting the flag
                     // This allows the game to progress naturally once it initializes the callback
@@ -7385,6 +7475,14 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                             #else
                                 const uint32_t callback_flag = __builtin_bswap32(ctx_u32[3899]);
                             #endif
+
+                            // DEBUG: Log callback_flag value
+                            static uint32_t s_debug_callback_flag_count = 0;
+                            if (s_debug_callback_flag_count < 3) {
+                                fprintf(stderr, "[VD-ISR-DEBUG] callback_flag=0x%08X (count=%u)\n", callback_flag, s_debug_callback_flag_count);
+                                fflush(stderr);
+                                s_debug_callback_flag_count++;
+                            }
 
                             if (callback_flag != 0) {
                                 // Frame callback is registered! Log this important event
@@ -7406,8 +7504,27 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                     // If frame callback is not registered yet, manually set the main loop flag
                     // This is a temporary workaround until the game initializes the callback
                     if (!frame_callback_invoked) {
+                        // DEBUG: Log that we're about to set the flag
+                        static uint32_t s_debug_set_flag_count = 0;
+                        if (s_debug_set_flag_count < 3) {
+                            fprintf(stderr, "[VD-ISR-DEBUG] About to set main loop flag (count=%u)\n", s_debug_set_flag_count);
+                            fflush(stderr);
+                            s_debug_set_flag_count++;
+                        }
+
                         const uint32_t main_loop_flag_ea = 0x82A2CF40;
-                        if (void* flag_ptr = g_memory.Translate(main_loop_flag_ea)) {
+                        void* flag_ptr = g_memory.Translate(main_loop_flag_ea);
+
+                        // DEBUG: Log translation result
+                        static uint32_t s_debug_translate_count = 0;
+                        if (s_debug_translate_count < 3) {
+                            fprintf(stderr, "[VD-ISR-DEBUG] Translate(0x%08X) = %p (count=%u)\n",
+                                    main_loop_flag_ea, flag_ptr, s_debug_translate_count);
+                            fflush(stderr);
+                            s_debug_translate_count++;
+                        }
+
+                        if (flag_ptr) {
                             #if defined(_MSC_VER)
                                 *static_cast<uint32_t*>(flag_ptr) = _byteswap_ulong(1);
                             #else
@@ -7420,6 +7537,14 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                                         main_loop_flag_ea, s_callback_count);
                                 fflush(stderr);
                                 s_flag_set_count++;
+                            }
+                        } else {
+                            // DEBUG: Log translation failure
+                            static bool s_logged_translate_fail = false;
+                            if (!s_logged_translate_fail) {
+                                s_logged_translate_fail = true;
+                                fprintf(stderr, "[VD-ISR-ERROR] Failed to translate main loop flag address 0x%08X!\n", main_loop_flag_ea);
+                                fflush(stderr);
                             }
                         }
                     }
@@ -8377,11 +8502,23 @@ uint32_t NtCreateTimer(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttribute
 
 uint32_t NtSetTimerEx(Timer* Handle, be<int64_t>* DueTime, uint32_t Period, uint32_t ApcRoutine, uint32_t ApcContext, uint32_t Resume, uint32_t PreviousState, be<uint32_t>* State)
 {
-    if (!Handle)
-        return STATUS_INVALID_HANDLE;
+    // CRITICAL FIX: MW05 uses NtSetTimerEx in a special mode where Handle=NULL
+    // In this mode, DueTime points to a qword that should be decremented over time
+    // The game initializes qword_828F1F98 to -100000 and expects it to be decremented to 0
+    // When the qword reaches 0, the worker thread exits
 
-    // For now, just signal the timer immediately (simplified implementation)
-    // A full implementation would schedule the timer based on DueTime and Period
+    if (!Handle) {
+        // Special mode: DueTime is a pointer to a qword that should be decremented
+        // For now, just leave the qword as-is (don't decrement it)
+        // The game will check the qword value and decide whether to continue or exit
+        // Since we want the worker thread to keep running, we should NOT decrement the qword to 0
+
+        // Return success without doing anything
+        // This preserves the qword value that was set by the game
+        return STATUS_SUCCESS;
+    }
+
+    // Normal mode: Handle is valid, set the timer
     Handle->Set();
 
     if (State)
@@ -8507,12 +8644,143 @@ uint32_t NtPulseEvent(Event* Handle, be<uint32_t>* PreviousState)
     return STATUS_SUCCESS;
 }
 
+// APC queue per thread
+struct ApcEntry {
+    uint32_t routine;
+    uint32_t context;
+    uint32_t arg1;
+    uint32_t arg2;
+};
+
+static std::mutex g_apcMutex;
+static std::map<uint32_t, std::queue<ApcEntry>> g_apcQueues;  // threadId -> queue of APCs
+
 // Thread functions
 uint32_t NtQueueApcThread(uint32_t ThreadHandle, uint32_t ApcRoutine, uint32_t ApcContext, uint32_t Argument1, uint32_t Argument2)
 {
-    // Simplified stub: just return success
-    // A full implementation would queue the APC to the thread
+    // Get the thread object
+    auto* hThread = GetKernelObject<GuestThreadHandle>(ThreadHandle);
+    if (!hThread) {
+        KernelTraceHostOpF("HOST.NtQueueApcThread INVALID_HANDLE handle=%08X", ThreadHandle);
+        return STATUS_INVALID_HANDLE;
+    }
+
+    uint32_t threadId = hThread->GetThreadId();
+
+    // Queue the APC
+    {
+        std::lock_guard<std::mutex> lock(g_apcMutex);
+        ApcEntry apc{ApcRoutine, ApcContext, Argument1, Argument2};
+        g_apcQueues[threadId].push(apc);
+
+        KernelTraceHostOpF("HOST.NtQueueApcThread tid=%08X routine=%08X ctx=%08X arg1=%08X arg2=%08X queued=%u",
+                          threadId, ApcRoutine, ApcContext, Argument1, Argument2,
+                          (unsigned)g_apcQueues[threadId].size());
+
+        // Log to stderr for debugging
+        static uint32_t s_apc_log_count = 0;
+        if (s_apc_log_count < 10) {
+            fprintf(stderr, "[APC] Queued APC for thread %08X: routine=%08X ctx=%08X (queue size=%u)\n",
+                    threadId, ApcRoutine, ApcContext, (unsigned)g_apcQueues[threadId].size());
+            fflush(stderr);
+            s_apc_log_count++;
+        }
+    }
+
+    // Wake up the thread if it's sleeping in an alertable state
+    // The thread will check for pending APCs when it wakes up
+    hThread->suspended.notify_all();
+
     return STATUS_SUCCESS;
+}
+
+// Check if there are pending APCs for the current thread
+bool ApcPendingForCurrentThread()
+{
+    uint32_t threadId = GuestThread::GetCurrentThreadId();
+
+    std::lock_guard<std::mutex> lock(g_apcMutex);
+    auto it = g_apcQueues.find(threadId);
+    if (it != g_apcQueues.end() && !it->second.empty()) {
+        return true;
+    }
+    return false;
+}
+
+// Process pending APCs for the current thread
+// Returns true if any APCs were processed
+bool ProcessPendingApcs()
+{
+    uint32_t threadId = GuestThread::GetCurrentThreadId();
+
+    // Get the next APC from the queue
+    ApcEntry apc;
+    {
+        std::lock_guard<std::mutex> lock(g_apcMutex);
+        auto it = g_apcQueues.find(threadId);
+        if (it == g_apcQueues.end() || it->second.empty()) {
+            return false;  // No pending APCs
+        }
+
+        apc = it->second.front();
+        it->second.pop();
+
+        KernelTraceHostOpF("HOST.ProcessPendingApcs tid=%08X routine=%08X ctx=%08X remaining=%u",
+                          threadId, apc.routine, apc.context, (unsigned)it->second.size());
+
+        // Log to stderr for debugging
+        static uint32_t s_apc_process_log_count = 0;
+        if (s_apc_process_log_count < 10) {
+            fprintf(stderr, "[APC] Processing APC for thread %08X: routine=%08X ctx=%08X (remaining=%u)\n",
+                    threadId, apc.routine, apc.context, (unsigned)it->second.size());
+            fflush(stderr);
+            s_apc_process_log_count++;
+        }
+    }
+
+    // Call the APC routine
+    // The APC routine signature is: void ApcRoutine(uint32_t ApcContext, uint32_t Argument1, uint32_t Argument2)
+    if (apc.routine != 0) {
+        // Set up PPC context for the call
+        PPCContext ctx{};
+        if (auto* cur = GetPPCContext()) {
+            ctx = *cur;
+        } else {
+            // Initialize a minimal context if none exists
+            ctx.r1.u32 = 0x7FEA0000;  // Stack pointer
+        }
+
+        // Set up parameters
+        ctx.r3.u32 = apc.context;
+        ctx.r4.u32 = apc.arg1;
+        ctx.r5.u32 = apc.arg2;
+
+        // Find the function in the function table
+        uint8_t* base = g_memory.base;
+
+        // Calculate the function pointer from the function table
+        // The function table is stored after the image data at base + PPC_IMAGE_SIZE
+        // Each entry is a pointer to a function (PPCFunc*)
+        const uint32_t offset_from_code_base = apc.routine - PPC_CODE_BASE;
+        PPCFunc** func_table = reinterpret_cast<PPCFunc**>(base + PPC_IMAGE_SIZE);
+        PPCFunc* func_ptr = func_table[offset_from_code_base];
+
+        if (func_ptr && *func_ptr) {
+            KernelTraceHostOpF("HOST.ProcessPendingApcs.call routine=%08X ctx=%08X", apc.routine, apc.context);
+
+            // Call the APC routine
+            SetPPCContext(ctx);
+            (*func_ptr)(ctx, base);
+
+            KernelTraceHostOpF("HOST.ProcessPendingApcs.return routine=%08X", apc.routine);
+        } else {
+            KernelTraceHostOpF("HOST.ProcessPendingApcs.NULL_FUNC routine=%08X", apc.routine);
+            fprintf(stderr, "[APC] ERROR: APC routine %08X not found in function table!\n", apc.routine);
+            fflush(stderr);
+        }
+    }
+
+    return true;  // APC was processed
 }
 
 uint32_t NtSignalAndWaitForSingleObjectEx(uint32_t SignalHandle, uint32_t WaitHandle, uint32_t Alertable, be<int64_t>* Timeout)

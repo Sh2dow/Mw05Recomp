@@ -5,6 +5,7 @@
 #include <kernel/memory.h>
 #include <kernel/heap.h>
 #include "xbox.h"
+#include "guest_thread.h"
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
@@ -240,6 +241,10 @@ void KickMinimalVideo() {
 
 static std::atomic<bool> g_forcedGraphicsInit{false};
 
+// Forward declare ExCreateThread and NtResumeThread
+extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags);
+extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount);
+
 void sub_828508A8(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
     fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx\n", GetCurrentThreadId());
@@ -247,6 +252,68 @@ void sub_828508A8(PPCContext& ctx, uint8_t* base) {
 
     if(KickVideoInitEnabled()) KickMinimalVideo();
 	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
+
+    // CRITICAL FIX: Force creation of render threads
+    // Thread #1 is supposed to create these threads, but it gets stuck in a wait loop
+    // waiting for work items that are never added to the queue at 0x829091C8.
+    // As a workaround, we force-create the render threads here.
+    static bool s_render_threads_created = false;
+    if (!s_render_threads_created && std::getenv("MW05_FORCE_RENDER_THREADS")) {
+        s_render_threads_created = true;
+
+        fprintf(stderr, "[THREAD_828508A8] FORCE-CREATING RENDER THREADS\n");
+        fflush(stderr);
+
+        // Render thread entry points (from Xenia log)
+        const uint32_t render_entries[] = {
+            0x826E7B90,
+            0x826E7BC0,
+            0x826E7BF0,
+            0x826E7C20
+        };
+
+        // Create 4 render threads (one for each entry point)
+        for (int i = 0; i < 4; i++) {
+            // Allocate context structure (256 bytes should be enough)
+            void* ctx_host = g_userHeap.AllocPhysical(256, 16);
+            uint32_t ctx_guest = g_memory.MapVirtual(ctx_host);
+
+            // Zero the context
+            memset(ctx_host, 0, 256);
+
+            be<uint32_t> handle = 0;
+            be<uint32_t> thread_id = 0;
+
+            // Create thread (suspended)
+            uint32_t result = ExCreateThread(
+                &handle,
+                0,  // Default stack size
+                &thread_id,
+                0,  // No API thread startup
+                render_entries[i],
+                ctx_guest,
+                1  // CREATE_SUSPENDED
+            );
+
+            fprintf(stderr, "[THREAD_828508A8] Created render thread %d: entry=%08X ctx=%08X handle=%08X tid=%08X result=%08X\n",
+                    i, render_entries[i], ctx_guest, (uint32_t)handle, (uint32_t)thread_id, result);
+            fflush(stderr);
+
+            // Resume the thread
+            if (result == 0 && handle != 0) {
+                // Call NtResumeThread to start the thread
+                uint32_t prev_count = 0;
+                GuestThreadHandle* hThread = GetKernelObject<GuestThreadHandle>((uint32_t)handle);
+                NtResumeThread(hThread, &prev_count);
+
+                fprintf(stderr, "[THREAD_828508A8] Resumed render thread %d: prev_count=%u\n", i, prev_count);
+                fflush(stderr);
+            }
+        }
+
+        fprintf(stderr, "[THREAD_828508A8] RENDER THREADS CREATED\n");
+        fflush(stderr);
+    }
 
     fprintf(stderr, "[THREAD_828508A8] Calling __imp__sub_828508A8 tid=%lx\n", GetCurrentThreadId());
     fflush(stderr);

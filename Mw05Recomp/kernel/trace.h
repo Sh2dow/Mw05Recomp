@@ -283,6 +283,47 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     }
 }
 
+// 64-bit big-endian watched load (for debugging)
+inline uint64_t LoadBE64_Watched(uint8_t* base, uint32_t ea)
+{
+    // Load the value using BOTH methods to compare
+    uint64_t value_translate = 0;
+    uint64_t value_base = 0;
+    uint8_t* ptr_translate = nullptr;
+    uint8_t* ptr_base = base + ea;
+
+    if (auto* p = (uint8_t*)g_memory.Translate(ea)) {
+        ptr_translate = p;
+        value_translate = (uint64_t(p[0]) << 56) | (uint64_t(p[1]) << 48) |
+                          (uint64_t(p[2]) << 40) | (uint64_t(p[3]) << 32) |
+                          (uint64_t(p[4]) << 24) | (uint64_t(p[5]) << 16) |
+                          (uint64_t(p[6]) <<  8) | (uint64_t(p[7]) <<  0);
+    }
+
+    // Also load using base + ea
+    value_base = (uint64_t(ptr_base[0]) << 56) | (uint64_t(ptr_base[1]) << 48) |
+                 (uint64_t(ptr_base[2]) << 40) | (uint64_t(ptr_base[3]) << 32) |
+                 (uint64_t(ptr_base[4]) << 24) | (uint64_t(ptr_base[5]) << 16) |
+                 (uint64_t(ptr_base[6]) <<  8) | (uint64_t(ptr_base[7]) <<  0);
+
+    // Log if this is qword_828F1F98 (the worker thread flag)
+    if (ea == 0x828F1F98u) {
+        PPCContext* c = GetPPCContext();
+        const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+        // Check if pointers are the same
+        bool ptrs_same = (ptr_translate == ptr_base);
+        // Read raw bytes from both pointers
+        uint64_t raw_translate = ptr_translate ? *(uint64_t*)ptr_translate : 0;
+        uint64_t raw_base = *(uint64_t*)ptr_base;
+        KernelTraceHostOpF("HOST.LoadBE64_W.qword_828F1F98 val_t=%016llX val_b=%016llX raw_t=%016llX raw_b=%016llX ptrs_same=%d lr=%08llX",
+                          (unsigned long long)value_translate, (unsigned long long)value_base,
+                          (unsigned long long)raw_translate, (unsigned long long)raw_base,
+                          ptrs_same ? 1 : 0, lr);
+    }
+
+    return value_base;  // Use base + ea like the rest of the code
+}
+
 // 64-bit big-endian watched store
 inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
 {

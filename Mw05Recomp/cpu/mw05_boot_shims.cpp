@@ -91,8 +91,9 @@ inline bool GuestCodeRangeContains(uint32_t ea) {
 inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA) {
     PPC_STORE_U32(blockEA + 0, 0);
     PPC_STORE_U32(blockEA + 4, 0);
-    PPC_STORE_U32(blockEA + 8, 0);
-    PPC_STORE_U32(blockEA + 12, 0);
+    // DO NOT clear offset +8 and +12 - this is the "should continue running" qword flag!
+    // PPC_STORE_U32(blockEA + 8, 0);
+    // PPC_STORE_U32(blockEA + 12, 0);
     PPC_STORE_U32(blockEA + 16, 0);
 }
 }
@@ -262,6 +263,15 @@ void sub_826346A8(PPCContext& ctx, uint8_t* base) {
             uint32_t w4 = LoadGuestU32(base, blockEA + 16);
             KernelTraceHostOpF("HOST.sub_826346A8.block ea=%08X w0=%08X w1=%08X w2=%08X w3=%08X w4=%08X",
                                blockEA, w0, w1, w2, w3, w4);
+
+            // DEBUG: Check qword at 0x828F1F98 after block read
+            if (blockEA == 0x828F1F90u) {
+                uint8_t* qword_ptr = base + 0x828F1F98u;
+                uint64_t qword_raw = *(uint64_t*)qword_ptr;
+                uint64_t qword_swapped = __builtin_bswap64(qword_raw);
+                KernelTraceHostOpF("HOST.sub_826346A8.qword_check raw=%016llX swapped=%016llX",
+                                  (unsigned long long)qword_raw, (unsigned long long)qword_swapped);
+            }
             // Out-of-image target handling
             if(w4 && !GuestCodeRangeContains(w4)) {
 
@@ -415,6 +425,17 @@ PPC_FUNC(sub_828134E0)
 
     fprintf(stderr, "[WORKER-FUNC] AFTER FIX: r29=0x%08X (patched to correct value)\n", ctx.r29.u32);
     fprintf(stderr, "[WORKER-FUNC] r29+8 = 0x%08X (should be qword_828F1F98)\n", ctx.r29.u32 + 8);
+
+    // Check the actual value of qword_828F1F98
+    const uint32_t qword_addr = 0x828F1F98;
+    void* qword_ptr = g_memory.Translate(qword_addr);
+    if (qword_ptr) {
+        uint64_t* qword = (uint64_t*)qword_ptr;
+        uint64_t value = __builtin_bswap64(*qword);
+        fprintf(stderr, "[WORKER-FUNC] qword_828F1F98 = 0x%016llX (should be non-zero for worker to continue)\n", value);
+    } else {
+        fprintf(stderr, "[WORKER-FUNC] qword_828F1F98 is NOT MAPPED!\n");
+    }
     fflush(stderr);
 
     // Make ctx visible to the watched-store hook (so it can log lr)

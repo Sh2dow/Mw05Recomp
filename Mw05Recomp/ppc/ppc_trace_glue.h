@@ -25,4 +25,10 @@
 #endif
 #define PPC_LOAD_U32(ea) LoadBE32_Watched(base, (ea))
 
+// Override PPC_LOAD_U64 to log qword_828F1F98 reads (for debugging worker thread exit)
+#ifdef PPC_LOAD_U64
+#undef PPC_LOAD_U64
+#endif
+#define PPC_LOAD_U64(ea) LoadBE64_Watched(base, (ea))
+
 #endif // MW05_TRACE_GLUE_INCLUDED

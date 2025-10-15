@@ -6,26 +6,62 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include "kernel/trace.h"
+#include "kernel/memory.h"
+
+// Forward declarations
+extern Memory g_memory;
+extern "C" {
+    // XKEVENT is a typedef for XDISPATCHER_HEADER in xbox.h, don't redeclare it
+    uint32_t KeSetEvent(XKEVENT* Event, int32_t Increment, bool Wait);
+}
 
 // System thread entry points - these are stub implementations that just sleep
 // The game doesn't actually use these threads, but it expects them to exist
 
 static std::atomic<bool> g_systemThreadsRunning{false};
 
-// GPU Commands thread - processes GPU command buffers
+// GPU Commands thread - signals the render thread event to wake it up
 static void GpuCommandsThreadEntry()
 {
     KernelTraceHostOp("HOST.SystemThread.GPUCommands.start");
     fprintf(stderr, "[SYSTEM-THREAD] GPU Commands thread started\n");
     fflush(stderr);
-    
+
+    // Get the render thread event address from environment
+    // The render thread waits on event at ctx+0x20
+    const char* ctx_str = std::getenv("MW05_RENDER_THREAD_CTX");
+    uint32_t ctx = ctx_str ? (uint32_t)std::strtoul(ctx_str, nullptr, 0) : 0x40009D2Cu;
+    uint32_t event_ea = ctx + 0x20;  // Event is at ctx+0x20 (0x40009D4C)
+
+    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands will signal event at 0x%08X (ctx=0x%08X)\n", event_ea, ctx);
+    fflush(stderr);
+
+    // Wait a bit for the render thread to be created and start waiting
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    uint32_t signal_count = 0;
     while (g_systemThreadsRunning.load(std::memory_order_acquire))
     {
+        // Signal the render thread event to wake it up
+        if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(event_ea))) {
+            KeSetEvent(evt, 1, false);
+            signal_count++;
+
+            // Log first few signals for debugging
+            if (signal_count <= 5 || signal_count % 60 == 0) {
+                fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event 0x%08X (count=%u)\n", event_ea, signal_count);
+                fflush(stderr);
+            }
+        }
+
         // Sleep for 16ms (60 FPS)
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
-    
+
+    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event %u times total\n", signal_count);
+    fflush(stderr);
     KernelTraceHostOp("HOST.SystemThread.GPUCommands.exit");
 }
 
@@ -67,13 +103,13 @@ static void AudioWorkerThreadEntry()
     KernelTraceHostOp("HOST.SystemThread.AudioWorker.start");
     fprintf(stderr, "[SYSTEM-THREAD] Audio Worker thread started\n");
     fflush(stderr);
-    
+
     while (g_systemThreadsRunning.load(std::memory_order_acquire))
     {
         // Sleep for 10ms
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    
+
     KernelTraceHostOp("HOST.SystemThread.AudioWorker.exit");
 }
 

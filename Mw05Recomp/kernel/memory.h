@@ -35,6 +35,15 @@ struct Memory
 
     PPCFunc* FindFunction(uint32_t guest) const noexcept
     {
+        // Bounds check: guest address must be within code range
+        if (guest < PPC_CODE_BASE || guest >= (PPC_CODE_BASE + PPC_CODE_SIZE))
+        {
+            fprintf(stderr, "[FindFunction] ERROR: Guest address 0x%08X is outside code range [0x%08X, 0x%08X)\n",
+                    guest, PPC_CODE_BASE, PPC_CODE_BASE + PPC_CODE_SIZE);
+            fflush(stderr);
+            return nullptr;
+        }
+
         return PPC_LOOKUP_FUNC(base, guest);
     }
 

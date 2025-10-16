@@ -165,6 +165,9 @@ void HostStartup()
 }
 
 // Name inspired from nt's entry point
+// Forward declare VdGetSystemCommandBuffer to ensure system command buffer is initialized early
+extern "C" uint32_t VdGetSystemCommandBuffer(void* outCmdBufPtr, void* outValue);
+
 void KiSystemStartup()
 {
     KernelTraceHostOpF("HOST.KiSystemStartup ENTER");
@@ -179,6 +182,10 @@ void KiSystemStartup()
 
     // Publish ExLoadedImageName/ExLoadedCommandLine guest pointers (needs heap)
     Mw05InitKernelVarExportsOnce();
+
+    // Initialize system command buffer early so it's available when the game starts
+    VdGetSystemCommandBuffer(nullptr, nullptr);
+    KernelTraceHostOpF("HOST.KiSystemStartup.SysBufInit");
 
     // Install any generated indirect redirects after memory init
     #if MW05_GEN_INDIRECT_REDIRECTS
@@ -397,6 +404,9 @@ void KiSystemStartup()
 // Helper to get address of __imp__ function by name
 // Returns nullptr if not found
 extern "C" PPCFunc* GetImportFunctionByName(const char* name);
+// Helper to get address of an imported variable by name (allocates storage on first use)
+extern "C" uint32_t GetImportVariableGuestAddress(const char* name);
+
 
 // Process XEX import table and patch with kernel function addresses
 // This matches Xenia's behavior where imports are resolved before game execution
@@ -527,34 +537,56 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
                 continue;
             }
 
-            // Get the address of the __imp__ function
-            // Note: functionName already includes the "__imp__" prefix from the ordinal table
-            PPCFunc* hostFunc = GetImportFunctionByName(functionName);
-
-            if (!hostFunc)
+            if (importType == XEX_THUNK_VARIABLE)
             {
-                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) - NOT IMPLEMENTED\n",
-                        i, functionName, importOrdinal);
+                // Resolve imported variable storage and patch thunk with its EA
+                uint32_t varEA = GetImportVariableGuestAddress(functionName);
+                if (!varEA)
+                {
+                    fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) VARIABLE - NOT IMPLEMENTED\n",
+                            i, functionName, importOrdinal);
+                    fflush(stderr);
+                    totalImportsFailed++;
+                    continue;
+                }
+
+                thunkData->addressOfData = varEA;
+                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> VAR=%08X PATCHED\n",
+                        i, functionName, importOrdinal, thunkAddr, varEA);
                 fflush(stderr);
-                totalImportsFailed++;
-                continue;
+                totalImportsPatched++;
             }
+            else // XEX_THUNK_FUNCTION
+            {
+                // Get the address of the __imp__ function
+                // Note: functionName already includes the "__imp__" prefix from the ordinal table
+                PPCFunc* hostFunc = GetImportFunctionByName(functionName);
 
-            // Assign a unique guest address for this import
-            uint32_t importGuestAddr = nextImportAddress;
-            nextImportAddress += 4; // Each import gets 4 bytes (enough for a function pointer)
+                if (!hostFunc)
+                {
+                    fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) - NOT IMPLEMENTED\n",
+                            i, functionName, importOrdinal);
+                    fflush(stderr);
+                    totalImportsFailed++;
+                    continue;
+                }
 
-            // Register the function at this guest address
-            g_memory.InsertFunction(importGuestAddr, hostFunc);
+                // Assign a unique guest address for this import
+                uint32_t importGuestAddr = nextImportAddress;
+                nextImportAddress += 4; // Each import gets 4 bytes (enough for a function pointer)
 
-            // Patch the thunk to point to this guest address
-            // The thunk data is in big-endian format (be<uint32_t>)
-            thunkData->function = importGuestAddr;
+                // Register the function at this guest address
+                g_memory.InsertFunction(importGuestAddr, hostFunc);
 
-            fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> guest=0x%08X PATCHED\n",
-                    i, functionName, importOrdinal, thunkAddr, importGuestAddr);
-            fflush(stderr);
-            totalImportsPatched++;
+                // Patch the thunk to point to this guest address
+                // The thunk data is in big-endian format (be<uint32_t>)
+                thunkData->function = importGuestAddr;
+
+                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> guest=0x%08X PATCHED\n",
+                        i, functionName, importOrdinal, thunkAddr, importGuestAddr);
+                fflush(stderr);
+                totalImportsPatched++;
+            }
         }
 
         // Move to next library (libraries are variable size)
@@ -612,6 +644,88 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     else
     {
         assert(false && "Unknown compression type.");
+    }
+
+    // CRITICAL FIX: Process base relocations
+    // The XEX contains offsets that need to be converted to absolute addresses
+    // This is the ROOT CAUSE of crashes where r3 contains offsets (0x000BD6C0) instead of pointers (0x820BD6C0)
+    auto* baseRefPtr = reinterpret_cast<const be<uint32_t>*>(getOptHeaderPtr(loadResult.data(), XEX_HEADER_BASE_REFERENCE));
+
+    uint32_t baseRef = 0;
+    uint32_t loadAddress = security->loadAddress.get();
+
+    if (baseRefPtr != nullptr)
+    {
+        baseRef = baseRefPtr->get();
+        fprintf(stderr, "[XEX] Base reference header found: baseRef=0x%08X\n", baseRef);
+    }
+    else
+    {
+        // CRITICAL FIX: If no base reference header, assume XEX was linked at 0x00000000
+        // This is common for XEX files that don't have a base reference header
+        // The static initializer table contains OFFSETS that need to be converted to ABSOLUTE ADDRESSES
+        baseRef = 0x00000000;
+        fprintf(stderr, "[XEX] No base reference header found - assuming baseRef=0x00000000\n");
+    }
+
+    // The base reference is the address the XEX was originally linked at
+    // We need to apply relocations if the load address is different
+    if (baseRef != loadAddress)
+    {
+        int32_t delta = static_cast<int32_t>(loadAddress) - static_cast<int32_t>(baseRef);
+        fprintf(stderr, "[XEX] Base relocation: baseRef=0x%08X loadAddr=0x%08X delta=0x%08X\n",
+                baseRef, loadAddress, delta);
+
+        // Process PE base relocations from .reloc section
+        auto* dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(g_memory.Translate(loadAddress));
+        auto* ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS32*>(g_memory.Translate(loadAddress + dosHeader->e_lfanew));
+
+        uint32_t relocRva = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
+        uint32_t relocSize = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+
+        if (relocRva != 0 && relocSize != 0)
+        {
+            auto* relocBase = reinterpret_cast<uint8_t*>(g_memory.Translate(loadAddress + relocRva));
+            auto* relocEnd = relocBase + relocSize;
+
+            uint32_t relocCount = 0;
+            while (relocBase < relocEnd)
+            {
+                auto* block = reinterpret_cast<IMAGE_BASE_RELOCATION*>(relocBase);
+                if (block->SizeOfBlock == 0)
+                    break;
+
+                uint32_t numEntries = (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(uint16_t);
+                auto* entries = reinterpret_cast<uint16_t*>(block + 1);
+
+                for (uint32_t i = 0; i < numEntries; i++)
+                {
+                    uint16_t entry = entries[i];
+                    uint16_t type = entry >> 12;
+                    uint16_t offset = entry & 0xFFF;
+
+                    if (type == IMAGE_REL_BASED_HIGHLOW)  // 32-bit absolute relocation
+                    {
+                        auto* target = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(loadAddress + block->VirtualAddress + offset));
+                        uint32_t value = target->get();
+                        target->set(value + delta);
+                        relocCount++;
+                    }
+                }
+
+                relocBase += block->SizeOfBlock;
+            }
+
+            fprintf(stderr, "[XEX] Applied %u base relocations (delta=0x%08X)\n", relocCount, delta);
+        }
+        else
+        {
+            fprintf(stderr, "[XEX] WARNING: Base reference mismatch but no .reloc section found!\n");
+        }
+    }
+    else
+    {
+        fprintf(stderr, "[XEX] No base relocation needed (baseRef == loadAddr)\n");
     }
 
     auto res = reinterpret_cast<const Xex2ResourceInfo*>(getOptHeaderPtr(loadResult.data(), XEX_HEADER_RESOURCE_INFO));
@@ -762,6 +876,15 @@ int main(int argc, char *argv[])
         const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
         const void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
         LOGFN_ERROR("[crash] unhandled exception code=0x{:08X} addr={} tid={:08X}", (unsigned)code, addr, GetCurrentThreadId());
+
+        // Special handling for floating-point divide-by-zero
+        if (code == 0xC000008E) { // STATUS_FLOAT_DIVIDE_BY_ZERO
+            LOGFN_ERROR("[crash] FLOATING-POINT DIVIDE BY ZERO detected!");
+            LOGFN_ERROR("[crash] This is likely a bug in the recompiled PPC code or a missing divide-by-zero check.");
+            LOGFN_ERROR("[crash] The game requires environment variables to work around this bug.");
+            LOGFN_ERROR("[crash] Please run with: MW05_FAKE_ALLOC_SYSBUF=1 MW05_UNBLOCK_MAIN=1 MW05_FORCE_VD_INIT=1");
+        }
+
         KernelTraceDumpRecent(32);
         void* frames[16] = {};
         USHORT n = RtlCaptureStackBackTrace(0, 16, frames, nullptr);

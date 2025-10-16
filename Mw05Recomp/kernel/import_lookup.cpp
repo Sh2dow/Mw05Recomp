@@ -74,6 +74,8 @@ PPC_EXTERN_FUNC(__imp__NetDll_WSACleanup);
 PPC_EXTERN_FUNC(__imp__NetDll_WSAStartup);
 PPC_EXTERN_FUNC(__imp__NetDll_XNetGetTitleXnAddr);
 PPC_EXTERN_FUNC(__imp__NetDll_XNetStartup);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetCleanup);
+
 PPC_EXTERN_FUNC(__imp__NetDll___WSAFDIsSet);
 PPC_EXTERN_FUNC(__imp__NetDll_accept);
 PPC_EXTERN_FUNC(__imp__NetDll_bind);
@@ -238,6 +240,188 @@ PPC_EXTERN_FUNC(__imp__XexGetModuleHandle);
 PPC_EXTERN_FUNC(__imp__XexGetModuleSection);
 PPC_EXTERN_FUNC(__imp__XexGetProcedureAddress);
 PPC_EXTERN_FUNC(__imp____C_specific_handler);
+PPC_EXTERN_FUNC(__imp__XamVoiceHeadsetPresent);
+PPC_EXTERN_FUNC(__imp__XamContentLaunchImage);
+PPC_EXTERN_FUNC(__imp__XamContentGetDeviceName);
+PPC_EXTERN_FUNC(__imp__XamContentCreateDeviceEnumerator);
+PPC_EXTERN_FUNC(__imp__XamContentGetLicenseMask);
+PPC_EXTERN_FUNC(__imp__XamContentGetThumbnail);
+PPC_EXTERN_FUNC(__imp__XamContentSetThumbnail);
+PPC_EXTERN_FUNC(__imp__XamContentFlush);
+PPC_EXTERN_FUNC(__imp__XamContentInstall);
+PPC_EXTERN_FUNC(__imp__XamContentCreate);
+PPC_EXTERN_FUNC(__imp__XamSessionCreateHandle);
+PPC_EXTERN_FUNC(__imp__XamSessionRefObjByHandle);
+PPC_EXTERN_FUNC(__imp__XamUserGetMembershipTierFromXUID);
+PPC_EXTERN_FUNC(__imp__XamUserGetOnlineCountryFromXUID);
+PPC_EXTERN_FUNC(__imp__XNetLogonGetMachineID);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpUnregisterKeyForCallerType);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpRegisterKeyForCallerType);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpNoteSystemTime);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpGetActiveSocketList);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpSetVlanXboxName);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpGetVlanXboxName);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonSetPState);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonSetQVals);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonGetQVals);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonClearQEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonSetQEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonSetQFlags);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonGetQFlags);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLogonGetStatus);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpEthernetInterceptRecv);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpEthernetInterceptXmit);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpEthernetInterceptSetCallbacks);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpCapture);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpSaveMachineAccount);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLoadMachineAccount);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpGetConfigStatus);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpConfig);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpConfigUPnP);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpSaveConfigParams);
+PPC_EXTERN_FUNC(__imp__NetDll_XnpLoadConfigParams);
+PPC_EXTERN_FUNC(__imp__NetDll_WSACreateEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_WSACloseEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_WSASetEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_WSAResetEvent);
+PPC_EXTERN_FUNC(__imp__NetDll_WSAWaitForMultipleEvents);
+PPC_EXTERN_FUNC(__imp____vsnprintf);
+PPC_EXTERN_FUNC(__imp__sprintf);
+PPC_EXTERN_FUNC(__imp___vsnprintf);
+PPC_EXTERN_FUNC(__imp__vsprintf);
+
+// XAM user/profile
+PPC_EXTERN_FUNC(__imp__XamUserGetName);
+PPC_EXTERN_FUNC(__imp__XamUserAreUsersFriends);
+PPC_EXTERN_FUNC(__imp__XamUserCheckPrivilege);
+PPC_EXTERN_FUNC(__imp__XamUserCreateStatsEnumerator);
+PPC_EXTERN_FUNC(__imp__XamReadTileToTexture);
+PPC_EXTERN_FUNC(__imp__XamUserWriteProfileSettings);
+
+// NetDll WSA/sockets
+PPC_EXTERN_FUNC(__imp__NetDll_WSASetLastError);
+PPC_EXTERN_FUNC(__imp__NetDll_WSAGetLastError);
+PPC_EXTERN_FUNC(__imp__NetDll_WSAEventSelect);
+PPC_EXTERN_FUNC(__imp__NetDll_WSASendTo);
+PPC_EXTERN_FUNC(__imp__NetDll_sendto);
+PPC_EXTERN_FUNC(__imp__NetDll_WSASend);
+PPC_EXTERN_FUNC(__imp__NetDll_WSARecvFrom);
+PPC_EXTERN_FUNC(__imp__NetDll_recvfrom);
+PPC_EXTERN_FUNC(__imp__NetDll_WSARecv);
+PPC_EXTERN_FUNC(__imp__NetDll_WSACancelOverlappedIO);
+PPC_EXTERN_FUNC(__imp__NetDll_WSAGetOverlappedResult);
+PPC_EXTERN_FUNC(__imp__NetDll_getpeername);
+PPC_EXTERN_FUNC(__imp__NetDll_getsockname);
+PPC_EXTERN_FUNC(__imp__NetDll_getsockopt);
+PPC_EXTERN_FUNC(__imp__NetDll_ioctlsocket);
+PPC_EXTERN_FUNC(__imp__NetDll_shutdown);
+
+// NetDll XNet core set
+PPC_EXTERN_FUNC(__imp__NetDll_XNetRandom);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetCreateKey);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetRegisterKey);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetUnregisterKey);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetXnAddrToInAddr);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetServerToInAddr);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetTsAddrToInAddr);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetInAddrToXnAddr);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetInAddrToServer);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetInAddrToString);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetUnregisterInAddr);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetXnAddrToMachineId);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetConnect);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetGetConnectStatus);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetDnsLookup);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetDnsRelease);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetQosListen);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetQosLookup);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetQosServiceLookup);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetQosRelease);
+
+// XeCrypt / XeKeys
+PPC_EXTERN_FUNC(__imp__XeKeysGetKeyProperties);
+PPC_EXTERN_FUNC(__imp__XeCryptAesKey);
+PPC_EXTERN_FUNC(__imp__XeCryptAesEcb);
+PPC_EXTERN_FUNC(__imp__XeKeysQwNeRsaPrvCrypt);
+PPC_EXTERN_FUNC(__imp__XeCryptBnQw_SwapDwQwLeBe);
+PPC_EXTERN_FUNC(__imp__XeCryptRandom);
+PPC_EXTERN_FUNC(__imp__XeCryptShaFinal);
+PPC_EXTERN_FUNC(__imp__XeCryptShaUpdate);
+PPC_EXTERN_FUNC(__imp__XeCryptShaInit);
+PPC_EXTERN_FUNC(__imp__XeCryptBnQwNeRsaPubCrypt);
+PPC_EXTERN_FUNC(__imp__XeCryptBnQwNeRsaPrvCrypt);
+PPC_EXTERN_FUNC(__imp__XeCryptBnQwNeRsaKeyGen);
+PPC_EXTERN_FUNC(__imp__XeCryptRc4Key);
+PPC_EXTERN_FUNC(__imp__XeCryptRc4Ecb);
+
+// XMA
+PPC_EXTERN_FUNC(__imp__XMAGetOutputBufferWriteOffset);
+PPC_EXTERN_FUNC(__imp__XMASetInputBuffer1);
+PPC_EXTERN_FUNC(__imp__XMASetOutputBufferReadOffset);
+PPC_EXTERN_FUNC(__imp__XMAInitializeContext);
+PPC_EXTERN_FUNC(__imp__XMASetInputBuffer0);
+PPC_EXTERN_FUNC(__imp__XMADisableContext);
+PPC_EXTERN_FUNC(__imp__XMAEnableContext);
+PPC_EXTERN_FUNC(__imp__XMAIsOutputBufferValid);
+PPC_EXTERN_FUNC(__imp__XMASetInputBuffer0Valid);
+PPC_EXTERN_FUNC(__imp__XMAGetOutputBufferReadOffset);
+PPC_EXTERN_FUNC(__imp__XMAIsInputBuffer1Valid);
+PPC_EXTERN_FUNC(__imp__XMASetOutputBufferValid);
+PPC_EXTERN_FUNC(__imp__XMAIsInputBuffer0Valid);
+PPC_EXTERN_FUNC(__imp__XMASetInputBuffer1Valid);
+
+// Additional XNet opts/debug
+PPC_EXTERN_FUNC(__imp__NetDll_XNetGetOpt);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetSetOpt);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetQosGetListenStats);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetGetEthernetLinkStatus);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetGetBroadcastVersionStatus);
+PPC_EXTERN_FUNC(__imp__NetDll_XNetGetDebugXnAddr);
+
+// Misc platform / UI / voice / cache
+PPC_EXTERN_FUNC(__imp__XNetLogonGetTitleID);
+PPC_EXTERN_FUNC(__imp__FscGetCacheElementCount);
+PPC_EXTERN_FUNC(__imp__XamCreateEnumeratorHandle);
+PPC_EXTERN_FUNC(__imp__XMsgSystemProcessCall);
+PPC_EXTERN_FUNC(__imp__XamGetPrivateEnumStructureFromHandle);
+PPC_EXTERN_FUNC(__imp__XamUserCreatePlayerEnumerator);
+
+PPC_EXTERN_FUNC(__imp__XAudioQueryDriverPerformance);
+PPC_EXTERN_FUNC(__imp__XamUserCreateAchievementEnumerator);
+PPC_EXTERN_FUNC(__imp__XamUserGetXUID);
+PPC_EXTERN_FUNC(__imp__XamParseGamerTileKey);
+PPC_EXTERN_FUNC(__imp__XamWriteGamerTile);
+PPC_EXTERN_FUNC(__imp__XamInputGetKeystrokeEx);
+PPC_EXTERN_FUNC(__imp__XamVoiceCreate);
+PPC_EXTERN_FUNC(__imp__XamVoiceSubmitPacket);
+PPC_EXTERN_FUNC(__imp__XamVoiceClose);
+PPC_EXTERN_FUNC(__imp__XMsgCancelIORequest);
+
+// XAM UI dialogs
+PPC_EXTERN_FUNC(__imp__XamShowSigninUIp);
+PPC_EXTERN_FUNC(__imp__XamShowFriendsUI);
+PPC_EXTERN_FUNC(__imp__XamShowPlayersUI);
+PPC_EXTERN_FUNC(__imp__XamShowMessagesUI);
+PPC_EXTERN_FUNC(__imp__XamShowKeyboardUI);
+PPC_EXTERN_FUNC(__imp__XamShowQuickChatUI);
+PPC_EXTERN_FUNC(__imp__XamShowVoiceMailUI);
+PPC_EXTERN_FUNC(__imp__XamShowGamerCardUIForXUID);
+PPC_EXTERN_FUNC(__imp__XamShowAchievementsUI);
+PPC_EXTERN_FUNC(__imp__XamShowPlayerReviewUI);
+PPC_EXTERN_FUNC(__imp__XamShowMarketplaceUI);
+PPC_EXTERN_FUNC(__imp__XamShowMessageComposeUI);
+PPC_EXTERN_FUNC(__imp__XamShowGameInviteUI);
+PPC_EXTERN_FUNC(__imp__XamShowFriendRequestUI);
+
+// XMA extra
+PPC_EXTERN_FUNC(__imp__XMASetInputBufferReadOffset);
+PPC_EXTERN_FUNC(__imp__XMABlockWhileInUse);
+PPC_EXTERN_FUNC(__imp__XMASetLoopData);
+
+// Misc
+PPC_EXTERN_FUNC(__imp__Refresh);
+
+
 PPC_EXTERN_FUNC(__imp__sub_82539870);
 PPC_EXTERN_FUNC(__imp__sub_82849BF8);
 PPC_EXTERN_FUNC(__imp__sub_82881020);
@@ -316,6 +500,8 @@ static void InitializeImportLookup()
     g_importLookup["__imp__NetDll_WSAStartup"] = &__imp__NetDll_WSAStartup;
     g_importLookup["__imp__NetDll_XNetGetTitleXnAddr"] = &__imp__NetDll_XNetGetTitleXnAddr;
     g_importLookup["__imp__NetDll_XNetStartup"] = &__imp__NetDll_XNetStartup;
+    g_importLookup["__imp__NetDll_XNetCleanup"] = &__imp__NetDll_XNetCleanup;
+
     g_importLookup["__imp__NetDll___WSAFDIsSet"] = &__imp__NetDll___WSAFDIsSet;
     g_importLookup["__imp__NetDll_accept"] = &__imp__NetDll_accept;
     g_importLookup["__imp__NetDll_bind"] = &__imp__NetDll_bind;
@@ -412,6 +598,137 @@ static void InitializeImportLookup()
     g_importLookup["__imp__VdInitializeScalerCommandBuffer"] = &__imp__VdInitializeScalerCommandBuffer;
     g_importLookup["__imp__VdIsHSIOTrainingSucceeded"] = &__imp__VdIsHSIOTrainingSucceeded;
     g_importLookup["__imp__VdPersistDisplay"] = &__imp__VdPersistDisplay;
+    // XAM user/profile
+    g_importLookup["__imp__XamUserGetName"] = &__imp__XamUserGetName;
+    g_importLookup["__imp__XamUserAreUsersFriends"] = &__imp__XamUserAreUsersFriends;
+    g_importLookup["__imp__XamUserCheckPrivilege"] = &__imp__XamUserCheckPrivilege;
+    g_importLookup["__imp__XamUserCreateStatsEnumerator"] = &__imp__XamUserCreateStatsEnumerator;
+    g_importLookup["__imp__XamReadTileToTexture"] = &__imp__XamReadTileToTexture;
+    g_importLookup["__imp__XamUserWriteProfileSettings"] = &__imp__XamUserWriteProfileSettings;
+
+    // NetDll WSA/sockets
+    g_importLookup["__imp__NetDll_WSASetLastError"] = &__imp__NetDll_WSASetLastError;
+    g_importLookup["__imp__NetDll_WSAGetLastError"] = &__imp__NetDll_WSAGetLastError;
+    g_importLookup["__imp__NetDll_WSAEventSelect"] = &__imp__NetDll_WSAEventSelect;
+    g_importLookup["__imp__NetDll_WSASendTo"] = &__imp__NetDll_WSASendTo;
+    g_importLookup["__imp__NetDll_sendto"] = &__imp__NetDll_sendto;
+    g_importLookup["__imp__NetDll_WSASend"] = &__imp__NetDll_WSASend;
+    g_importLookup["__imp__NetDll_WSARecvFrom"] = &__imp__NetDll_WSARecvFrom;
+    g_importLookup["__imp__NetDll_recvfrom"] = &__imp__NetDll_recvfrom;
+    g_importLookup["__imp__NetDll_WSARecv"] = &__imp__NetDll_WSARecv;
+    g_importLookup["__imp__NetDll_WSACancelOverlappedIO"] = &__imp__NetDll_WSACancelOverlappedIO;
+    g_importLookup["__imp__NetDll_WSAGetOverlappedResult"] = &__imp__NetDll_WSAGetOverlappedResult;
+    g_importLookup["__imp__NetDll_getpeername"] = &__imp__NetDll_getpeername;
+    g_importLookup["__imp__NetDll_getsockname"] = &__imp__NetDll_getsockname;
+    g_importLookup["__imp__NetDll_getsockopt"] = &__imp__NetDll_getsockopt;
+    g_importLookup["__imp__NetDll_ioctlsocket"] = &__imp__NetDll_ioctlsocket;
+    g_importLookup["__imp__NetDll_shutdown"] = &__imp__NetDll_shutdown;
+
+    // NetDll XNet core set
+    g_importLookup["__imp__NetDll_XNetRandom"] = &__imp__NetDll_XNetRandom;
+    g_importLookup["__imp__NetDll_XNetCreateKey"] = &__imp__NetDll_XNetCreateKey;
+    g_importLookup["__imp__NetDll_XNetRegisterKey"] = &__imp__NetDll_XNetRegisterKey;
+    g_importLookup["__imp__NetDll_XNetUnregisterKey"] = &__imp__NetDll_XNetUnregisterKey;
+    // Additional XNet opts/debug
+    g_importLookup["__imp__NetDll_XNetGetOpt"] = &__imp__NetDll_XNetGetOpt;
+    g_importLookup["__imp__NetDll_XNetSetOpt"] = &__imp__NetDll_XNetSetOpt;
+    g_importLookup["__imp__NetDll_XNetQosGetListenStats"] = &__imp__NetDll_XNetQosGetListenStats;
+    g_importLookup["__imp__NetDll_XNetGetEthernetLinkStatus"] = &__imp__NetDll_XNetGetEthernetLinkStatus;
+    g_importLookup["__imp__NetDll_XNetGetBroadcastVersionStatus"] = &__imp__NetDll_XNetGetBroadcastVersionStatus;
+    g_importLookup["__imp__NetDll_XNetGetDebugXnAddr"] = &__imp__NetDll_XNetGetDebugXnAddr;
+
+    // Misc platform / UI / voice / cache
+    g_importLookup["__imp__XNetLogonGetTitleID"] = &__imp__XNetLogonGetTitleID;
+    g_importLookup["__imp__FscGetCacheElementCount"] = &__imp__FscGetCacheElementCount;
+    g_importLookup["__imp__XamCreateEnumeratorHandle"] = &__imp__XamCreateEnumeratorHandle;
+    g_importLookup["__imp__XMsgSystemProcessCall"] = &__imp__XMsgSystemProcessCall;
+    g_importLookup["__imp__XamGetPrivateEnumStructureFromHandle"] = &__imp__XamGetPrivateEnumStructureFromHandle;
+    g_importLookup["__imp__XamUserCreatePlayerEnumerator"] = &__imp__XamUserCreatePlayerEnumerator;
+
+    g_importLookup["__imp__XAudioQueryDriverPerformance"] = &__imp__XAudioQueryDriverPerformance;
+    g_importLookup["__imp__XamUserCreateAchievementEnumerator"] = &__imp__XamUserCreateAchievementEnumerator;
+    g_importLookup["__imp__XamUserGetXUID"] = &__imp__XamUserGetXUID;
+    g_importLookup["__imp__XamParseGamerTileKey"] = &__imp__XamParseGamerTileKey;
+    g_importLookup["__imp__XamWriteGamerTile"] = &__imp__XamWriteGamerTile;
+    g_importLookup["__imp__XamInputGetKeystrokeEx"] = &__imp__XamInputGetKeystrokeEx;
+    g_importLookup["__imp__XamVoiceCreate"] = &__imp__XamVoiceCreate;
+    g_importLookup["__imp__XamVoiceSubmitPacket"] = &__imp__XamVoiceSubmitPacket;
+    g_importLookup["__imp__XamVoiceClose"] = &__imp__XamVoiceClose;
+    g_importLookup["__imp__XMsgCancelIORequest"] = &__imp__XMsgCancelIORequest;
+
+    // XAM UI dialogs
+    g_importLookup["__imp__XamShowSigninUIp"] = &__imp__XamShowSigninUIp;
+    g_importLookup["__imp__XamShowFriendsUI"] = &__imp__XamShowFriendsUI;
+    g_importLookup["__imp__XamShowPlayersUI"] = &__imp__XamShowPlayersUI;
+    g_importLookup["__imp__XamShowMessagesUI"] = &__imp__XamShowMessagesUI;
+    g_importLookup["__imp__XamShowKeyboardUI"] = &__imp__XamShowKeyboardUI;
+    g_importLookup["__imp__XamShowQuickChatUI"] = &__imp__XamShowQuickChatUI;
+    g_importLookup["__imp__XamShowVoiceMailUI"] = &__imp__XamShowVoiceMailUI;
+    g_importLookup["__imp__XamShowGamerCardUIForXUID"] = &__imp__XamShowGamerCardUIForXUID;
+    g_importLookup["__imp__XamShowAchievementsUI"] = &__imp__XamShowAchievementsUI;
+    g_importLookup["__imp__XamShowPlayerReviewUI"] = &__imp__XamShowPlayerReviewUI;
+    g_importLookup["__imp__XamShowMarketplaceUI"] = &__imp__XamShowMarketplaceUI;
+    g_importLookup["__imp__XamShowMessageComposeUI"] = &__imp__XamShowMessageComposeUI;
+    g_importLookup["__imp__XamShowGameInviteUI"] = &__imp__XamShowGameInviteUI;
+    g_importLookup["__imp__XamShowFriendRequestUI"] = &__imp__XamShowFriendRequestUI;
+
+    // XMA extras
+    g_importLookup["__imp__XMASetInputBufferReadOffset"] = &__imp__XMASetInputBufferReadOffset;
+    g_importLookup["__imp__XMABlockWhileInUse"] = &__imp__XMABlockWhileInUse;
+    g_importLookup["__imp__XMASetLoopData"] = &__imp__XMASetLoopData;
+
+    // Misc
+    g_importLookup["__imp__Refresh"] = &__imp__Refresh;
+
+    g_importLookup["__imp__NetDll_XNetXnAddrToInAddr"] = &__imp__NetDll_XNetXnAddrToInAddr;
+    g_importLookup["__imp__NetDll_XNetServerToInAddr"] = &__imp__NetDll_XNetServerToInAddr;
+    g_importLookup["__imp__NetDll_XNetTsAddrToInAddr"] = &__imp__NetDll_XNetTsAddrToInAddr;
+    g_importLookup["__imp__NetDll_XNetInAddrToXnAddr"] = &__imp__NetDll_XNetInAddrToXnAddr;
+    g_importLookup["__imp__NetDll_XNetInAddrToServer"] = &__imp__NetDll_XNetInAddrToServer;
+    g_importLookup["__imp__NetDll_XNetInAddrToString"] = &__imp__NetDll_XNetInAddrToString;
+    g_importLookup["__imp__NetDll_XNetUnregisterInAddr"] = &__imp__NetDll_XNetUnregisterInAddr;
+    g_importLookup["__imp__NetDll_XNetXnAddrToMachineId"] = &__imp__NetDll_XNetXnAddrToMachineId;
+    g_importLookup["__imp__NetDll_XNetConnect"] = &__imp__NetDll_XNetConnect;
+    g_importLookup["__imp__NetDll_XNetGetConnectStatus"] = &__imp__NetDll_XNetGetConnectStatus;
+    g_importLookup["__imp__NetDll_XNetDnsLookup"] = &__imp__NetDll_XNetDnsLookup;
+    g_importLookup["__imp__NetDll_XNetDnsRelease"] = &__imp__NetDll_XNetDnsRelease;
+    g_importLookup["__imp__NetDll_XNetQosListen"] = &__imp__NetDll_XNetQosListen;
+    g_importLookup["__imp__NetDll_XNetQosLookup"] = &__imp__NetDll_XNetQosLookup;
+    g_importLookup["__imp__NetDll_XNetQosServiceLookup"] = &__imp__NetDll_XNetQosServiceLookup;
+    g_importLookup["__imp__NetDll_XNetQosRelease"] = &__imp__NetDll_XNetQosRelease;
+
+    // XeCrypt / XeKeys
+    g_importLookup["__imp__XeKeysGetKeyProperties"] = &__imp__XeKeysGetKeyProperties;
+    g_importLookup["__imp__XeCryptAesKey"] = &__imp__XeCryptAesKey;
+    g_importLookup["__imp__XeCryptAesEcb"] = &__imp__XeCryptAesEcb;
+    g_importLookup["__imp__XeKeysQwNeRsaPrvCrypt"] = &__imp__XeKeysQwNeRsaPrvCrypt;
+    g_importLookup["__imp__XeCryptBnQw_SwapDwQwLeBe"] = &__imp__XeCryptBnQw_SwapDwQwLeBe;
+    g_importLookup["__imp__XeCryptRandom"] = &__imp__XeCryptRandom;
+    g_importLookup["__imp__XeCryptShaFinal"] = &__imp__XeCryptShaFinal;
+    g_importLookup["__imp__XeCryptShaUpdate"] = &__imp__XeCryptShaUpdate;
+    g_importLookup["__imp__XeCryptShaInit"] = &__imp__XeCryptShaInit;
+    g_importLookup["__imp__XeCryptBnQwNeRsaPubCrypt"] = &__imp__XeCryptBnQwNeRsaPubCrypt;
+    g_importLookup["__imp__XeCryptBnQwNeRsaPrvCrypt"] = &__imp__XeCryptBnQwNeRsaPrvCrypt;
+    g_importLookup["__imp__XeCryptBnQwNeRsaKeyGen"] = &__imp__XeCryptBnQwNeRsaKeyGen;
+    g_importLookup["__imp__XeCryptRc4Key"] = &__imp__XeCryptRc4Key;
+    g_importLookup["__imp__XeCryptRc4Ecb"] = &__imp__XeCryptRc4Ecb;
+
+    // XMA
+    g_importLookup["__imp__XMAGetOutputBufferWriteOffset"] = &__imp__XMAGetOutputBufferWriteOffset;
+    g_importLookup["__imp__XMASetInputBuffer1"] = &__imp__XMASetInputBuffer1;
+    g_importLookup["__imp__XMASetOutputBufferReadOffset"] = &__imp__XMASetOutputBufferReadOffset;
+    g_importLookup["__imp__XMAInitializeContext"] = &__imp__XMAInitializeContext;
+    g_importLookup["__imp__XMASetInputBuffer0"] = &__imp__XMASetInputBuffer0;
+    g_importLookup["__imp__XMADisableContext"] = &__imp__XMADisableContext;
+    g_importLookup["__imp__XMAEnableContext"] = &__imp__XMAEnableContext;
+    g_importLookup["__imp__XMAIsOutputBufferValid"] = &__imp__XMAIsOutputBufferValid;
+    g_importLookup["__imp__XMASetInputBuffer0Valid"] = &__imp__XMASetInputBuffer0Valid;
+    g_importLookup["__imp__XMAGetOutputBufferReadOffset"] = &__imp__XMAGetOutputBufferReadOffset;
+    g_importLookup["__imp__XMAIsInputBuffer1Valid"] = &__imp__XMAIsInputBuffer1Valid;
+    g_importLookup["__imp__XMASetOutputBufferValid"] = &__imp__XMASetOutputBufferValid;
+    g_importLookup["__imp__XMAIsInputBuffer0Valid"] = &__imp__XMAIsInputBuffer0Valid;
+    g_importLookup["__imp__XMASetInputBuffer1Valid"] = &__imp__XMASetInputBuffer1Valid;
+
     g_importLookup["__imp__VdQuerySystemCommandBuffer"] = &__imp__VdQuerySystemCommandBuffer;
     g_importLookup["__imp__VdQueryVideoFlags"] = &__imp__VdQueryVideoFlags;
     g_importLookup["__imp__VdQueryVideoMode"] = &__imp__VdQueryVideoMode;
@@ -436,6 +753,62 @@ static void InitializeImportLookup()
     g_importLookup["__imp__XGetVideoMode"] = &__imp__XGetVideoMode;
     g_importLookup["__imp__XMACreateContext"] = &__imp__XMACreateContext;
     g_importLookup["__imp__XMAReleaseContext"] = &__imp__XMAReleaseContext;
+    // Added mappings for additional XAM/NetDll imports needed by MW05
+    g_importLookup["__imp__XamVoiceHeadsetPresent"] = &__imp__XamVoiceHeadsetPresent;
+    g_importLookup["__imp__XamContentLaunchImage"] = &__imp__XamContentLaunchImage;
+    g_importLookup["__imp__XamContentGetDeviceName"] = &__imp__XamContentGetDeviceName;
+    g_importLookup["__imp__XamContentCreateDeviceEnumerator"] = &__imp__XamContentCreateDeviceEnumerator;
+    g_importLookup["__imp__XamContentGetLicenseMask"] = &__imp__XamContentGetLicenseMask;
+    g_importLookup["__imp__XamContentGetThumbnail"] = &__imp__XamContentGetThumbnail;
+    g_importLookup["__imp__XamContentSetThumbnail"] = &__imp__XamContentSetThumbnail;
+    g_importLookup["__imp__XamContentFlush"] = &__imp__XamContentFlush;
+    g_importLookup["__imp__XamContentInstall"] = &__imp__XamContentInstall;
+    g_importLookup["__imp__XamContentCreate"] = &__imp__XamContentCreate;
+    g_importLookup["__imp__XamSessionCreateHandle"] = &__imp__XamSessionCreateHandle;
+    g_importLookup["__imp__XamSessionRefObjByHandle"] = &__imp__XamSessionRefObjByHandle;
+    g_importLookup["__imp__XamUserGetMembershipTierFromXUID"] = &__imp__XamUserGetMembershipTierFromXUID;
+    g_importLookup["__imp__XamUserGetOnlineCountryFromXUID"] = &__imp__XamUserGetOnlineCountryFromXUID;
+    g_importLookup["__imp__XNetLogonGetMachineID"] = &__imp__XNetLogonGetMachineID;
+
+    g_importLookup["__imp__NetDll_XnpUnregisterKeyForCallerType"] = &__imp__NetDll_XnpUnregisterKeyForCallerType;
+    g_importLookup["__imp__NetDll_XnpRegisterKeyForCallerType"] = &__imp__NetDll_XnpRegisterKeyForCallerType;
+    g_importLookup["__imp__NetDll_XnpNoteSystemTime"] = &__imp__NetDll_XnpNoteSystemTime;
+    g_importLookup["__imp__NetDll_XnpGetActiveSocketList"] = &__imp__NetDll_XnpGetActiveSocketList;
+    g_importLookup["__imp__NetDll_XnpSetVlanXboxName"] = &__imp__NetDll_XnpSetVlanXboxName;
+    g_importLookup["__imp__NetDll_XnpGetVlanXboxName"] = &__imp__NetDll_XnpGetVlanXboxName;
+    g_importLookup["__imp__NetDll_XnpLogonSetPState"] = &__imp__NetDll_XnpLogonSetPState;
+    g_importLookup["__imp__NetDll_XnpLogonSetQVals"] = &__imp__NetDll_XnpLogonSetQVals;
+    g_importLookup["__imp__NetDll_XnpLogonGetQVals"] = &__imp__NetDll_XnpLogonGetQVals;
+    g_importLookup["__imp__NetDll_XnpLogonClearQEvent"] = &__imp__NetDll_XnpLogonClearQEvent;
+    g_importLookup["__imp__NetDll_XnpLogonSetQEvent"] = &__imp__NetDll_XnpLogonSetQEvent;
+    g_importLookup["__imp__NetDll_XnpLogonSetQFlags"] = &__imp__NetDll_XnpLogonSetQFlags;
+    g_importLookup["__imp__NetDll_XnpLogonGetQFlags"] = &__imp__NetDll_XnpLogonGetQFlags;
+    g_importLookup["__imp__NetDll_XnpLogonGetStatus"] = &__imp__NetDll_XnpLogonGetStatus;
+    g_importLookup["__imp__NetDll_XnpEthernetInterceptRecv"] = &__imp__NetDll_XnpEthernetInterceptRecv;
+    g_importLookup["__imp__NetDll_XnpEthernetInterceptXmit"] = &__imp__NetDll_XnpEthernetInterceptXmit;
+    g_importLookup["__imp__NetDll_XnpEthernetInterceptSetCallbacks"] = &__imp__NetDll_XnpEthernetInterceptSetCallbacks;
+    g_importLookup["__imp__NetDll_XnpCapture"] = &__imp__NetDll_XnpCapture;
+    g_importLookup["__imp__NetDll_XnpSaveMachineAccount"] = &__imp__NetDll_XnpSaveMachineAccount;
+    g_importLookup["__imp__NetDll_XnpLoadMachineAccount"] = &__imp__NetDll_XnpLoadMachineAccount;
+    g_importLookup["__imp__NetDll_XnpGetConfigStatus"] = &__imp__NetDll_XnpGetConfigStatus;
+    g_importLookup["__imp__NetDll_XnpConfig"] = &__imp__NetDll_XnpConfig;
+    g_importLookup["__imp__NetDll_XnpConfigUPnP"] = &__imp__NetDll_XnpConfigUPnP;
+    g_importLookup["__imp__NetDll_XnpSaveConfigParams"] = &__imp__NetDll_XnpSaveConfigParams;
+    g_importLookup["__imp__NetDll_XnpLoadConfigParams"] = &__imp__NetDll_XnpLoadConfigParams;
+
+    g_importLookup["__imp__NetDll_WSACreateEvent"] = &__imp__NetDll_WSACreateEvent;
+    g_importLookup["__imp__NetDll_WSACloseEvent"] = &__imp__NetDll_WSACloseEvent;
+    g_importLookup["__imp__NetDll_WSASetEvent"] = &__imp__NetDll_WSASetEvent;
+    g_importLookup["__imp__NetDll_WSAResetEvent"] = &__imp__NetDll_WSAResetEvent;
+    g_importLookup["__imp__NetDll_WSAWaitForMultipleEvents"] = &__imp__NetDll_WSAWaitForMultipleEvents;
+
+    g_importLookup["__imp___vsnprintf"] = &__imp___vsnprintf;
+    g_importLookup["__imp__vsprintf"] = &__imp__vsprintf;
+
+    // CRT formatting
+    g_importLookup["__imp____vsnprintf"] = &__imp____vsnprintf;
+    g_importLookup["__imp__sprintf"] = &__imp__sprintf;
+
     g_importLookup["__imp__XMsgInProcessCall"] = &__imp__XMsgInProcessCall;
     g_importLookup["__imp__XMsgStartIORequest"] = &__imp__XMsgStartIORequest;
     g_importLookup["__imp__XMsgStartIORequestEx"] = &__imp__XMsgStartIORequestEx;
@@ -489,10 +862,10 @@ static void InitializeImportLookup()
 extern "C" PPCFunc* GetImportFunctionByName(const char* name)
 {
     InitializeImportLookup();
-    
+
     auto it = g_importLookup.find(name);
     if (it != g_importLookup.end())
         return it->second;
-    
+
     return nullptr;
 }

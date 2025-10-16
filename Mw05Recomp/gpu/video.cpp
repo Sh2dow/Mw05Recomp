@@ -63,6 +63,8 @@ extern "C" {
     uint32_t Mw05GetRingSizeBytes();
     uint32_t Mw05GetSysBufBaseEA();
     uint32_t Mw05GetSysBufSizeBytes();
+    // System command buffer initialization
+    uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
 }
 
 // Optional forced VD bring-up hooks (defined in kernel/imports.cpp)
@@ -3226,6 +3228,10 @@ bool Video::ConsumePresentRequest()
 
 void Video::Present()
 {
+    // CRITICAL FIX: Measure present time from the start of the function
+    // This ensures the FPS counter continues to update after the renderer becomes ready
+    auto s_present_start = std::chrono::steady_clock::now();
+
     // Always write a host trace entry when Present is entered to diagnose bring-up
     KernelTraceHostOp("HOST.VideoPresent.enter2");
 
@@ -3236,6 +3242,10 @@ void Video::Present()
         fprintf(stderr, "[PRESENT] Call #%llu\n", (unsigned long long)s_presentCount);
         fflush(stderr);
     }
+
+    // NOTE: System command buffer is initialized by Mw05ForceVdInitOnce() in kernel/imports.cpp
+    // which is called from KeWaitForSingleObject and other kernel functions.
+    // No need to initialize it here - it will be initialized when the game calls VdGetSystemCommandBuffer.
 
     // Ensure early VD/ring bring-up if requested (safe no-op otherwise)
     Mw05ForceVdInitOnce();
@@ -3448,6 +3458,22 @@ void Video::Present()
         PM4_DumpOpcodeHistogram();
         KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu",
             (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+    }
+
+    // CRITICAL FIX: Always scan the system command buffer for draw commands
+    // The game doesn't call VdSetSystemCommandBuffer, so we must scan it continuously
+    // This is the primary source of draw commands in MW05
+    {
+        uint32_t sysEA = Mw05GetSysBufBaseEA();
+        if (sysEA) {
+            // Scan the system command buffer payload (skip 16-byte header)
+            const uint32_t headSkip = 0x10u;
+            const uint32_t totalSize = 0x00010000u; // 64 KiB
+            const uint32_t payloadSize = (totalSize > headSkip) ? (totalSize - headSkip) : 0u;
+            PM4_ScanLinear(sysEA + headSkip, payloadSize);
+            KernelTraceHostOpF("HOST.PM4.SysBufScan draws=%llu pkts=%llu",
+                (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+        }
     }
 
     // Optional: force a linear scan of the System Command Buffer payload each present to surface PM4, even if diff-watch didn't trigger
@@ -3725,6 +3751,12 @@ void Video::Present()
 
         s_next += 1000000000ns / Config::FPS;
     }
+
+    // CRITICAL FIX: Update present profiler with actual frame time before resetting
+    // This ensures the FPS counter continues to update after the renderer becomes ready
+    // The profiler value is read by DrawFPS() to calculate the FPS display
+    auto s_present_end = std::chrono::steady_clock::now();
+    g_presentProfiler.Set(std::chrono::duration<double, std::milli>(s_present_end - s_present_start).count());
 
     g_presentProfiler.Reset();
 }
@@ -8862,6 +8894,7 @@ GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);
 
     GUEST_FUNCTION_HOOK(sub_825A7EA0, MW05Shim_sub_825A7EA0);
     GUEST_FUNCTION_HOOK(sub_825A7208, MW05Shim_sub_825A7208);
+    GUEST_FUNCTION_HOOK(sub_825A7B78, MW05Shim_sub_825A7B78);
     GUEST_FUNCTION_HOOK(sub_825A74B8, MW05Shim_sub_825A74B8);
     GUEST_FUNCTION_HOOK(sub_825A7F10, MW05Shim_sub_825A7F10);
     GUEST_FUNCTION_HOOK(sub_825A7F88, MW05Shim_sub_825A7F88);

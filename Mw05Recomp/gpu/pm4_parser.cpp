@@ -276,9 +276,9 @@ static void ParsePM4Indirect(uint32_t ib_addr, uint32_t ib_dword_count) {
 void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
     if (!addr || bytes == 0) return;
 
-    // DEBUG: Log PM4 scan calls
+    // DEBUG: Log PM4 scan calls (increased limit to see more activity)
     static int s_scanLogCount = 0;
-    if (s_scanLogCount < 10) {
+    if (s_scanLogCount < 100) {
         fprintf(stderr, "[RENDER-DEBUG] PM4_ScanLinear called: addr=%08X bytes=%u count=%d\n", addr, bytes, s_scanLogCount);
         fflush(stderr);
         s_scanLogCount++;
@@ -298,8 +298,8 @@ void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
     KernelTraceHostOpF("HOST.PM4.ScanLinear.end consumed=%u draws=%llu", consumed,
                        (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed));
 
-    // DEBUG: Log scan results
-    if (s_scanLogCount <= 10) {
+    // DEBUG: Log scan results (increased limit to see more activity)
+    if (s_scanLogCount <= 100) {
         uint64_t draws = g_pm4DrawCount.load(std::memory_order_relaxed);
         fprintf(stderr, "[RENDER-DEBUG] PM4_ScanLinear result: consumed=%u draws=%llu\n", consumed, (unsigned long long)draws);
         fflush(stderr);
@@ -322,7 +322,15 @@ void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
 // Parse a single PM4 packet at the given address
 static uint32_t ParsePM4Packet(uint32_t addr) {
     uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.Translate(addr));
-    if (!ptr) return 4;
+    if (!ptr) {
+        static int s_translateFailCount = 0;
+        if (s_translateFailCount < 10) {
+            fprintf(stderr, "[PM4-TRANSLATE-FAIL] Address %08X failed translation (count=%d)\n", addr, s_translateFailCount);
+            fflush(stderr);
+            s_translateFailCount++;
+        }
+        return 4;
+    }
 
     // Read raw dword from guest memory
     uint32_t raw = *ptr;
@@ -344,6 +352,28 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
     static bool s_logged_first_type3 = false;
 
     if (type < 4) g_typeCounts[type].fetch_add(1, std::memory_order_relaxed);
+
+    // DEBUG: Log first 50 packets to see what types/opcodes we're getting
+    static int s_packetLogCount = 0;
+    if (s_packetLogCount < 50) {
+        fprintf(stderr, "[PM4-DEBUG] Packet #%d: addr=%08X type=%u opcode=%02X count=%u header=%08X raw=%08X\n",
+                s_packetLogCount, addr, type, opcode, count, header, raw);
+        fflush(stderr);
+        s_packetLogCount++;
+    }
+
+    // DEBUG: Log type distribution every 1000 packets
+    static int s_typeLogTicker = 0;
+    if ((++s_typeLogTicker % 1000) == 0) {
+        uint64_t t0 = g_typeCounts[0].load(std::memory_order_relaxed);
+        uint64_t t1 = g_typeCounts[1].load(std::memory_order_relaxed);
+        uint64_t t2 = g_typeCounts[2].load(std::memory_order_relaxed);
+        uint64_t t3 = g_typeCounts[3].load(std::memory_order_relaxed);
+        fprintf(stderr, "[PM4-TYPE-DIST] TYPE0=%llu TYPE1=%llu TYPE2=%llu TYPE3=%llu total=%llu\n",
+                (unsigned long long)t0, (unsigned long long)t1, (unsigned long long)t2, (unsigned long long)t3,
+                (unsigned long long)(t0+t1+t2+t3));
+        fflush(stderr);
+    }
 
     if (type == PM4_TYPE3) {
         uint32_t opcode = (header >> 8) & 0x7F;

@@ -783,3 +783,35 @@ GUEST_FUNCTION_HOOK(__imp__NtClose, NtClose);
 GUEST_FUNCTION_HOOK(__imp__NtReadFile, NtReadFile);
 GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
 #endif
+
+// Register X* file API hooks (direct recompiled functions)
+// Note: Nt* imports are automatically registered by ProcessImportTable()
+static void RegisterFileSystemHooks() {
+    KernelTraceHostOp("HOST.FileSystem.RegisterXFileHooks");
+
+    // Register X* file API hooks at their known addresses
+    if (&sub_82BD4668) g_memory.InsertFunction(0x82BD4668, sub_82BD4668); // XCreateFileA
+    if (&sub_82BD4600) g_memory.InsertFunction(0x82BD4600, sub_82BD4600); // XGetFileSizeA
+    if (&sub_82BD5608) g_memory.InsertFunction(0x82BD5608, sub_82BD5608); // XGetFileSizeExA
+    if (&sub_82BD4478) g_memory.InsertFunction(0x82BD4478, sub_82BD4478); // XReadFile
+    if (&sub_831CD3E8) g_memory.InsertFunction(0x831CD3E8, sub_831CD3E8); // XSetFilePointer
+    if (&sub_831CE888) g_memory.InsertFunction(0x831CE888, sub_831CE888); // XSetFilePointerEx
+    if (&sub_831CDC58) g_memory.InsertFunction(0x831CDC58, sub_831CDC58); // XFindFirstFileA
+    if (&sub_831CDC00) g_memory.InsertFunction(0x831CDC00, sub_831CDC00); // XFindNextFileA
+    if (&sub_831CDF40) g_memory.InsertFunction(0x831CDF40, sub_831CDF40); // XReadFileEx
+    if (&sub_831CD6E8) g_memory.InsertFunction(0x831CD6E8, sub_831CD6E8); // XGetFileAttributesA
+    if (&sub_831CE3F8) g_memory.InsertFunction(0x831CE3F8, sub_831CE3F8); // XCreateFileA (duplicate)
+    if (&sub_82BD4860) g_memory.InsertFunction(0x82BD4860, sub_82BD4860); // XWriteFile
+
+    KernelTraceHostOp("HOST.FileSystem.RegisterXFileHooks.done");
+}
+
+// Use static constructor to register hooks early
+#if defined(_MSC_VER)
+#  pragma section(".CRT$XCU",read)
+    static void __cdecl file_system_hooks_ctor();
+    __declspec(allocate(".CRT$XCU")) void (__cdecl*file_system_hooks_ctor_)(void) = file_system_hooks_ctor;
+    static void __cdecl file_system_hooks_ctor() { RegisterFileSystemHooks(); }
+#else
+    __attribute__((constructor)) static void file_system_hooks_ctor() { RegisterFileSystemHooks(); }
+#endif

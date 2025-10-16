@@ -39,9 +39,14 @@ bool Window_OnSDLEvent(void*, SDL_Event* event)
     {
         case SDL_EVENT_QUIT:
         {
+            fprintf(stderr, "[GAME-WINDOW] SDL_EVENT_QUIT received! s_isSaving=%d\n", App::s_isSaving ? 1 : 0);
+            fflush(stderr);
+
             if (App::s_isSaving)
                 break;
 
+            fprintf(stderr, "[GAME-WINDOW] Calling App::Exit()...\n");
+            fflush(stderr);
             App::Exit();
 
             break;

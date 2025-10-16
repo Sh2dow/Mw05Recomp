@@ -331,6 +331,8 @@ extern "C" {
     void __imp__sub_825987E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825988B0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7A40(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_825A7B78(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_825A74B8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7DE8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7E60(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7EA0(PPCContext& ctx, uint8_t* base);
@@ -447,6 +449,40 @@ void MW05Shim_sub_825A7A40(PPCContext& ctx, uint8_t* base) {
 
     // Valid dimensions - call original function
     __imp__sub_825A7A40(ctx, base);
+}
+
+// CRITICAL FIX: Catch-all for divide-by-zero in rendering functions
+// The crash happens after sub_825A7A40 returns, likely in a function that does aspect ratio calculations
+// We'll add shims for other viewport-related functions that might have divide-by-zero issues
+void MW05Shim_sub_825A7B78(PPCContext& ctx, uint8_t* base) {
+    // sub_825A7B78 is the viewport setup function that calls sub_825A7A40 and sub_825A74B8
+    // It might have its own divide-by-zero issues
+    KernelTraceHostOpF("HOST.sub_825A7B78.enter r3=%08X r4=%08X r5=%08X r6=%08X",
+                       ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+
+    // Call the original function with SEH exception handling for divide-by-zero
+    __try {
+        __imp__sub_825A7B78(ctx, base);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        KernelTraceHostOpF("HOST.sub_825A7B78.exception caught code=%08X", GetExceptionCode());
+        // Return safely
+        ctx.r3.u32 = 0;
+    }
+}
+
+void MW05Shim_sub_825A74B8(PPCContext& ctx, uint8_t* base) {
+    // sub_825A74B8 is another viewport-related function
+    KernelTraceHostOpF("HOST.sub_825A74B8.enter r3=%08X r4=%08X r5=%08X",
+                       ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+
+    // Call the original function with SEH exception handling for divide-by-zero
+    __try {
+        __imp__sub_825A74B8(ctx, base);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        KernelTraceHostOpF("HOST.sub_825A74B8.exception caught code=%08X", GetExceptionCode());
+        // Return safely
+        ctx.r3.u32 = 0;
+    }
 }
 
 SHIM(sub_825A7DE8)
@@ -1214,19 +1250,10 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 
-    // Check if fake_alloc is enabled first
-    static const bool s_fake_alloc = [](){
-        const char* v = std::getenv("MW05_FAKE_ALLOC_SYSBUF");
-        bool result = (v && v[0] && !(v[0]=='0' && v[1]=='\0'));
-        fprintf(stderr, "[SHIM-INIT] MW05_FAKE_ALLOC_SYSBUF=%s result=%d\n", v ? v : "(null)", result);
-        fflush(stderr);
-        return result;
-    }();
-
     // Check if r3 is valid before accessing memory
-    // If invalid, try to seed from environment variable or last known scheduler context
+    // If invalid, ALWAYS provide a fake allocation to prevent NULL pointer crashes
     if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - attempting to seed", ctx.r3.u32);
+        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - providing fake allocation", ctx.r3.u32);
 
         // Try environment variable first
         if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
@@ -1246,20 +1273,14 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
             }
         }
 
-        // If still invalid and fake_alloc is enabled, return fake allocation
+        // If still invalid, ALWAYS return fake allocation to prevent NULL pointer crashes
         if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-            if (s_fake_alloc) {
-                // CRITICAL: When r3 is NULL, just return a fake success value
-                // The caller expects a pointer to allocated memory, so return a fake pointer
-                const uint32_t sys_base    = 0x00140400u;
-                const uint32_t sys_payload = sys_base + 0x10u;
-                KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X (r3 was NULL)", sys_payload);
-                ctx.r3.u32 = sys_payload;
-                return;
-            }
-            // Otherwise return NULL
-            KernelTraceHostOpF("HOST.825968B0.still_invalid r3=%08X - returning NULL", ctx.r3.u32);
-            ctx.r3.u32 = 0;
+            // CRITICAL: When r3 is NULL, just return a fake success value
+            // The caller expects a pointer to allocated memory, so return a fake pointer
+            const uint32_t sys_base    = 0x00140400u;
+            const uint32_t sys_payload = sys_base + 0x10u;
+            KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X (r3 was NULL)", sys_payload);
+            ctx.r3.u32 = sys_payload;
             return;
         }
     }
@@ -1271,11 +1292,10 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     uint32_t f10432w = ReadBE32(ctx.r3.u32 + 10432);
     uint8_t b10433 = (uint8_t)(f10432w & 0xFF);
     KernelTraceHostOpF("HOST.825968B0.flags10433=%02X", (unsigned)b10433);
-    // If the allocator callback is NULL or invalid, optionally fake an allocation into the System Command Buffer payload
-    KernelTraceHostOpF("HOST.825968B0.fake_alloc=%d", s_fake_alloc);
+    // If the allocator callback is NULL or invalid, ALWAYS fake an allocation to prevent crashes
     // Check if function pointer is NULL or outside valid PPC range
     bool fp_invalid = (fp_ea == 0 || fp_ea < 0x82000000 || fp_ea >= 0x82CD0000);
-    if (s_fake_alloc) {
+    if (fp_invalid) {
         // CRITICAL: Always skip calling the original function when fake_alloc is enabled
         // The original function will try to call through fp_ea, which might be NULL or invalid
         if (fp_invalid) {

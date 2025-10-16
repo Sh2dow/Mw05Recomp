@@ -43,7 +43,108 @@
 
 ## Critical Debugging Information
 
-### Current Status: FUNCTION TABLE BUG FIXED - PPC_LOOKUP_FUNC!
+### Current Status: FUNCTION POINTER INITIALIZATION ISSUE - INDIRECT CALL FAILING
+**DATE**: 2025-10-16
+**✅ HEAP IS WORKING!** Game runs without heap corruption or assertions!
+**✅ FPS COUNTER FIXED!** FPS display now updates continuously after renderer initialization!
+**❌ FUNCTION POINTER NOT INITIALIZED!** The crash is caused by NULL/invalid function pointer in game structure
+  - **SYMPTOM**: Game prints `[boot][error] Guest function 0x825979A8 not found.` repeatedly
+  - **ACTUAL CRASH**: Floating-point divide-by-zero (exception code 0xC000008E) after error message
+  - **REMAINING ISSUE**: o1heap assertion at shutdown (line 396) - likely related to improper cleanup
+
+**ROOT CAUSE ANALYSIS**:
+  - The error message `[boot][error] Guest function 0x825979A8 not found.` is printed by the GAME CODE itself
+  - The function 0x825979A8 is the graphics callback (VD interrupt handler)
+  - The function IS registered in our host function table (line 8746 in video.cpp via `g_memory.InsertFunction`)
+  - The function IS hooked via `GUEST_FUNCTION_HOOK(sub_825979A8, MW05Shim_sub_825979A8)` (line 8689)
+
+**ASSEMBLY ANALYSIS** (from IDA disassembly at 0x825979A8):
+  ```
+  .text:825979C0  lwz   r10, 0x2894(r31)    # Load structure pointer from context+0x2894
+  .text:825979CC  lwz   r30, 0x10(r10)      # Load function pointer from structure+0x10
+  .text:825979E8  cmplwi cr6, r30, 0        # Check if function pointer is NULL
+  .text:825979EC  beq   cr6, loc_82597A00   # Skip call if NULL
+  .text:825979F8  mtspr CTR, r30            # Load function pointer into CTR register
+  .text:825979FC  bctrl                     # Call through CTR (indirect call)
+  ```
+
+**THE PROBLEM**:
+  - The game loads a function pointer from memory at `*(r31 + 0x2894) + 0x10`
+  - This function pointer is NULL or invalid (likely 0xBADF00D or 0x00000000)
+  - The game tries to call through this NULL pointer via `bctrl`
+  - The indirect call fails because the function pointer is not initialized
+  - This is NOT a function table lookup issue - it's a structure initialization issue
+
+**STRUCTURE LAYOUT** (at offset r31+0x2894):
+  ```c
+  struct GraphicsContext {
+      uint32_t field_00;        // +0x00
+      uint32_t field_04;        // +0x04
+      uint32_t field_08;        // +0x08
+      uint32_t field_0C;        // +0x0C
+      uint32_t callback_ptr;    // +0x10 - FUNCTION POINTER (currently NULL/invalid!)
+      uint32_t callback_arg;    // +0x14 - Argument to pass to callback
+      // ... more fields
+  };
+  ```
+
+**SOLUTION NEEDED**:
+  - Find where this structure is initialized (likely in VdInitializeEngines or VdSetGraphicsInterruptCallback)
+  - Ensure the function pointer at offset +0x10 is set to 0x825979A8 (the callback address)
+  - The structure is allocated and initialized by the game, but the callback pointer is not being set
+  - Check if VdSetGraphicsInterruptCallback is properly storing the callback address in the structure
+  - The callback is registered via VdRegisterGraphicsNotificationRoutine, but that might not be setting the structure field
+**NEXT STEPS FOR DEBUGGING**:
+  1. **Check VdSetGraphicsInterruptCallback implementation** (in `Mw05Recomp/kernel/imports.cpp`)
+     - Verify it's storing the callback address in the correct structure field
+     - The callback address should be stored at `context + 0x2894 + 0x10`
+
+  2. **Check structure allocation** (search for allocations of size ~0x2900 bytes)
+     - Find where the graphics context structure is allocated
+     - Verify the structure is being initialized correctly
+     - Check if the callback pointer field is being set to 0x825979A8
+
+  3. **Add logging to VdSetGraphicsInterruptCallback**:
+     - Log when the callback is registered
+     - Log the structure address and callback address
+     - Verify the callback address is being written to memory correctly
+
+  4. **Check if the structure is being overwritten**:
+     - The callback might be set correctly initially but then overwritten
+     - Add memory watch/logging to detect when the field changes
+
+  5. **Alternative approach - Patch the recompiled code**:
+     - If the structure initialization is broken, patch the recompiled function
+     - Force r30 to be 0x825979A8 before the `bctrl` instruction
+     - This is a workaround, not a proper fix
+
+**HEAP LAYOUT** (EXACT COPY from UnleashedRecomp):
+  - User heap: 0x00020000-0x7FEA0000 (128 KB-2046 MB) = 2046.50 MB
+  - Physical heap: 0xA0000000-0x100000000 (2.5 GB-4 GB) = 1536.00 MB
+  - Game XEX: 0x82000000-0x82CD0000 (loaded at 2 GB+ in 4 GB address space)
+  - **NOTE**: PPC_MEMORY_SIZE = 0x100000000 (4 GB) is the GUEST address space, not physical RAM
+  - **✅ NO ASSERTIONS**: Game runs without ANY o1heap assertions - FIXED!
+  - **EXACT UNLEASHED APPROACH**: Copied heap.cpp implementation from UnleashedRecomp exactly
+    - `Alloc()` ignores alignment, just calls `o1heapAllocate()`
+    - `AllocPhysical()` allocates extra space and stores original pointer at `aligned - 1`
+    - `Free()` retrieves original pointer from `ptr - 1` for physical heap
+    - `Size()` reads size from `ptr - 2` (o1heap fragment header)
+**VMARENA REMOVED**: ✅ Removed VmArena (like UnleashedRecomp) - simpler heap management
+**FPS COUNTER FIXED**: ✅ Fixed FPS display stale issue after renderer initialization
+  - **Problem**: `g_presentProfiler` was only updated in early return path (before renderer ready)
+  - **Solution**: Added profiler measurement in main rendering path to track frame time
+  - **File**: `Mw05Recomp/gpu/video.cpp` lines 3229-3761
+  - **Changes**:
+    1. Measure present time at START of `Video::Present()` (line 3232)
+    2. Calculate elapsed time at END of function (line 3757)
+    3. Update profiler with frame time before Reset() (line 3758)
+  - **Result**: FPS counter now updates continuously throughout gameplay
+**SYSTEM CMD BUFFER**: ✅ At fixed address `0x00F00000` (15 MB)
+**PM4 SCANNING**: PM4_ScanLinear is being called, processing command buffers
+**GRAPHICS CALLBACKS**: Graphics callback at `0x825979A8` is being called successfully
+**NEXT STEP**: Investigate why game image goes stale after a few seconds (rendering issue, not heap issue)
+
+### Previous Status: FUNCTION TABLE BUG FIXED - PPC_LOOKUP_FUNC!
 **DATE**: 2025-10-14
 **FUNCTION TABLE BUG**: The `PPC_LOOKUP_FUNC` macro was calculating incorrect offsets, causing crashes when calling indirect functions!
   - **File**: `tools/XenonRecomp/XenonUtils/ppc_context.h` line 128

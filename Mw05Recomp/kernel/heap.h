@@ -9,6 +9,7 @@ struct Heap
     O1HeapInstance* heap;
     void* heapBase{};
     size_t heapSize{};
+    size_t initialCapacity{};  // Store initial capacity to detect corruption
 
     Mutex physicalMutex;
     O1HeapInstance* physicalHeap;

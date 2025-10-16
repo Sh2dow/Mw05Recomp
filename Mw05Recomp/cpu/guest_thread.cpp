@@ -23,7 +23,15 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
 {
     assert(thread == nullptr);
 
+    // CRITICAL FIX: Use g_userHeap.Alloc() instead of malloc
+    // g_userHeap.Alloc() allocates memory within the PPC memory range (using o1heap, a host-side allocator)
+    // This allows the memory to be safely mapped to guest addresses via g_memory.MapVirtual()
+    // Unlike malloc, which returns host heap memory outside the PPC range
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
+    if (!thread) {
+        fprintf(stderr, "[CRITICAL] Failed to allocate thread context memory (%zu bytes)\n", TOTAL_SIZE);
+        abort();
+    }
     memset(thread, 0, TOTAL_SIZE);
 
     // CRITICAL: Store pointers in BIG-ENDIAN format (will be byte-swapped when loaded by PPC_LOAD_U32)
@@ -57,6 +65,7 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
 
 GuestThreadContext::~GuestThreadContext()
 {
+    // CRITICAL FIX: Use g_userHeap.Free() instead of free (matches g_userHeap.Alloc() in constructor)
     g_userHeap.Free(thread);
 }
 
@@ -118,6 +127,10 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
             hThread->GetThreadId(), hThread->params.function);
         fflush(stderr);
     }
+
+    fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X ABOUT TO CALL GuestThread::Start\n",
+        hThread->GetThreadId(), hThread->params.function);
+    fflush(stderr);
 
     GuestThread::Start(hThread->params);
 
@@ -225,8 +238,15 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
     const auto procMask = (uint8_t)(params.flags >> 24);
     const auto cpuNumber = procMask == 0 ? 0 : 7 - std::countl_zero(procMask);
 
+    fprintf(stderr, "[DEBUG] GuestThread::Start ENTER: entry=0x%08X value=0x%08X flags=0x%08X\n",
+        params.function, (uint32_t)params.value, params.flags);
+    fflush(stderr);
+
     GuestThreadContext ctx(cpuNumber);
     ctx.ppcContext.r3.u64 = params.value;
+
+    fprintf(stderr, "[DEBUG] GuestThreadContext created, r3=0x%08X\n", (uint32_t)ctx.ppcContext.r3.u64);
+    fflush(stderr);
 
     // DEBUG: Log the function address and calculation details
     fprintf(stderr, "[DEBUG] FindFunction called with guest=0x%08X\n", params.function);

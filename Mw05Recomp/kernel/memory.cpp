@@ -13,10 +13,8 @@ Memory::Memory()
     if (base == nullptr)
         return;
 
-    // Historically we marked the first page as PAGE_NOACCESS to catch bad
-    // guest pointer use early. During bring-up this causes host AVs inside
-    // recompiled guest code before imports can sanitize. Leave it RW so
-    // stray reads yield zeros instead of crashing.
+    // NOTE: We do NOT protect the NULL page because the game legitimately accesses it
+    // The heap is placed at 0x1000000 (16 MB) to avoid conflicts with low memory usage
     //DWORD oldProtect;
     //VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect);
 #else

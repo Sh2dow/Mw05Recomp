@@ -409,10 +409,25 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
         if constexpr (std::is_integral_v<TFunction>) {
             if (func == Mw05GetHostDefaultVdIsrMagic()) {
                 KernelTraceHostOp("HOST.GuestToHostFunction.skip.host_isr");
-            } else if (auto guestFunc = g_memory.FindFunction(func)) {
-                guestFunc(newCtx, g_memory.base);
             } else {
-                fprintf(stderr, "[boot][error] Guest function 0x%08X not found.\n", func);
+                // CRITICAL DEBUG: Check function table entry directly
+                uint64_t code_offset = uint64_t(uint32_t(func) - uint32_t(PPC_CODE_BASE));
+                uint64_t table_offset = PPC_IMAGE_SIZE + (code_offset * sizeof(PPCFunc*));
+                PPCFunc** funcPtrAddr = reinterpret_cast<PPCFunc**>(g_memory.base + table_offset);
+                PPCFunc* funcPtr = *funcPtrAddr;
+
+                if (funcPtr) {
+                    funcPtr(newCtx, g_memory.base);
+                } else {
+                    // Function table entry is NULL - this is the real problem!
+                    fprintf(stderr, "[boot][error] Guest function 0x%08X not found in function table.\n", func);
+                    fprintf(stderr, "[boot][error] code_offset=0x%llX table_offset=0x%llX\n",
+                            (unsigned long long)code_offset, (unsigned long long)table_offset);
+                    fprintf(stderr, "[boot][error] funcPtrAddr=%p funcPtr=%p\n", funcPtrAddr, funcPtr);
+                    fprintf(stderr, "[boot][error] This means the function was not registered via InsertFunction().\n");
+                    fprintf(stderr, "[boot][error] Check if manual hooks constructor ran before this call.\n");
+                    fflush(stderr);
+                }
             }
         } else if (auto guestFunc = g_memory.FindFunction(func)) {
             guestFunc(newCtx, g_memory.base);

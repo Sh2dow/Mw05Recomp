@@ -224,11 +224,11 @@ void KickMinimalVideo() {
     // 2) Create a small ring buffer and write-back pointer in guest memory
     const uint32_t len_log2 = 12; // 4 KiB ring (small, dev-only)
     const uint32_t size_bytes = 1u << len_log2;
-    void* ring_host = g_userHeap.Alloc(size_bytes, 0x100);
+    void* ring_host = g_userHeap.Alloc(size_bytes);
     if(!ring_host) return;
     const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
 
-    void* wb_host = g_userHeap.Alloc(64, 4);
+    void* wb_host = g_userHeap.Alloc(64);
     if(!wb_host) return;
     const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
 

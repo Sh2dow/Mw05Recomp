@@ -263,6 +263,12 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
     fprintf(stderr, "[DEBUG] func_table_ptr=%p\n", func_table_ptr);
     fflush(stderr);
 
+    // DEBUG: Read the function pointer directly from the table
+    PPCFunc** funcPtrAddr = (PPCFunc**)(g_memory.base + PPC_IMAGE_SIZE + table_offset);
+    PPCFunc* funcPtrDirect = *funcPtrAddr;
+    fprintf(stderr, "[DEBUG] Direct read: funcPtrAddr=%p funcPtr=%p\n", funcPtrAddr, funcPtrDirect);
+    fflush(stderr);
+
     if (auto entryFunc = g_memory.FindFunction(params.function))
     {
         fprintf(stderr, "[DEBUG] entryFunc=%p (found for guest=0x%08X)\n", (void*)entryFunc, params.function);
@@ -286,6 +292,8 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
     else
     {
         fprintf(stderr, "[boot][error] Guest entry 0x%08X not found.\n", params.function);
+        fprintf(stderr, "[boot][error] FindFunction returned NULL, but direct read shows funcPtr=%p\n", funcPtrDirect);
+        fflush(stderr);
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to locate guest entry point.", "Mw05 Recompiled", MB_ICONERROR);
 #endif

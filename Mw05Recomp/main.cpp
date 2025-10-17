@@ -748,6 +748,35 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     fprintf(stderr, "[BOOT] ProcessImportTable returned successfully\n");
     fflush(stderr);
 
+    // CRITICAL FIX: Re-populate the function table after XEX load
+    // The XEX loading process overwrites the function table, so we need to re-populate it
+    // This is a workaround for a bug in the XEX loading code that writes beyond the image size
+    fprintf(stderr, "[BOOT] Re-populating function table after XEX load...\n");
+    fflush(stderr);
+
+    size_t repopulated = 0;
+    for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
+    {
+        if (PPCFuncMappings[i].host != nullptr)
+        {
+            g_memory.InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
+            repopulated++;
+        }
+    }
+
+    fprintf(stderr, "[BOOT] Re-populated %zu functions in function table\n", repopulated);
+    fflush(stderr);
+
+    // Verify that the entry point function is now in the function table
+    PPCFunc* entryFunc = g_memory.FindFunction(entry);
+    fprintf(stderr, "[BOOT] Entry point 0x%08X -> %p (after re-population)\n", entry, (void*)entryFunc);
+    if (!entryFunc)
+    {
+        fprintf(stderr, "[BOOT] ERROR: Entry point function is STILL NULL after re-population!\n");
+        fprintf(stderr, "[BOOT] This is a critical error - the function table is broken!\n");
+    }
+    fflush(stderr);
+
     // CRITICAL FIX: Create notification listener automatically during initialization
     // The game has a chicken-and-egg problem:
     // - Function sub_82849BF8 polls for XN_SYS_SIGNINCHANGED (0x11) notification
@@ -1203,6 +1232,16 @@ int main(int argc, char *argv[])
     KernelTraceHostOp("HOST.main.before_pipeline_precomp");
     Video::StartPipelinePrecompilation();
     KernelTraceHostOp("HOST.main.after_pipeline_precomp");
+
+    // CRITICAL: Register video manual hooks BEFORE any guest threads are created
+    // This ensures the graphics callback at 0x825979A8 is in the function table
+    // before the game tries to call it from a thread
+    extern void RegisterMw05VideoManualHooks();
+    fprintf(stderr, "[MAIN] Calling RegisterMw05VideoManualHooks() EARLY\n");
+    fflush(stderr);
+    RegisterMw05VideoManualHooks();
+    fprintf(stderr, "[MAIN] RegisterMw05VideoManualHooks() completed\n");
+    fflush(stderr);
 
     // MW'05 runtime function mappings for small PPC shims
     extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);

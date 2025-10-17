@@ -2908,6 +2908,7 @@ functions = [
     { address = 0x821B7040, size = 0xA0 },
     { address = 0x821B70E0, size = 0x60 },
     { address = 0x821B7140, size = 0x140 },
+    { address = 0x821B71E0, size = 0xA0 },
     { address = 0x821B7280, size = 0x58 },
     { address = 0x821B72D8, size = 0x118 },
     { address = 0x821B73F0, size = 0x78 },
@@ -18932,6 +18933,7 @@ functions = [
     { address = 0x8262F248, size = 0x58 },
     { address = 0x8262F2A0, size = 0x218 },
     { address = 0x8262F330, size = 0xBC },
+    { address = 0x8262F3F0, size = 0xC4 },
     { address = 0x8262F4B8, size = 0x98 },
     { address = 0x8262F550, size = 0x70 },
     { address = 0x8262F5C0, size = 0x80 },
@@ -23012,6 +23014,7 @@ functions = [
     { address = 0x828550E0, size = 0xB8 },
     { address = 0x82855198, size = 0x30 },
     { address = 0x828551C8, size = 0x3E8 },
+    { address = 0x82855308, size = 0x20 },
     { address = 0x82855530, size = 0x4FC },
     { address = 0x828555B0, size = 0x88 },
     { address = 0x82855638, size = 0x70 },
@@ -24126,6 +24129,11 @@ functions = [
 ]
 
 invalid_instructions = [
+    { data = 0x00000000, size = 4 }, # Padding (0x00000000 bytes) - skip these everywhere
     { data = 0x82621640, size = 96 },
     { data = 0x825968B0, size = 200 }, # sub_825968B0 - replaced by PPC_FUNC in mw05_trace_shims.cpp
+    { data = 0x8215C8B4, size = 4 }, # Padding in sub_8215C838
+    { data = 0x8215C914, size = 4 }, # Padding in sub_8215C838
+    { data = 0x8215C964, size = 4 }, # Padding in sub_8215C838
+    { data = 0x8215C97C, size = 4 }, # Padding in sub_8215C838
 ]

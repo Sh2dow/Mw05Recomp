@@ -127,9 +127,22 @@ static inline int32_t be_low_s16_from_le(uint32_t le_word) {
     return static_cast<int16_t>(hi16);
 }
 
+// Thread-local recursion depth counter to prevent infinite recursion when scanning embedded PM4 commands
+static thread_local int s_microib_recursion_depth = 0;
+static constexpr int MAX_MICROIB_RECURSION_DEPTH = 3;  // Allow up to 3 levels of nesting
+
 extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
 {
-    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.Interpret start ea=%08X size=%u", ib_addr, ib_size);
+    // Prevent infinite recursion when embedded PM4 commands contain more MicroIB packets
+    if (s_microib_recursion_depth >= MAX_MICROIB_RECURSION_DEPTH) {
+        KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.Interpret RECURSION_LIMIT depth=%d ea=%08X size=%u",
+                           s_microib_recursion_depth, ib_addr, ib_size);
+        return;
+    }
+
+    ++s_microib_recursion_depth;
+    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.Interpret start ea=%08X size=%u depth=%d",
+                       ib_addr, ib_size, s_microib_recursion_depth);
     // Optional one-time dumps of syscmd/ring for offline analysis (MW05_DUMP_SYSBUF=1)
     static bool s_dumped_once = false;
     if (!s_dumped_once) {
@@ -212,7 +225,7 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     //    - subsequent pairs repeat (d4=offset, d5=size, ...)
 
     bool is_direct_mw = (d[0] == 0x3530574Du);
-    bool is_param_list = (d[0] == 0xEFFAFFD9u || d[0] == 0xFFFAFEFDu);
+    bool is_param_list = (d[0] == 0xEFFAFFD9u || d[0] == 0xFFFAFEFDu || d[0] == 0xFFFAFF3Du);
 
     // Conservatively bind RT/DS once so real draws (when decoded) have a target
     if (IsApplyHostStateEnabled()) {
@@ -236,38 +249,62 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
 
     if (is_param_list) {
         // Layout C (parameter list from INDIRECT_BUFFER packet)
-        // d[0] = metadata/magic, d[1] = base EA, then pairs of (offset_dw, size_bytes)
+        // CRITICAL FIX: The descriptor contains EMBEDDED PM4 COMMANDS, not offset/size pairs!
+        // d[0] = metadata/magic, d[1] = base EA, d[2..15] = embedded PM4 packet headers and parameters
         uint32_t base_ea = fixup_ea(d[1]);
-        KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C magic=%08X base=%08X", d[0], base_ea);
+        KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.NEW_CODE_EXECUTING magic=%08X base=%08X", d[0], base_ea);
 
-        // Process pairs starting at d[2]: (offset_dw, size_bytes)
-        for (uint32_t i = 2; i + 1 < 16; i += 2) {
-            int32_t offset_dw = static_cast<int32_t>(d[i]);
-            uint32_t size_bytes = d[i + 1];
+        // Scan the descriptor itself as PM4 commands starting at d[2]
+        // The descriptor contains up to 14 dwords of PM4 commands (d[2] through d[15])
+        // We need to write these to a temporary buffer and scan them
 
-            // Skip zero/invalid pairs
-            if (size_bytes == 0 || size_bytes > 0x10000u) continue;
-
-            uint32_t target_ea = base_ea + (offset_dw * 4);
-            target_ea = fixup_ea(target_ea);
-
-            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.pair[%u] base=%08X off_dw=%d target=%08X size=%u",
-                               (i - 2) / 2, base_ea, offset_dw, target_ea, size_bytes);
-
-            // Scan this target region for PM4 commands
-            if (target_ea && size_bytes) {
-                PM4_ScanLinear(target_ea, size_bytes);
+        // Count how many non-zero dwords we have starting from d[2]
+        uint32_t cmd_count = 0;
+        for (uint32_t i = 2; i < 16; i++) {
+            if (d[i] != 0) {
+                cmd_count = i - 2 + 1;  // Number of dwords from d[2] to d[i] inclusive
             }
         }
 
-        // For the main scan, use the first pair
-        if (d[3] > 0 && d[3] <= 0x4000u) {
-            int32_t offset_dw = static_cast<int32_t>(d[2]);
-            eff = base_ea + (offset_dw * 4);
-            eff = fixup_ea(eff);
-            sz = d[3];
+        if (cmd_count > 0) {
+            // Allocate a temporary buffer in guest memory to hold the embedded PM4 commands
+            // We'll use a fixed address in the scratch area (0x00F10000 - after system cmd buffer)
+            uint32_t temp_buffer_ea = 0x00F10000u;
+            uint32_t* temp_buffer = reinterpret_cast<uint32_t*>(g_memory.Translate(temp_buffer_ea));
+
+            if (temp_buffer) {
+                // Copy the embedded PM4 commands to the temporary buffer
+                for (uint32_t i = 0; i < cmd_count; i++) {
+                    temp_buffer[i] = d[i + 2];
+                }
+
+                KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.embedded cmd_count=%u temp_ea=%08X",
+                                   cmd_count, temp_buffer_ea);
+
+                // Log the first few dwords for debugging
+                if (cmd_count >= 1) {
+                    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.embedded[0] = %08X (TYPE=%u)",
+                                       temp_buffer[0], (temp_buffer[0] >> 30) & 3);
+                }
+                if (cmd_count >= 2) {
+                    KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.embedded[1] = %08X", temp_buffer[1]);
+                }
+
+                // Scan the temporary buffer as PM4 commands
+                PM4_ScanLinear(temp_buffer_ea, cmd_count * 4);
+            } else {
+                KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.embedded ERROR: failed to allocate temp buffer");
+            }
+        }
+
+        // Also scan the base address in case there are more PM4 commands there
+        if (base_ea) {
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.mode=C.base_scan base=%08X", base_ea);
+            PM4_ScanLinear(base_ea, 0x400u);  // Scan 1KB at base address
+            eff = base_ea;
+            sz = 0x400u;
             follow_ea = base_ea;
-            rel_bytes = offset_dw * 4;
+            rel_bytes = 0;
         }
     } else if (is_direct_mw) {
         // Layout A
@@ -313,6 +350,7 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
         if (eff_end > PPC_MEMORY_SIZE) {
             KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.BOUNDS_ERROR eff=%08X eff_end=%08llX limit=%08llX",
                                eff, eff_end, PPC_MEMORY_SIZE);
+            --s_microib_recursion_depth;
             return;  // Skip this micro-IB to avoid crash
         }
 
@@ -326,6 +364,7 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
         if (eff_ptr_u8 < base || eff_ptr_end > host_end) {
             KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.HOST_BOUNDS_ERROR eff=%08X ptr=%p ptr_end=%p base=%p host_end=%p",
                                eff, eff_ptr_u8, eff_ptr_end, base, host_end);
+            --s_microib_recursion_depth;
             return;  // Skip this micro-IB to avoid crash
         }
 
@@ -570,4 +609,7 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
             }
         }
     }
+
+    // Decrement recursion depth before returning
+    --s_microib_recursion_depth;
 }

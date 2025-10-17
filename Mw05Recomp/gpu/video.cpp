@@ -8686,7 +8686,12 @@ struct PPCContext; void MW05Shim_sub_82441CF0(PPCContext&, uint8_t*);
 
 
 // Route graphics ISR through entry shim that can normalize r3
-GUEST_FUNCTION_HOOK(sub_825979A8, MW05Shim_sub_825979A8);
+// CRITICAL: Call the shim DIRECTLY, not via HostToGuestFunction!
+// MW05Shim_sub_825979A8 is a HOST function, not a GUEST function!
+PPC_FUNC(sub_825979A8) {
+    KernelTraceImport("sub_825979A8", ctx);
+    MW05Shim_sub_825979A8(ctx, base);
+}
 
 
 
@@ -8738,12 +8743,18 @@ GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
 
 
 // Ensure MW05 probe/video hooks are registered even if not present in PPCFuncMappings
-static void RegisterMw05VideoManualHooks() {
+void RegisterMw05VideoManualHooks() {
+    fprintf(stderr, "[VIDEO-CTOR] RegisterMw05VideoManualHooks() CALLED\n");
+    fflush(stderr);
     KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
                        0x82598230, 0x82598A20, 0x825A8460);
     // Probes used for discovery; these addresses might not be emitted by this XEX's recompiler table
     g_memory.InsertFunction(0x825E4300, sub_825E4300);
+    fprintf(stderr, "[VIDEO-CTOR] Registering 0x825979A8 (VD graphics callback)\n");
+    fflush(stderr);
     g_memory.InsertFunction(0x825979A8, sub_825979A8); // VD graphics notify callback (log and forward)
+    fprintf(stderr, "[VIDEO-CTOR] Registered 0x825979A8 successfully\n");
+    fflush(stderr);
 
     g_memory.InsertFunction(0x8258B558, sub_8258B558);
     g_memory.InsertFunction(0x8250FC70, sub_8250FC70);

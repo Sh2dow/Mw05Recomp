@@ -78,7 +78,6 @@ set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/heap.cpp"
     "kernel/memory.cpp"
     "kernel/trace.cpp"
-    "kernel/vm_arena.cpp"
     "kernel/xam.cpp"
     "kernel/system_threads.cpp"
     "kernel/io/file_system.cpp"
@@ -135,6 +134,10 @@ set(MW05_RECOMP_GPU_CXX_SOURCES
     "gpu/mw05_micro_interpreter.cpp"
     "gpu/pm4_parser.cpp"
 )
+
+# CRITICAL FIX: Exclude mw05_micro_interpreter.cpp from PCH to ensure it's always recompiled when modified
+# The PCH includes generated PPC headers which creates a circular dependency that breaks incremental builds
+set_source_files_properties("gpu/mw05_micro_interpreter.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 set(MW05_RECOMP_APU_CXX_SOURCES
     "apu/audio.cpp"

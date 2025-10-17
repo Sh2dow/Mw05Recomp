@@ -105,11 +105,36 @@ Memory::Memory()
     // mprotect(base, 4096, PROT_NONE);
 #endif
 
+    size_t total_funcs = 0;
+    size_t null_funcs = 0;
     for (size_t i = 0; PPCFuncMappings[i].guest != 0; i++)
     {
+        total_funcs++;
         if (PPCFuncMappings[i].host != nullptr)
+        {
             InsertFunction(PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
+
+            // DEBUG: Log the entry point function specifically
+            if (PPCFuncMappings[i].guest == 0x8262E9A8)
+            {
+                fprintf(stderr, "[FUNC-TABLE-INIT] Entry point function found in mapping:\n");
+                fprintf(stderr, "[FUNC-TABLE-INIT]   guest=0x%08X host=%p\n",
+                        PPCFuncMappings[i].guest, PPCFuncMappings[i].host);
+
+                // Verify it was inserted correctly
+                PPCFunc* inserted = FindFunction(0x8262E9A8);
+                fprintf(stderr, "[FUNC-TABLE-INIT]   Verification: FindFunction(0x8262E9A8) = %p\n", inserted);
+                fflush(stderr);
+            }
+        }
+        else
+        {
+            null_funcs++;
+        }
     }
+
+    fprintf(stderr, "[FUNC-TABLE-INIT] Populated function table: %zu total, %zu null\n", total_funcs, null_funcs);
+    fflush(stderr);
 }
 
 void* MmGetHostAddress(uint32_t ptr)

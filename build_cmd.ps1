@@ -278,6 +278,10 @@ if ($Clean)
     $appPchDir = "$Repo/out/build/$preset/Mw05Recomp/CMakeFiles/Mw05Recomp.dir"
     Get-ChildItem -Path $appPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*' | Remove-Item -Force -ErrorAction SilentlyContinue
 
+    # Also clear library PCH to avoid compiler version mismatches
+    $libPchDir = "$Repo/out/build/$preset/Mw05RecompLib/CMakeFiles/Mw05RecompLib.dir"
+    Get-ChildItem -Path $libPchDir -Force -ErrorAction SilentlyContinue -Filter 'cmake_pch*' | Remove-Item -Force -ErrorAction SilentlyContinue
+
     # Clear Zstd build dir only if it's stale (points into /build/cmake) or user explicitly cleaned
     $zstdCmakeDir = Join-Path $Repo "tools/XenosRecomp/thirdparty/zstd/build/cmake"
     if (-not (Test-Path $zstdCmakeDir))

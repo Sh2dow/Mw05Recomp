@@ -637,11 +637,11 @@ void Mw05AutoVideoInitIfNeeded() {
 
     const uint32_t len_log2 = 16; // 64 KiB ring (closer to MW05 expectations)
     const uint32_t size_bytes = 1u << len_log2;
-    void* ring_host = g_userHeap.Alloc(size_bytes, 0x100);
+    void* ring_host = g_userHeap.Alloc(size_bytes);
     if (!ring_host) return;
     const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
 
-    void* wb_host = g_userHeap.Alloc(64, 4);
+    void* wb_host = g_userHeap.Alloc(64);
     if (!wb_host) return;
     const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
 
@@ -3974,7 +3974,7 @@ extern "C" uint32_t GetImportVariableGuestAddress(const char* name)
         return it->second;
 
     // Allocate 4 bytes in guest space for the variable's storage
-    void* host = g_userHeap.Alloc(sizeof(uint32_t), alignof(uint32_t));
+    void* host = g_userHeap.Alloc(sizeof(uint32_t));
     if (!host)
         return 0;
     uint32_t ea = g_memory.MapVirtual(host);
@@ -5698,40 +5698,35 @@ void HalReturnToFirmware()
 
 void RtlFillMemoryUlong(void* Destination, uint32_t Length, uint32_t Pattern)
 {
-    LOG_UTILITY("!!! STUB !!!");
-    return;
+    // RtlFillMemoryUlong fills a memory block with a ULONG pattern
+    // Destination must be ULONG-aligned, Length must be a multiple of sizeof(ULONG)
 
-    // Actually just stub seems not causing issues.
+    if (!Destination || Length == 0)
+        return;
 
-//     // RtlFillMemoryUlong fills a memory block with a ULONG pattern
-//     // Destination must be ULONG-aligned, Length must be a multiple of sizeof(ULONG)
-// 
-//     if (!Destination || Length == 0)
-//         return;
-// 
-//     // Validate that the destination is in guest memory
-//     auto* p = reinterpret_cast<uint8_t*>(Destination);
-//     if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
-//     {
-//         fprintf(stderr, "[RtlFillMemoryUlong] ERROR: Invalid destination pointer %p (outside guest memory)\n", Destination);
-//         fflush(stderr);
-//         return;
-//     }
-// 
-//     // Fill the memory with the pattern (4-byte ULONG values)
-//     // Xbox 360 is big-endian, so we need to byte-swap the pattern
-//     uint32_t pattern_be;
-// #if defined(_MSC_VER)
-//     pattern_be = _byteswap_ulong(Pattern);
-// #else
-//     pattern_be = __builtin_bswap32(Pattern);
-// #endif
-// 
-//     uint32_t* dest = reinterpret_cast<uint32_t*>(Destination);
-//     uint32_t count = Length / sizeof(uint32_t);
-// 
-//     for (uint32_t i = 0; i < count; i++)
-//         dest[i] = pattern_be;
+    // Validate that the destination is in guest memory
+    auto* p = reinterpret_cast<uint8_t*>(Destination);
+    if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
+    {
+        fprintf(stderr, "[RtlFillMemoryUlong] ERROR: Invalid destination pointer %p (outside guest memory)\n", Destination);
+        fflush(stderr);
+        return;
+    }
+
+    // Fill the memory with the pattern (4-byte ULONG values)
+    // Xbox 360 is big-endian, so we need to byte-swap the pattern
+    uint32_t pattern_be;
+#if defined(_MSC_VER)
+    pattern_be = _byteswap_ulong(Pattern);
+#else
+    pattern_be = __builtin_bswap32(Pattern);
+#endif
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(Destination);
+    uint32_t count = Length / sizeof(uint32_t);
+
+    for (uint32_t i = 0; i < count; i++)
+        dest[i] = pattern_be;
 }
 
 void KeBugCheckEx()
@@ -6223,11 +6218,11 @@ void Mw05ForceVdInitOnce() {
     {
         // Allocate a small ring and a write-back slot
         const uint32_t len_log2 = 16; // 64 KiB
-        void* ring_host = g_userHeap.Alloc(1u << len_log2, 0x1000);
+        void* ring_host = g_userHeap.Alloc(1u << len_log2);
         if (ring_host)
         {
             const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
-            void* wb_host = g_userHeap.Alloc(64, 4);
+            void* wb_host = g_userHeap.Alloc(64);
             if (wb_host)
             {
                 const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
@@ -6238,7 +6233,7 @@ void Mw05ForceVdInitOnce() {
                 fflush(stderr);
                 const auto diag1 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
                 fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag1.capacity, g_userHeap.physicalInitialCapacity);
+                        diag1.capacity, g_userHeap.physicalSize);
                 fflush(stderr);
 
                 VdInitializeRingBuffer(ring_guest, len_log2);
@@ -6247,9 +6242,9 @@ void Mw05ForceVdInitOnce() {
                 fflush(stderr);
                 const auto diag2 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
                 fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag2.capacity, g_userHeap.physicalInitialCapacity);
+                        diag2.capacity, g_userHeap.physicalSize);
                 fflush(stderr);
-                if (diag2.capacity != g_userHeap.physicalInitialCapacity) {
+                if (diag2.capacity != g_userHeap.physicalSize) {
                     fprintf(stderr, "[heap] ERROR: VdInitializeRingBuffer CORRUPTED physical heap!\n");
                     fflush(stderr);
                     abort();
@@ -6261,9 +6256,9 @@ void Mw05ForceVdInitOnce() {
                 fflush(stderr);
                 const auto diag3 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
                 fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag3.capacity, g_userHeap.physicalInitialCapacity);
+                        diag3.capacity, g_userHeap.physicalSize);
                 fflush(stderr);
-                if (diag3.capacity != g_userHeap.physicalInitialCapacity) {
+                if (diag3.capacity != g_userHeap.physicalSize) {
                     fprintf(stderr, "[heap] ERROR: VdEnableRingBufferRPtrWriteBack CORRUPTED physical heap!\n");
                     fflush(stderr);
                     abort();
@@ -6275,9 +6270,9 @@ void Mw05ForceVdInitOnce() {
                 fflush(stderr);
                 const auto diag4 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
                 fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag4.capacity, g_userHeap.physicalInitialCapacity);
+                        diag4.capacity, g_userHeap.physicalSize);
                 fflush(stderr);
-                if (diag4.capacity != g_userHeap.physicalInitialCapacity) {
+                if (diag4.capacity != g_userHeap.physicalSize) {
                     fprintf(stderr, "[heap] ERROR: VdSetSystemCommandBufferGpuIdentifierAddress CORRUPTED physical heap!\n");
                     fflush(stderr);
                     abort();
@@ -6369,7 +6364,7 @@ static uint32_t Mw05EnsureGraphicsContextAllocated() {
     }
 
     // Allocate context on the heap (Xenia-style)
-    void* ctx_host = g_userHeap.Alloc(CTX_SIZE, 0x1000);  // 4KB alignment
+    void* ctx_host = g_userHeap.Alloc(CTX_SIZE);
     if (!ctx_host) {
         fprintf(stderr, "[GFX-CTX] ERROR: Failed to allocate %u bytes for graphics context\n", CTX_SIZE);
         return 0;
@@ -6394,7 +6389,7 @@ static uint32_t Mw05EnsureGraphicsContextAllocated() {
     constexpr uint32_t STRUCT_SIZE = 0x4000;  // 16KB (same as context size)
 
     // Allocate the structure using the game's allocator
-    void* struct_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
+    void* struct_host = g_userHeap.Alloc(STRUCT_SIZE);
     if (struct_host) {
         // Zero-initialize to ensure +0x10 is NOT 0xBADF00D
         std::memset(struct_host, 0, STRUCT_SIZE);
@@ -6416,7 +6411,7 @@ static uint32_t Mw05EnsureGraphicsContextAllocated() {
         // CRITICAL: The inner structure ALSO has a pointer at +0x2894 to a SECOND-LEVEL structure
         // The callback does: r11 = Load32(r31 + 0x2894), then r3 = Load32(r11 + 20)
         // We need to allocate this second-level structure as well
-        void* struct2_host = g_userHeap.Alloc(STRUCT_SIZE, 4);
+        void* struct2_host = g_userHeap.Alloc(STRUCT_SIZE);
         if (struct2_host) {
             std::memset(struct2_host, 0, STRUCT_SIZE);
             const uint32_t struct2_guest = g_memory.MapVirtual(struct2_host);

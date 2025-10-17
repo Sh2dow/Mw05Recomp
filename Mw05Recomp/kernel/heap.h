@@ -4,23 +4,20 @@
 
 struct Heap
 {
-    static constexpr uint64_t kAlignedMagic = 0x4D573035414C4743ull; // 'MW05ALGC'
+    // EXACT COPY from UnleashedRecomp (with base/size fields for diagnostics)
     Mutex mutex;
     O1HeapInstance* heap;
     void* heapBase{};
     size_t heapSize{};
-    size_t initialCapacity{};  // Store initial capacity to detect corruption
 
     Mutex physicalMutex;
     O1HeapInstance* physicalHeap;
     void* physicalBase{};
     size_t physicalSize{};
-    size_t physicalInitialCapacity{};  // Store initial capacity to detect corruption
 
     void Init();
 
     void* Alloc(size_t size);
-    void* Alloc(size_t size, size_t alignment);
     void* AllocPhysical(size_t size, size_t alignment);
     void Free(void* ptr);
 

@@ -833,10 +833,10 @@ void MW05HostAllocCb(PPCContext& ctx, uint8_t* base) {
 
 // Add shims for research helpers used by MW05 during rendering.
 // Specialize 82595FC8/825972B0 to dump more state
-// CRITICAL FIX: sub_82595FC8 is called from the present function and appears to hang
-// Array access function: r3 = array[r4]
-// IDA shows: slwi r30,r29,2; add r31,r3,r30; lwz r3,0(r31)
-// This is: r3 = [r3 + (r4 * 4)]
+// CRITICAL FIX: sub_82595FC8 is a BUFFER ALLOCATION function, not an array access!
+// It checks if there's enough space in the PM4 command buffer and returns a pointer.
+// The previous implementation was WRONG - it was treating it as array access.
+// Now we call the original recompiled function to get the correct behavior.
 void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
     static int call_count = 0;
     call_count++;
@@ -851,26 +851,13 @@ void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
         s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    // Calculate address: base + (index * 4)
-    uint32_t offset = index * 4;
-    uint32_t addr = baseAddr + offset;
+    // Call the original recompiled function to get the correct buffer pointer
+    __imp__sub_82595FC8(ctx, base);
 
-    // Load value from memory
-    if (addr >= 0x1000 && addr < PPC_MEMORY_SIZE - 4) {
-        uint32_t value = PPC_LOAD_U32(addr);
-        ctx.r3.u32 = value;
-        if (call_count <= 10) {
-            KernelTraceHostOpF("sub_82595FC8 count=%d base=%08X index=%08X addr=%08X value=%08X",
-                              call_count, baseAddr, index, addr, value);
-        }
-        return;
-    }
-
-    // Fallback: return 0
-    ctx.r3.u32 = 0;
+    // Log the result
     if (call_count <= 10) {
-        KernelTraceHostOpF("sub_82595FC8 count=%d base=%08X index=%08X INVALID_ADDR=%08X ret=00000000",
-                          call_count, baseAddr, index, addr);
+        KernelTraceHostOpF("sub_82595FC8 count=%d base=%08X index=%08X ret=%08X",
+                          call_count, baseAddr, index, ctx.r3.u32);
     }
 }
 
@@ -1255,34 +1242,13 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
         KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - providing fake allocation", ctx.r3.u32);
 
-        // Try environment variable first
-        if (const char* seed = std::getenv("MW05_SCHED_R3_EA")) {
-            uint32_t env_r3 = (uint32_t)std::strtoul(seed, nullptr, 0);
-            if (env_r3 >= 0x1000 && env_r3 < PPC_MEMORY_SIZE) {
-                ctx.r3.u32 = env_r3;
-                KernelTraceHostOpF("HOST.825968B0.seeded_from_env r3=%08X", ctx.r3.u32);
-            }
-        }
-
-        // If still invalid, try last known scheduler context
-        if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-            uint32_t last_sched = s_lastSchedR3.load(std::memory_order_acquire);
-            if (last_sched >= 0x1000 && last_sched < PPC_MEMORY_SIZE) {
-                ctx.r3.u32 = last_sched;
-                KernelTraceHostOpF("HOST.825968B0.seeded_from_last r3=%08X", ctx.r3.u32);
-            }
-        }
-
-        // If still invalid, ALWAYS return fake allocation to prevent NULL pointer crashes
-        if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-            // CRITICAL: When r3 is NULL, just return a fake success value
-            // The caller expects a pointer to allocated memory, so return a fake pointer
-            const uint32_t sys_base    = 0x00140400u;
-            const uint32_t sys_payload = sys_base + 0x10u;
-            KernelTraceHostOpF("HOST.825968B0.fake_alloc_no_ctx ret=%08X (r3 was NULL)", sys_payload);
-            ctx.r3.u32 = sys_payload;
-            return;
-        }
+        // CRITICAL: When r3 is NULL, just return NULL immediately
+        // Don't try to seed from environment or last known context
+        // The caller will handle the NULL return value properly
+        const uint32_t sys_payload = 0x00000000u;
+        KernelTraceHostOpF("HOST.825968B0.fake_alloc_null ret=%08X (r3 was NULL)", sys_payload);
+        ctx.r3.u32 = sys_payload;
+        return;
     }
 
     // CRITICAL FIX: Check if r3 is valid BEFORE reading from it

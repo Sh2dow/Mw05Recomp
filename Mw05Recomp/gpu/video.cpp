@@ -3256,7 +3256,7 @@ void Video::Present()
         if (!s_forced_once && s_force_builder) {
             s_forced_once = true;
             uint32_t seed = Mw05Trace_LastSchedR3();
-            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < PPC_MEMORY_SIZE; };
+            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < static_cast<uint64_t>(PPC_MEMORY_SIZE); };
             if (!looks_ptr(seed)) seed = 0x00060E30u;
             PPCContext ctx{};
             if (auto* cur = GetPPCContext()) ctx = *cur;
@@ -3275,7 +3275,7 @@ void Video::Present()
         static uint32_t s_pm4KickTries = 0;
         if (s_pm4KickTries < 4) {
             uint32_t seed = Mw05Trace_LastSchedR3();
-            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < PPC_MEMORY_SIZE; };
+            auto looks_ptr = [](uint32_t ea){ return ea >= 0x1000u && ea < static_cast<uint64_t>(PPC_MEMORY_SIZE); };
             if (!looks_ptr(seed)) {
                 // Heuristic fallback: known scheduler block seen in earlier runs
                 seed = 0x00060E30u;
@@ -8847,6 +8847,7 @@ void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A7E60(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A7EA0(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A7208(PPCContext&, uint8_t*);
+    void MW05Shim_sub_825A7B78(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A74B8(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A7F10(PPCContext&, uint8_t*);
     void MW05Shim_sub_825A7F88(PPCContext&, uint8_t*);

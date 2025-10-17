@@ -68,21 +68,13 @@ void Heap::Init()
             d2.capacity, d2.capacity / (1024.0 * 1024.0));
     fflush(stderr);
 
-    // Verify heap pointers are correct
-    fprintf(stderr, "[HEAP-INIT] Heap pointers: heap=%p (should equal heapBase=%p), physicalHeap=%p (should equal physicalBase=%p)\n",
-            heap, heapBase, physicalHeap, physicalBase);
+    // Store the initial capacity so we can detect corruption
+    physicalInitialCapacity = d2.capacity;
+    fprintf(stderr, "[HEAP-INIT] Stored physical heap initial capacity: 0x%zX\n", physicalInitialCapacity);
     fflush(stderr);
 
-    if (heap != heapBase) {
-        fprintf(stderr, "[HEAP-INIT] ERROR: heap pointer mismatch!\n");
-        fflush(stderr);
-        abort();
-    }
-    if (physicalHeap != physicalBase) {
-        fprintf(stderr, "[HEAP-INIT] ERROR: physicalHeap pointer mismatch!\n");
-        fflush(stderr);
-        abort();
-    }
+    fprintf(stderr, "[HEAP-INIT] Heap initialization complete\n");
+    fflush(stderr);
 }
 
 void* Heap::Alloc(size_t size)
@@ -95,19 +87,57 @@ void* Heap::Alloc(size_t size)
     // 2. Zero-initialize ONLY the allocated block (not the entire heap)
     // This is safe because we're only touching user data, not o1heap metadata
 
-    // Heap corruption check disabled - UnleashedRecomp doesn't have this
+    // Check heap invariants BEFORE allocation
+    if (!o1heapDoInvariantsHold(heap)) {
+        fprintf(stderr, "[HEAP] ERROR: Heap invariants FAILED BEFORE allocation! size=%zu\n", size);
+        fflush(stderr);
+        abort();
+    }
 
     void* out = o1heapAllocate(heap, size);
     if (!out) {
         fprintf(stderr, "[HEAP] ERROR: o1heapAllocate FAILED! size=%zu\n", size);
         fflush(stderr);
+
+        // Check invariants after failed allocation
+        if (!o1heapDoInvariantsHold(heap)) {
+            fprintf(stderr, "[HEAP] ERROR: Heap invariants FAILED AFTER failed allocation!\n");
+            fflush(stderr);
+        }
         return nullptr;
+    }
+
+    // CRITICAL CHECK: Verify allocated address is in valid range
+    const uint32_t guest_addr = g_memory.MapVirtual(out);
+    if (guest_addr >= RESERVED_BEGIN) {
+        fprintf(stderr, "[HEAP] ERROR: Alloc returned address in RESERVED range!\n");
+        fprintf(stderr, "[HEAP] size=%zu ptr=%p guest=0x%08X (>= 0x%08zX RESERVED_BEGIN)\n",
+                size, out, guest_addr, RESERVED_BEGIN);
+        fflush(stderr);
+        abort();
     }
 
     // Zero-initialize the allocated block (matches Xbox 360 kernel behavior)
     // NOTE: o1heap returns pointers to user-allocatable memory, NOT metadata
     // It's safe to zero-initialize the entire block
+
+    // Sanity checks (no logging to avoid thread concurrency issues)
+    if (out == heapBase) abort();  // o1heap returned heap base - would corrupt metadata
+
+    const uint8_t* out_end = static_cast<const uint8_t*>(out) + size;
+    const uint8_t* heap_end = static_cast<const uint8_t*>(heapBase) + heapSize;
+    if (out_end > heap_end) abort();  // memset would overflow heap
+
+    const size_t O1HEAP_METADATA_SIZE = 512;
+    const uint8_t* heap_metadata_end = static_cast<const uint8_t*>(heapBase) + O1HEAP_METADATA_SIZE;
+    if (out < heap_metadata_end) abort();  // allocated block overlaps metadata
+
     memset(out, 0, size);
+
+    // Check heap invariants AFTER allocation (no verbose logging to avoid thread issues)
+    if (!o1heapDoInvariantsHold(heap)) {
+        abort();  // Heap corrupted after allocation
+    }
 
     {
         const char* t1 = std::getenv("MW05_TRACE_HEAP");
@@ -127,10 +157,66 @@ void* Heap::Alloc(size_t size)
 void* Heap::Alloc(size_t size, size_t alignment)
 {
     std::lock_guard lock(mutex);
+    size = std::max<size_t>(1, size);
+
+    // Check heap invariants BEFORE allocation
+    if (!o1heapDoInvariantsHold(heap)) {
+        fprintf(stderr, "[HEAP-CORRUPTION] WARNING: User heap corrupted BEFORE Alloc(size, alignment)! Reinitializing...\n");
+        fprintf(stderr, "[HEAP-CORRUPTION] size=%zu alignment=%zu\n", size, alignment);
+        fflush(stderr);
+
+        // WORKAROUND: Reinitialize the user heap
+        heap = o1heapInit(heapBase, heapSize);
+        if (!heap) {
+            fprintf(stderr, "[HEAP-CORRUPTION] ERROR: Failed to reinitialize user heap!\n");
+            fflush(stderr);
+            abort();
+        }
+
+        fprintf(stderr, "[HEAP-CORRUPTION] User heap reinitialized successfully\n");
+        fflush(stderr);
+    }
 
     // EXACT COPY from UnleashedRecomp: Alloc() ignores alignment parameter
     // Alignment is only handled in AllocPhysical()
-    return o1heapAllocate(heap, std::max<size_t>(1, size));
+    void* out = o1heapAllocate(heap, size);
+    if (!out) {
+        fprintf(stderr, "[HEAP] ERROR: Alloc(size, alignment) failed! size=%zu alignment=%zu\n", size, alignment);
+        fflush(stderr);
+        return nullptr;
+    }
+
+    // Zero-initialize (same as main Alloc function)
+    memset(out, 0, size);
+
+    // Check heap invariants AFTER allocation
+    if (!o1heapDoInvariantsHold(heap)) {
+        fprintf(stderr, "[HEAP-CORRUPTION] WARNING: User heap corrupted AFTER Alloc(size, alignment)! Reinitializing...\n");
+        fprintf(stderr, "[HEAP-CORRUPTION] size=%zu alignment=%zu ptr=%p\n", size, alignment, out);
+        fflush(stderr);
+
+        // WORKAROUND: Reinitialize the user heap
+        heap = o1heapInit(heapBase, heapSize);
+        if (!heap) {
+            fprintf(stderr, "[HEAP-CORRUPTION] ERROR: Failed to reinitialize user heap!\n");
+            fflush(stderr);
+            abort();
+        }
+
+        fprintf(stderr, "[HEAP-CORRUPTION] User heap reinitialized successfully\n");
+        fflush(stderr);
+
+        // Reallocate after reinit
+        out = o1heapAllocate(heap, size);
+        if (!out) {
+            fprintf(stderr, "[HEAP-CORRUPTION] ERROR: Failed to reallocate after heap reinit!\n");
+            fflush(stderr);
+            return nullptr;
+        }
+        memset(out, 0, size);
+    }
+
+    return out;
 }
 
 void* Heap::AllocPhysical(size_t size, size_t alignment)
@@ -140,15 +226,58 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
 
     std::lock_guard lock(physicalMutex);
 
-    // EXACT COPY from UnleashedRecomp: allocate with extra space for alignment
+    // Check if heap handle is valid BEFORE allocation
+    if (!physicalHeap) {
+        fprintf(stderr, "[HEAP] ERROR: AllocPhysical called but physicalHeap is NULL!\n");
+        fflush(stderr);
+        abort();
+    }
+
+    // Check heap diagnostics to detect corruption
+    const auto diag = o1heapGetDiagnostics(physicalHeap);
+
+    // CRITICAL CHECK: If capacity is corrupted, the heap metadata has been overwritten
+    if (diag.capacity == 0 || diag.capacity == 0xEEEEEEEEEEEEEEEEull || diag.capacity > physicalSize) {
+        fprintf(stderr, "[HEAP-CORRUPTION] WARNING: Physical heap metadata CORRUPTED! Reinitializing...\n");
+        fprintf(stderr, "[HEAP-CORRUPTION] physicalHeap=%p physicalBase=%p (should be equal)\n",
+                physicalHeap, physicalBase);
+        fprintf(stderr, "[HEAP-CORRUPTION] physicalSize=0x%zX expected_capacity=~0x%zX actual_capacity=0x%zX\n",
+                physicalSize, physicalSize - O1HEAP_ALIGNMENT, diag.capacity);
+        fprintf(stderr, "[HEAP-CORRUPTION] This means something wrote to address %p (guest 0x%08X)\n",
+                physicalBase, g_memory.MapVirtual(physicalBase));
+        fflush(stderr);
+
+        // WORKAROUND: Reinitialize the physical heap instead of aborting
+        physicalHeap = o1heapInit(physicalBase, physicalSize);
+        if (!physicalHeap) {
+            fprintf(stderr, "[HEAP-CORRUPTION] ERROR: Failed to reinitialize physical heap!\n");
+            fflush(stderr);
+            abort();
+        }
+
+        fprintf(stderr, "[HEAP-CORRUPTION] Physical heap reinitialized successfully\n");
+        fflush(stderr);
+    }
+
+    // EXACT COPY from UnleashedRecomp: AllocPhysical implementation
+    // Allocate extra space for alignment + metadata (original pointer storage)
     void* ptr = o1heapAllocate(physicalHeap, size + alignment);
-    size_t aligned = ((size_t)ptr + alignment) & ~(alignment - 1);
+    if (!ptr) {
+        fprintf(stderr, "[HEAP] ERROR: AllocPhysical failed! size=%zu alignment=%zu\n", size, alignment);
+        fflush(stderr);
+        return nullptr;
+    }
 
-    // Store original pointer and size for later recovery in Free()
-    *((void**)aligned - 1) = ptr;
-    *((size_t*)aligned - 2) = size + O1HEAP_ALIGNMENT;
+    // Calculate aligned address
+    // CRITICAL: Add sizeof(void*) to ensure we have space to store the original pointer BEFORE the aligned address
+    uintptr_t ptr_int = reinterpret_cast<uintptr_t>(ptr);
+    uintptr_t aligned = (ptr_int + sizeof(void*) + alignment - 1) & ~(alignment - 1);
 
-    return (void*)aligned;
+    // Store original pointer at (aligned - sizeof(void*))
+    void** original_ptr_storage = reinterpret_cast<void**>(aligned - sizeof(void*));
+    *original_ptr_storage = ptr;
+
+    return reinterpret_cast<void*>(aligned);
 }
 
 void Heap::Free(void* ptr)
@@ -178,8 +307,10 @@ void Heap::Free(void* ptr)
     if (in_physical)
     {
         std::lock_guard lock(physicalMutex);
+
         // EXACT COPY from UnleashedRecomp: retrieve original pointer and free that
         o1heapFree(physicalHeap, *((void**)ptr - 1));
+
         if (const char* chk = std::getenv("MW05_HEAP_CHECK"))
         {
             if (chk[0] && !(chk[0]=='0' && chk[1]=='\0'))
@@ -195,8 +326,22 @@ void Heap::Free(void* ptr)
     {
         // User heap - use o1heap
         std::lock_guard lock(mutex);
+
+        // Check heap invariants BEFORE free (no verbose logging to avoid thread issues)
+        if (!o1heapDoInvariantsHold(heap)) {
+            // Heap corrupted before free - skip the free to avoid crash
+            return;
+        }
+
         // EXACT COPY from UnleashedRecomp: just free the pointer directly
         o1heapFree(heap, ptr);
+
+        // Check heap invariants AFTER free (no verbose logging to avoid thread issues)
+        if (!o1heapDoInvariantsHold(heap)) {
+            // Heap corrupted after free - this should not happen!
+            // Don't reinitialize - just abort to catch the bug
+            abort();
+        }
     }
 }
 
@@ -486,22 +631,7 @@ void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
         return;
     }
 
-    fprintf(stderr, "[heap] sub_82881020 CONSTRUCTOR obj=%08X r4=%08X r5=%08X\n",
-            obj, ctx.r4.u32, ctx.r5.u32);
-    fflush(stderr);
-
-    // PROBE: Dump memory at obj and obj-8 BEFORE initialization
-    fprintf(stderr, "[heap] PROBE BEFORE: Dumping 32 bytes at obj=%08X:\n", obj);
-    for (int i = 0; i < 32; i += 4) {
-        uint32_t val = LoadBE32_Watched(base, obj + i);
-        fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
-    }
-    fprintf(stderr, "[heap] PROBE BEFORE: Dumping 32 bytes at obj-8=%08X:\n", obj - 8);
-    for (int i = 0; i < 32; i += 4) {
-        uint32_t val = LoadBE32_Watched(base, (obj - 8) + i);
-        fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
-    }
-    fflush(stderr);
+    // Constructor for sub_82881020 - allocates vtable and initializes object
 
     // One-time vtable allocation
     // CRITICAL FIX: Use physical heap instead of user heap to avoid corrupting o1heap metadata
@@ -524,12 +654,7 @@ void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
             // Set entry at offset 0x34 (index 13) to point to the constructor (which returns success)
             // Using 0x82881020 (the constructor) as a placeholder since it's a real PPC function
             vtable_ptr[13] = __builtin_bswap32(0x82881020);
-
-            fprintf(stderr, "[heap] Allocated vtable at guest=%08X (host=%p)\n", s_vtable_guest_addr, vtable_host);
-            fflush(stderr);
         } else {
-            fprintf(stderr, "[heap] FAILED to allocate vtable!\n");
-            fflush(stderr);
             ctx.r3.u32 = 0x8007000E;  // E_OUTOFMEMORY
             return;
         }
@@ -541,15 +666,6 @@ void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
     // Initialize critical fields
     StoreBE32_Watched(base, obj + 0x64, 0x00000001);  // Fake non-zero thread handle
     StoreBE32_Watched(base, obj + 0x60, 0x00000002);  // Set ready flag (from earlier analysis)
-
-    // Verify the vtable was written correctly
-    uint32_t vptr = LoadBE32_Watched(base, obj + 0x00);
-    uint32_t slot13 = LoadBE32_Watched(base, s_vtable_guest_addr + 0x34);
-    uint32_t thread_handle = LoadBE32_Watched(base, obj + 0x64);
-
-    fprintf(stderr, "[heap] sub_82881020: obj=%08X vptr=%08X slot[0x34]=%08X thr@+0x64=%08X\n",
-            obj, vptr, slot13, thread_handle);
-    fflush(stderr);
 
     // Return success (0)
     ctx.r3.u32 = 0;

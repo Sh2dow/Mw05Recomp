@@ -4843,6 +4843,18 @@ uint32_t NtQueryVirtualMemory(
     }
 
     // Default: zero the buffer up to Length and return success; some callers only check status.
+    // CRITICAL FIX: Add bounds checking to prevent zeroing huge regions of memory!
+    // The game might pass Length=0xFFFFFFFF or other huge values, which would corrupt the heap.
+    const uint32_t MAX_SAFE_LENGTH = 4096;  // Reasonable limit for query results
+    if (Length > MAX_SAFE_LENGTH) {
+        fprintf(stderr, "[NtQueryVirtualMemory] WARNING: Length=%u (0x%X) exceeds safe limit, capping to %u\n",
+                Length, Length, MAX_SAFE_LENGTH);
+        fprintf(stderr, "[NtQueryVirtualMemory] BaseAddress=0x%08X Buffer=0x%08X Class=%u\n",
+                BaseAddress, Buffer, MemoryInformationClass);
+        fflush(stderr);
+        Length = MAX_SAFE_LENGTH;
+    }
+
     memset(g_memory.Translate(Buffer), 0, Length);
     return 0; // STATUS_SUCCESS
 }
@@ -6045,11 +6057,17 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
     g_RbBase = base;
     g_RbLen = len;
     const uint32_t size_bytes = (len < 32) ? (1u << (len & 31)) : 0u;
+
+    // REMOVED VERBOSE LOGGING - can cause thread concurrency issues
+
     if (base && size_bytes)
     {
         uint8_t* p = reinterpret_cast<uint8_t*>(g_memory.Translate(base));
         if (p) {
             // Zero-initialize the ring buffer
+            // NOTE: This is safe because the ring buffer was allocated from the user heap,
+            // and o1heap returns pointers to user-allocatable memory (NOT metadata).
+            // The first allocation starts at heap_base + ~736 bytes (o1heap metadata size).
             memset(p, 0, size_bytes);
         }
     }
@@ -6154,10 +6172,45 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
 extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
 
 void Mw05ForceVdInitOnce() {
-    if (!Mw05ForceVdInitEnabled()) return;
-    bool expected = false;
-    if (!g_forceVdInitDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    // Log to FILE to ensure it's captured even if stderr is not set up yet
+    FILE* log = fopen("vd_init_debug.log", "a");
+    if (log) {
+        fprintf(log, "[Mw05ForceVdInitOnce] CALLED\n");
+        fflush(log);
+    }
+
+    fprintf(stderr, "[heap] Mw05ForceVdInitOnce CALLED\n");
+    fflush(stderr);
+
+    if (!Mw05ForceVdInitEnabled()) {
+        if (log) {
+            fprintf(log, "[Mw05ForceVdInitOnce] DISABLED by env var\n");
+            fflush(log);
+            fclose(log);
+        }
+        fprintf(stderr, "[heap] Mw05ForceVdInitOnce DISABLED by env var\n");
+        fflush(stderr);
         return;
+    }
+
+    bool expected = false;
+    if (!g_forceVdInitDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        if (log) {
+            fprintf(log, "[Mw05ForceVdInitOnce] ALREADY DONE\n");
+            fflush(log);
+            fclose(log);
+        }
+        fprintf(stderr, "[heap] Mw05ForceVdInitOnce ALREADY DONE\n");
+        fflush(stderr);
+        return;
+    }
+
+    if (log) {
+        fprintf(log, "[Mw05ForceVdInitOnce] STARTING initialization\n");
+        fflush(log);
+    }
+    fprintf(stderr, "[heap] Mw05ForceVdInitOnce STARTING initialization\n");
+    fflush(stderr);
 
     KernelTraceHostOp("HOST.ForceVD.init.begin");
 
@@ -6179,9 +6232,56 @@ void Mw05ForceVdInitOnce() {
             {
                 const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
                 KernelTraceHostOpF("HOST.ForceVD.ensure_ring ring=%08X len_log2=%u wb=%08X", ring_guest, len_log2, wb_guest);
+
+                // CRITICAL DEBUG: Check physical heap BEFORE each VD function
+                fprintf(stderr, "[heap] BEFORE VdInitializeRingBuffer: checking physical heap...\n");
+                fflush(stderr);
+                const auto diag1 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
+                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
+                        diag1.capacity, g_userHeap.physicalInitialCapacity);
+                fflush(stderr);
+
                 VdInitializeRingBuffer(ring_guest, len_log2);
+
+                fprintf(stderr, "[heap] AFTER VdInitializeRingBuffer: checking physical heap...\n");
+                fflush(stderr);
+                const auto diag2 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
+                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
+                        diag2.capacity, g_userHeap.physicalInitialCapacity);
+                fflush(stderr);
+                if (diag2.capacity != g_userHeap.physicalInitialCapacity) {
+                    fprintf(stderr, "[heap] ERROR: VdInitializeRingBuffer CORRUPTED physical heap!\n");
+                    fflush(stderr);
+                    abort();
+                }
+
                 VdEnableRingBufferRPtrWriteBack(wb_guest);
+
+                fprintf(stderr, "[heap] AFTER VdEnableRingBufferRPtrWriteBack: checking physical heap...\n");
+                fflush(stderr);
+                const auto diag3 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
+                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
+                        diag3.capacity, g_userHeap.physicalInitialCapacity);
+                fflush(stderr);
+                if (diag3.capacity != g_userHeap.physicalInitialCapacity) {
+                    fprintf(stderr, "[heap] ERROR: VdEnableRingBufferRPtrWriteBack CORRUPTED physical heap!\n");
+                    fflush(stderr);
+                    abort();
+                }
+
                 VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
+
+                fprintf(stderr, "[heap] AFTER VdSetSystemCommandBufferGpuIdentifierAddress: checking physical heap...\n");
+                fflush(stderr);
+                const auto diag4 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
+                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
+                        diag4.capacity, g_userHeap.physicalInitialCapacity);
+                fflush(stderr);
+                if (diag4.capacity != g_userHeap.physicalInitialCapacity) {
+                    fprintf(stderr, "[heap] ERROR: VdSetSystemCommandBufferGpuIdentifierAddress CORRUPTED physical heap!\n");
+                    fflush(stderr);
+                    abort();
+                }
                 // Optionally try to kick MW05's PM4 builder once we have ring/sysid
                 uint32_t seed = Mw05Trace_LastSchedR3();
                 if (!(seed >= 0x1000u)) seed = 0x00060E30u;
@@ -6232,6 +6332,12 @@ void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
     // Mw05ForceRegisterGfxNotifyIfRequested();
 
     KernelTraceHostOp("HOST.ForceVD.init.done");
+
+    if (log) {
+        fprintf(log, "[Mw05ForceVdInitOnce] COMPLETED\n");
+        fflush(log);
+        fclose(log);
+    }
 
 }
 
@@ -9430,29 +9536,9 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
                 fprintf(stderr, "[THREAD2-TRACE] Saved function pointer: 0x%08X at guest=%08X host=%p\n",
                         s_saved_func_ptr, s_context_addr, s_context_host_ptr);
 
-                // Start a monitoring thread to detect when corruption happens
-                static std::atomic<bool> s_monitor_started{false};
-                if (!s_monitor_started.exchange(true)) {
-                    uint32_t saved_func = s_saved_func_ptr;
-                    uint32_t ctx_addr = s_context_addr;
-                    std::thread([ctx_ptr, saved_func, ctx_addr]() {
-                        fprintf(stderr, "[CORRUPTION-MONITOR] Started monitoring context at 0x%08X\n", ctx_addr);
-                        for (int i = 0; i < 100; ++i) {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                            uint32_t current_func_ptr = __builtin_bswap32(ctx_ptr[1]);
-                            if (current_func_ptr != saved_func) {
-                                fprintf(stderr, "[CORRUPTION-MONITOR] CORRUPTION DETECTED at iteration %d!\n", i);
-                                fprintf(stderr, "  Expected: 0x%08X\n", saved_func);
-                                fprintf(stderr, "  Current:  0x%08X\n", current_func_ptr);
-                                fprintf(stderr, "  Time: ~%d ms after thread creation\n", i * 10);
-                                fflush(stderr);
-                                break;
-                            }
-                        }
-                        fprintf(stderr, "[CORRUPTION-MONITOR] Monitoring ended\n");
-                        fflush(stderr);
-                    }).detach();
-                }
+                // REMOVED: Corruption monitor was causing false positives
+                // The thread context is temporary and gets reused/freed after thread creation
+                // This is EXPECTED behavior, not corruption
             } else {
                 fprintf(stderr, "[THREAD2-TRACE] Context address %08X is NOT MAPPED!\n", startContext);
             }

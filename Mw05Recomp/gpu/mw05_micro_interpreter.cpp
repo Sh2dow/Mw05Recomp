@@ -306,6 +306,29 @@ extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size)
     KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.calc eff=%08X follow=%08X off=%d sz_hint=%u ib=%08X", eff, follow_ea, rel_bytes, sz, ib_addr);
     if (void* eff_ptr = g_memory.Translate(eff)) {
         if (sz == 0 || sz > 0x8000u) sz = 0x400u; // conservative cap when unknown
+
+        // CRITICAL CHECK: Verify we can read 8 dwords without going past the end of GUEST memory
+        // Check both the guest address AND the host pointer to prevent crashes
+        const uint64_t eff_end = static_cast<uint64_t>(eff) + 32;  // 8 dwords = 32 bytes
+        if (eff_end > PPC_MEMORY_SIZE) {
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.BOUNDS_ERROR eff=%08X eff_end=%08llX limit=%08llX",
+                               eff, eff_end, PPC_MEMORY_SIZE);
+            return;  // Skip this micro-IB to avoid crash
+        }
+
+        // ADDITIONAL CHECK: Verify the host pointer is within the mapped memory region
+        // The host memory is mapped at [base, base + PPC_MEMORY_SIZE)
+        const uint8_t* base = g_memory.base;
+        const uint8_t* eff_ptr_u8 = reinterpret_cast<const uint8_t*>(eff_ptr);
+        const uint8_t* eff_ptr_end = eff_ptr_u8 + 32;  // 8 dwords = 32 bytes
+        const uint8_t* host_end = base + PPC_MEMORY_SIZE;
+
+        if (eff_ptr_u8 < base || eff_ptr_end > host_end) {
+            KernelTraceHostOpF("HOST.PM4.MW05.MicroIB.eff.HOST_BOUNDS_ERROR eff=%08X ptr=%p ptr_end=%p base=%p host_end=%p",
+                               eff, eff_ptr_u8, eff_ptr_end, base, host_end);
+            return;  // Skip this micro-IB to avoid crash
+        }
+
         // Peek at first 8 dwords of the effective target
         uint32_t* pe = reinterpret_cast<uint32_t*>(eff_ptr);
         uint32_t ed[8]{}; for (int i = 0; i < 8; ++i) ed[i] = bswap32(pe[i]);

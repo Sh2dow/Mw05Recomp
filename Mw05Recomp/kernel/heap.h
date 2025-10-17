@@ -15,6 +15,7 @@ struct Heap
     O1HeapInstance* physicalHeap;
     void* physicalBase{};
     size_t physicalSize{};
+    size_t physicalInitialCapacity{};  // Store initial capacity to detect corruption
 
     void Init();
 

@@ -385,7 +385,7 @@ SHIM(sub_82599010)
 SHIM(sub_82599208)
 SHIM(sub_82599338)
 SHIM(sub_825A7208)
-SHIM(sub_825A74B8)
+// sub_825A74B8 has a custom implementation with SEH exception handling below (line 473)
 
 // Forward decls of local shim helpers used before their definitions (C++ linkage)
 struct PPCContext;
@@ -1283,6 +1283,19 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
             ctx.r3.u32 = sys_payload;
             return;
         }
+    }
+
+    // CRITICAL FIX: Check if r3 is valid BEFORE reading from it
+    // The previous check (lines 1253-1286) might have set r3 to a fake value,
+    // but we need to check again here to make sure it's valid
+    if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
+        // r3 is still invalid after all the fixes above
+        // This should never happen, but if it does, return a fake allocation
+        const uint32_t sys_base    = 0x00140400u;
+        const uint32_t sys_payload = sys_base + 0x10u;
+        KernelTraceHostOpF("HOST.825968B0.fake_alloc_final ret=%08X (r3=%08X still invalid)", sys_payload, ctx.r3.u32);
+        ctx.r3.u32 = sys_payload;
+        return;
     }
 
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }

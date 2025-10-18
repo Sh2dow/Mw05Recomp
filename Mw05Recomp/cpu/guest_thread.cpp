@@ -27,11 +27,22 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
     // g_userHeap.Alloc() allocates memory within the PPC memory range (using o1heap, a host-side allocator)
     // This allows the memory to be safely mapped to guest addresses via g_memory.MapVirtual()
     // Unlike malloc, which returns host heap memory outside the PPC range
+    fprintf(stderr, "[THREAD-CTX] Attempting to allocate %zu bytes for thread context (tid=%08X)\n",
+            TOTAL_SIZE, GuestThread::GetCurrentThreadId());
+    fflush(stderr);
+
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
     if (!thread) {
         fprintf(stderr, "[CRITICAL] Failed to allocate thread context memory (%zu bytes)\n", TOTAL_SIZE);
+        fprintf(stderr, "[CRITICAL] This is likely due to heap exhaustion or fragmentation\n");
+        fprintf(stderr, "[CRITICAL] TOTAL_SIZE breakdown: PCR=%zu TLS=%zu TEB=%zu STACK=%zu\n",
+                PCR_SIZE, TLS_SIZE, TEB_SIZE, STACK_SIZE);
+        fflush(stderr);
         abort();
     }
+
+    fprintf(stderr, "[THREAD-CTX] Successfully allocated %zu bytes at host=%p\n", TOTAL_SIZE, (void*)thread);
+    fflush(stderr);
     memset(thread, 0, TOTAL_SIZE);
 
     // CRITICAL: Store pointers in BIG-ENDIAN format (will be byte-swapped when loaded by PPC_LOAD_U32)

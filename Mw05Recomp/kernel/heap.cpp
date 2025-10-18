@@ -4,8 +4,7 @@
 #include "function.h"
 #include <os/logger.h>
 
-// Forward declaration for VD initialization
-extern "C" void Mw05ForceVdInitOnce();
+
 
 constexpr uint32_t kStatusSuccess = 0;
 constexpr uint32_t kStatusInvalidParameter = 0xC000000D;
@@ -63,7 +62,23 @@ void* Heap::Alloc(size_t size)
 {
     std::lock_guard lock(mutex);
 
-    return o1heapAllocate(heap, std::max<size_t>(1, size));
+    size_t actual_size = std::max<size_t>(1, size);
+    void* ptr = o1heapAllocate(heap, actual_size);
+
+    // Diagnostic logging for allocation failures
+    if (!ptr && actual_size > 1024) {
+        // Get heap diagnostics
+        O1HeapDiagnostics diag = o1heapGetDiagnostics(heap);
+        fprintf(stderr, "[HEAP-ALLOC-FAIL] Failed to allocate %zu bytes from user heap\n", actual_size);
+        fprintf(stderr, "[HEAP-DIAG] capacity=%zu allocated=%zu peak_allocated=%zu oom_count=%zu\n",
+                diag.capacity, diag.allocated, diag.peak_allocated, diag.oom_count);
+        fprintf(stderr, "[HEAP-DIAG] free_space=%zu fragmentation=%.2f%%\n",
+                diag.capacity - diag.allocated,
+                100.0 * (1.0 - (double)(diag.capacity - diag.allocated) / (double)diag.capacity));
+        fflush(stderr);
+    }
+
+    return ptr;
 }
 
 
@@ -74,27 +89,72 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
 
     std::lock_guard lock(physicalMutex);
 
-    void* ptr = o1heapAllocate(physicalHeap, size + alignment);
-    size_t aligned = ((size_t)ptr + alignment) & ~(alignment - 1);
+    // CRITICAL: Physical memory allocations are used by the game as POOLS for sub-allocations.
+    // The game allocates large blocks (e.g., 345 MB) and then allocates smaller blocks INSIDE them.
+    // We CANNOT use o1heap for these allocations because o1heap would think it's managing the memory,
+    // but the game is actually using it directly!
+    //
+    // Instead, we allocate directly from the physical heap's memory region using pointer arithmetic.
+    // The physical heap is a contiguous block of memory from physicalBase to physicalBase + physicalSize.
+    // We maintain a simple bump allocator to track the next available address.
 
-    *((void**)aligned - 1) = ptr;
-    *((size_t*)aligned - 2) = size + O1HEAP_ALIGNMENT;
+    // Static variable to track the next available address in the physical heap
+    static size_t nextPhysicalAddr = 0;
+
+    // Initialize on first call
+    if (nextPhysicalAddr == 0) {
+        nextPhysicalAddr = (size_t)physicalBase;
+    }
+
+    // Calculate aligned address
+    size_t aligned = (nextPhysicalAddr + alignment - 1) & ~(alignment - 1);
+
+    // Check if we have enough space
+    size_t endAddr = aligned + size;
+    if (endAddr > (size_t)physicalBase + physicalSize) {
+        fprintf(stderr, "[AllocPhysical] FAILED: Out of physical memory! requested=%zu available=%zu\n",
+                size, (size_t)physicalBase + physicalSize - nextPhysicalAddr);
+        fflush(stderr);
+        return nullptr;
+    }
+
+    // Update next available address
+    nextPhysicalAddr = endAddr;
+
+    fprintf(stderr, "[AllocPhysical] size=%zu align=%zu aligned=%p next=%p\n",
+            size, alignment, (void*)aligned, (void*)nextPhysicalAddr);
+    fprintf(stderr, "[AllocPhysical] Physical heap usage: %zu / %zu bytes (%.2f%%)\n",
+            nextPhysicalAddr - (size_t)physicalBase, physicalSize,
+            100.0 * (nextPhysicalAddr - (size_t)physicalBase) / physicalSize);
+    fflush(stderr);
 
     return (void*)aligned;
 }
 
 void Heap::Free(void* ptr)
 {
-    if (ptr >= physicalHeap)
-    {
-        std::lock_guard lock(physicalMutex);
-        o1heapFree(physicalHeap, *((void**)ptr - 1));
+    if (!ptr) {
+        fprintf(stderr, "[Free] WARNING: Attempt to free NULL pointer\n");
+        fflush(stderr);
+        return;
     }
-    else
+
+    // Check if pointer is in physical heap range
+    // Physical heap uses a bump allocator, so we don't actually free memory
+    if (ptr >= physicalBase && ptr < (void*)((char*)physicalBase + physicalSize))
     {
-        std::lock_guard lock(mutex);
-        o1heapFree(heap, ptr);
+        fprintf(stderr, "[Free] Physical heap: ptr=%p (NO-OP - bump allocator)\n", ptr);
+        fflush(stderr);
+        // Physical memory is managed by a bump allocator, so we don't free it
+        return;
     }
+
+    // User heap - use o1heap to free
+    fprintf(stderr, "[Free] User heap: ptr=%p\n", ptr);
+    fflush(stderr);
+
+    std::lock_guard lock(mutex);
+    o1heapFree(heap, ptr);
 }
 
 size_t Heap::Size(void* ptr)
@@ -261,14 +321,10 @@ void MW05Shim_sub_82539870(PPCContext& ctx, uint8_t* base)
     uint32_t size = ctx.r3.u32;
     void* ptr = g_userHeap.Alloc(size);
     if (!ptr) {
-        fprintf(stderr, "[heap] sub_82539870 FAILED to allocate %u bytes\n", size);
-        fflush(stderr);
         ctx.r3.u32 = 0;
         return;
     }
     uint32_t guestAddr = g_memory.MapVirtual(ptr);
-    fprintf(stderr, "[heap] sub_82539870 allocated %u bytes at guest=%08X\n", size, guestAddr);
-    fflush(stderr);
     ctx.r3.u32 = guestAddr;
 }
 
@@ -282,44 +338,8 @@ extern "C" void __imp__sub_8284A698(PPCContext& ctx, uint8_t* base);
 
 void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
 {
-    fprintf(stderr, "[heap] MW05Shim_sub_8284A698 ENTRY\n");
-    fflush(stderr);
-
-    uint32_t r3_in = ctx.r3.u32;
-    uint32_t r4_in = ctx.r4.u32;
-    uint32_t r5_in = ctx.r5.u32;
-
-    fprintf(stderr, "[heap] sub_8284A698 CALLED r3=%08X r4=%08X r5=%08X\n", r3_in, r4_in, r5_in);
-    fflush(stderr);
-
     // Call the original function
     __imp__sub_8284A698(ctx, base);
-
-    int32_t result = static_cast<int32_t>(ctx.r3.u32);
-    uint32_t r3_out = ctx.r3.u32;
-    fprintf(stderr, "[heap] sub_8284A698 RETURNED r3=%08X (%d)\n", r3_out, result);
-    fflush(stderr);
-
-    // PROBE: Dump memory around the returned object
-    if (r3_out != 0 && result == 0) {
-        fprintf(stderr, "[heap] PROBE: Dumping 32 bytes at r3=%08X:\n", r3_out);
-        for (int i = 0; i < 32; i += 4) {
-            uint32_t val = LoadBE32_Watched(base, r3_out + i);
-            fprintf(stderr, "[heap]   +0x%02X: %08X\n", i, val);
-        }
-        fflush(stderr);
-    }
-
-    // CRITICAL: Initialize VD graphics subsystem now that video singleton is created
-    // This ensures ring buffer, system command buffer, and engines are initialized
-    try {
-        Mw05ForceVdInitOnce();
-        fprintf(stderr, "[heap] Mw05ForceVdInitOnce completed\n");
-        fflush(stderr);
-    } catch (...) {
-        fprintf(stderr, "[heap] ERROR: Exception in Mw05ForceVdInitOnce!\n");
-        fflush(stderr);
-    }
 }
 
 GUEST_FUNCTION_HOOK(sub_8284A698, MW05Shim_sub_8284A698);

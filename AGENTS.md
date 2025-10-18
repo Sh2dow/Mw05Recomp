@@ -43,93 +43,94 @@
 
 ## Critical Debugging Information
 
-### Current Status: RANDOM CRASHES - MEMORY CORRUPTION ISSUE
-**DATE**: 2025-10-16
-**✅ HEAP IS WORKING!** Game runs without heap corruption or assertions!
-**✅ FPS COUNTER FIXED!** FPS display now updates continuously after renderer initialization!
-**✅ BUILD ERRORS FIXED!** All compilation errors and warnings in video.cpp resolved!
-**✅ NULL POINTER DEREFERENCE FIXED!** Fixed crash in `sub_825968B0` when called with `r3=0x00000000`
-**❌ RANDOM CRASHES!** Game crashes randomly with NULL function pointer calls
-  - **SYMPTOM**: `[NULL-CALL] lr=8211E420 target=00000000 r3=00098640 r31=00098640 r4=00000046`
-  - **CRASH**: Access violation (0xC0000005) at offset `+0xCD4F` in executable
-  - **ROOT CAUSE**: Memory corruption - vtable/function pointers being overwritten with NULL
-  - **PATTERN**: Happens randomly, suggesting race condition or buffer overflow
-  - **FUNCTION**: `sub_8211E3E0` calls through NULL function pointer in CTR register
-  - **USER HYPOTHESIS**: "I assume it's due to no memory protection" - CORRECT!
+### Current Status: GAME RUNNING - DEBUG LOGGING REMOVED! 🎉
+**DATE**: 2025-10-18
+**✅ ALL DEBUG LOGGING REMOVED!** Cleaned up excessive fprintf/fflush calls
+  - Removed infinite loop in `Mw05ForceVdInitOnce` (was being called repeatedly)
+  - Removed all heap debug logging from `heap.cpp`
+  - Simplified `Mw05ForceVdInitOnce` to essential operations only
+  - Removed verbose graphics callback logging from `imports.cpp`
+**✅ GAME RUNNING SUCCESSFULLY!** Main loop executing without crashes
+  - Physical memory: 361 MB allocated (0x15900000 bytes)
+  - Graphics callback registered at 0x825979A8
+  - PM4 command processing active (46,000 commands processed)
+  - Main loop running (iteration #6 observed)
+  - No crashes, no assertion failures!
+**⚠️ FILE I/O ISSUE**: `RtlNtStatusToDosError` called 517,000 times
+  - Status: 0xC0000008 (STATUS_INVALID_HANDLE)
+  - Likely cause: Game trying to open files that don't exist
+  - Impact: Performance degradation from repeated failed file opens
+  - Next step: Investigate which files the game is trying to access
+  - **PREVIOUS LOCATION**: `ppc_recomp.7.cpp` at offset +0x15891D (1,411,357 bytes into file)
+  - **PREVIOUS CRASH PATTERN**:
+    - First call: `sub_8215C838 r3=00000000 r4=A0001000` → **SUCCESS** (returns r3=82915A20)
+    - Second call: `sub_8215C838 r3=00000000 r4=C0001000` → **CRASH** (access violation)
+  - **PREVIOUS FUNCTION CHAIN**: `sub_8215C838` → `sub_8215BA10` → `sub_82812C00` → `0x828AA07C` (import stub)
+  - **PREVIOUS ROOT CAUSE**: Import stub at 0x828AA07C contains original ordinal values, NOT patched to call host function!
+  - **✅ FIXED**: Import stubs are NOT being called - game uses thunks directly, which ARE patched correctly!
 
-**BUILD FIXES APPLIED** (2025-10-16):
-  1. **Fixed missing forward declaration** for `MW05Shim_sub_825A7B78` in `video.cpp` line 8850
-  2. **Fixed tautological comparison warnings** in `video.cpp` lines 3259 and 3278 by casting `PPC_MEMORY_SIZE` to `uint64_t`
-  3. **Fixed duplicate function definition** in `mw05_trace_shims.cpp` line 388 - removed `SHIM(sub_825A74B8)` macro (custom implementation exists at line 473)
-  4. **Fixed memory protection crash** in `memory.cpp` - removed `VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect)` that was protecting first 4KB
-  - **Files Modified**: `Mw05Recomp/gpu/video.cpp`, `Mw05Recomp/gpu/mw05_trace_shims.cpp`, `Mw05Recomp/kernel/memory.cpp`
-  - **Result**: Build succeeds with 0 errors, game can now access low memory addresses without crashing
+**IMPORT PATCHING MECHANISM** (from main.cpp:409-590):
+  1. **Import Table Processing**:
+     - Reads XEX import table (libraries, ordinals, thunks)
+     - For each import, looks up host function by name in `g_importLookup`
+     - Assigns a unique guest address (starting at 0x828CA000)
+     - Inserts host function at guest address via `g_memory.InsertFunction()`
+     - **Patches THUNK** to point to guest address (line 583)
+  2. **Import Stub Pattern** (at 0x828AA07C):
+     ```
+     .long ordinal1, ordinal2, mtspr CTR r11, bctr
+     ```
+     - Ordinal 0x101012E = Library 0x0101 (xboxkrnl.exe), Ordinal 0x012E (302) = RtlInitializeCriticalSection
+  3. **THE PROBLEM**:
+     - Import table patching ONLY patches the **thunk** (the pointer in the import table)
+     - Import table patching does NOT patch the **import stub** (the actual code at 0x828AA07C)
+     - Recompiled code calls `sub_82812C00` which jumps to `0x828AA07C` (import stub)
+     - Import stub still contains original ordinal values, causing crash
 
-**ROOT CAUSE ANALYSIS**:
-  - The error message `[boot][error] Guest function 0x825979A8 not found.` is printed by the GAME CODE itself
-  - The function 0x825979A8 is the graphics callback (VD interrupt handler)
-  - The function IS registered in our host function table (line 8746 in video.cpp via `g_memory.InsertFunction`)
-  - The function IS hooked via `GUEST_FUNCTION_HOOK(sub_825979A8, MW05Shim_sub_825979A8)` (line 8689)
+**DIAGNOSTIC LOGGING ADDED** (2025-10-17):
+  1. **RtlInitializeCriticalSection** (imports.cpp:5763-5800):
+     - Added call counter, pointer validation, guest address logging
+     - Logs before and after each operation
+     - **RESULT**: Function is NEVER called - crash happens BEFORE reaching our implementation!
+  2. **Thread context allocation** (guest_thread.cpp:22-45):
+     - Logs before/after allocation with thread ID and host address
+     - **RESULT**: Allocation succeeds (265,872 bytes at host=000000010037DEE0)
+  3. **Heap diagnostics** (heap.cpp:62-83):
+     - Reports capacity, allocated space, peak usage, OOM count on failures
+     - **RESULT**: No heap failures, allocation working correctly
 
-**ASSEMBLY ANALYSIS** (from IDA disassembly at 0x825979A8):
+**CRASH ANALYSIS** (from out/build/x64-Clang-Debug/Mw05Recomp/out1.log):
   ```
-  .text:825979C0  lwz   r10, 0x2894(r31)    # Load structure pointer from context+0x2894
-  .text:825979CC  lwz   r30, 0x10(r10)      # Load function pointer from structure+0x10
-  .text:825979E8  cmplwi cr6, r30, 0        # Check if function pointer is NULL
-  .text:825979EC  beq   cr6, loc_82597A00   # Skip call if NULL
-  .text:825979F8  mtspr CTR, r30            # Load function pointer into CTR register
-  .text:825979FC  bctrl                     # Call through CTR (indirect call)
+  Line 1057: [MW05_DEBUG] [depth=1] ENTER sub_8215C838 r3=00000000 r4=A0001000
+  Line 1073: [MW05_DEBUG] [depth=1] EXIT  sub_8215C838 r3=82915A20  ← SUCCESS
+  Line 1082: [MW05_DEBUG] [depth=1] ENTER sub_8215C838 r3=00000000 r4=C0001000
+  Line 1083: [*] [crash] unhandled exception code=0xC0000005  ← CRASH
   ```
+  - **NO `[RtlInitCS]` messages** - function is never called!
+  - Crash happens INSIDE recompiled code BEFORE reaching our implementation
 
-**THE PROBLEM**:
-  - The game loads a function pointer from memory at `*(r31 + 0x2894) + 0x10`
-  - This function pointer is NULL or invalid (likely 0xBADF00D or 0x00000000)
-  - The game tries to call through this NULL pointer via `bctrl`
-  - The indirect call fails because the function pointer is not initialized
-  - This is NOT a function table lookup issue - it's a structure initialization issue
+**IMPORT LOOKUP TABLE STATUS**:
+  - ✅ `RtlInitializeCriticalSection` IS defined in imports.cpp (line 9990)
+  - ✅ `RtlInitializeCriticalSection` IS in auto-generated lookup table (import_lookup.cpp:147, 573)
+  - ✅ Host function pointer is available via `GetImportFunctionByName("__imp__RtlInitializeCriticalSection")`
+  - ❌ Import stub at 0x828AA07C is NOT patched to call host function
 
-**STRUCTURE LAYOUT** (at offset r31+0x2894):
-  ```c
-  struct GraphicsContext {
-      uint32_t field_00;        // +0x00
-      uint32_t field_04;        // +0x04
-      uint32_t field_08;        // +0x08
-      uint32_t field_0C;        // +0x0C
-      uint32_t callback_ptr;    // +0x10 - FUNCTION POINTER (currently NULL/invalid!)
-      uint32_t callback_arg;    // +0x14 - Argument to pass to callback
-      // ... more fields
-  };
-  ```
+**NEXT STEPS TO FIX**:
+  1. **Patch import stubs** in addition to thunks:
+     - Find all import stubs in guest memory (pattern: ordinal1, ordinal2, mtspr CTR, bctr)
+     - For each stub, look up the ordinal in the import table
+     - Replace the stub with a jump to the host function
+     - OR: Patch the stub to call the guest address we assigned in ProcessImportTable()
 
-**SOLUTION NEEDED**:
-  - Find where this structure is initialized (likely in VdInitializeEngines or VdSetGraphicsInterruptCallback)
-  - Ensure the function pointer at offset +0x10 is set to 0x825979A8 (the callback address)
-  - The structure is allocated and initialized by the game, but the callback pointer is not being set
-  - Check if VdSetGraphicsInterruptCallback is properly storing the callback address in the structure
-  - The callback is registered via VdRegisterGraphicsNotificationRoutine, but that might not be setting the structure field
-**NEXT STEPS FOR DEBUGGING**:
-  1. **Check VdSetGraphicsInterruptCallback implementation** (in `Mw05Recomp/kernel/imports.cpp`)
-     - Verify it's storing the callback address in the correct structure field
-     - The callback address should be stored at `context + 0x2894 + 0x10`
+  2. **Alternative approach** - Patch recompiled code:
+     - Find all `bl sub_82812C00` calls in recompiled code
+     - Replace with direct calls to our host implementation
+     - This is more invasive but might be necessary if import stubs can't be patched
 
-  2. **Check structure allocation** (search for allocations of size ~0x2900 bytes)
-     - Find where the graphics context structure is allocated
-     - Verify the structure is being initialized correctly
-     - Check if the callback pointer field is being set to 0x825979A8
-
-  3. **Add logging to VdSetGraphicsInterruptCallback**:
-     - Log when the callback is registered
-     - Log the structure address and callback address
-     - Verify the callback address is being written to memory correctly
-
-  4. **Check if the structure is being overwritten**:
-     - The callback might be set correctly initially but then overwritten
-     - Add memory watch/logging to detect when the field changes
-
-  5. **Alternative approach - Patch the recompiled code**:
-     - If the structure initialization is broken, patch the recompiled function
-     - Force r30 to be 0x825979A8 before the `bctrl` instruction
-     - This is a workaround, not a proper fix
+  3. **Investigate why first call succeeds**:
+     - First call with A0001000 succeeds - why?
+     - Maybe the first call doesn't actually reach the import stub?
+     - Check if there's a different code path for the first call
 
 **HEAP LAYOUT** (EXACT COPY from UnleashedRecomp):
   - User heap: 0x00020000-0x7FEA0000 (128 KB-2046 MB) = 2046.50 MB

@@ -1339,6 +1339,11 @@ int main(int argc, char *argv[])
     g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
     fprintf(stderr, "[MAIN] after_sub_8262DE60_install\n"); fflush(stderr);
 
+    // Graphics callback function is registered via weak alias in ppc_func_mapping.cpp
+    // The weak alias sub_825979A8 should resolve to __imp__sub_825979A8 at link time
+    // If we see errors about "Guest function 0x825979A8 not found", it means the weak alias failed
+    // In that case, we would need to manually register it here, but for now let's rely on the weak alias
+
     fprintf(stderr, "[MAIN] before_init_trace_hooks\n"); fflush(stderr);
     // NOTE: Init trace hooks are registered via GUEST_FUNCTION_HOOK macros in mw05_init_trace.cpp
     // They wrap key initialization functions to trace why threads aren't being created

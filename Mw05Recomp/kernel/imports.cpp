@@ -5762,13 +5762,39 @@ void RtlCompareMemoryUlong()
 
 uint32_t RtlInitializeCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
-    if (!cs)
+    static int call_count = 0;
+    call_count++;
+
+    fprintf(stderr, "[RtlInitCS] Call #%d: cs=%p\n", call_count, (void*)cs);
+    fflush(stderr);
+
+    if (!cs) {
+        fprintf(stderr, "[RtlInitCS] Call #%d: NULL pointer - returning STATUS_INVALID_PARAMETER\n", call_count);
+        fflush(stderr);
         return 0xC000000DL; // STATUS_INVALID_PARAMETER
+    }
+
+    // Check if pointer is within guest memory range
+    auto* p = reinterpret_cast<uint8_t*>(cs);
+    if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE)) {
+        fprintf(stderr, "[RtlInitCS] Call #%d: Invalid pointer (outside guest memory) - base=%p size=0x%llX\n",
+                call_count, (void*)g_memory.base, (unsigned long long)PPC_MEMORY_SIZE);
+        fflush(stderr);
+        return 0xC000000DL; // STATUS_INVALID_PARAMETER
+    }
+
+    // Calculate guest address for logging
+    uint32_t guest_addr = static_cast<uint32_t>(p - g_memory.base);
+    fprintf(stderr, "[RtlInitCS] Call #%d: guest_addr=0x%08X host=%p\n", call_count, guest_addr, (void*)cs);
+    fflush(stderr);
 
     cs->Header.Absolute = 0;
     cs->LockCount = -1;
     cs->RecursionCount = 0;
     cs->OwningThread = 0;
+
+    fprintf(stderr, "[RtlInitCS] Call #%d: SUCCESS\n", call_count);
+    fflush(stderr);
 
     return 0; // STATUS_SUCCESS
 }
@@ -6167,57 +6193,21 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
 extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
 
 void Mw05ForceVdInitOnce() {
-    // Log to FILE to ensure it's captured even if stderr is not set up yet
-    FILE* log = fopen("vd_init_debug.log", "a");
-    if (log) {
-        fprintf(log, "[Mw05ForceVdInitOnce] CALLED\n");
-        fflush(log);
-    }
-
-    fprintf(stderr, "[heap] Mw05ForceVdInitOnce CALLED\n");
-    fflush(stderr);
-
     if (!Mw05ForceVdInitEnabled()) {
-        if (log) {
-            fprintf(log, "[Mw05ForceVdInitOnce] DISABLED by env var\n");
-            fflush(log);
-            fclose(log);
-        }
-        fprintf(stderr, "[heap] Mw05ForceVdInitOnce DISABLED by env var\n");
-        fflush(stderr);
         return;
     }
 
     bool expected = false;
     if (!g_forceVdInitDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        if (log) {
-            fprintf(log, "[Mw05ForceVdInitOnce] ALREADY DONE\n");
-            fflush(log);
-            fclose(log);
-        }
-        fprintf(stderr, "[heap] Mw05ForceVdInitOnce ALREADY DONE\n");
-        fflush(stderr);
         return;
     }
 
-    if (log) {
-        fprintf(log, "[Mw05ForceVdInitOnce] STARTING initialization\n");
-        fflush(log);
-    }
-    fprintf(stderr, "[heap] Mw05ForceVdInitOnce STARTING initialization\n");
-    fflush(stderr);
-
-    KernelTraceHostOp("HOST.ForceVD.init.begin");
-
-    // Ensure VD event is registered if provided via env (idempotent)
     Mw05MaybeForceRegisterVdEventFromEnv();
 
-    // Ensure ring & write-back exist regardless of MW05_AUTO_VIDEO
     if (g_RbLen.load(std::memory_order_relaxed) == 0 ||
         g_RbWriteBackPtr.load(std::memory_order_relaxed) == 0)
     {
-        // Allocate a small ring and a write-back slot
-        const uint32_t len_log2 = 16; // 64 KiB
+        const uint32_t len_log2 = 16;
         void* ring_host = g_userHeap.Alloc(1u << len_log2);
         if (ring_host)
         {
@@ -6226,115 +6216,23 @@ void Mw05ForceVdInitOnce() {
             if (wb_host)
             {
                 const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
-                KernelTraceHostOpF("HOST.ForceVD.ensure_ring ring=%08X len_log2=%u wb=%08X", ring_guest, len_log2, wb_guest);
-
-                // CRITICAL DEBUG: Check physical heap BEFORE each VD function
-                fprintf(stderr, "[heap] BEFORE VdInitializeRingBuffer: checking physical heap...\n");
-                fflush(stderr);
-                const auto diag1 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
-                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag1.capacity, g_userHeap.physicalSize);
-                fflush(stderr);
-
                 VdInitializeRingBuffer(ring_guest, len_log2);
-
-                fprintf(stderr, "[heap] AFTER VdInitializeRingBuffer: checking physical heap...\n");
-                fflush(stderr);
-                const auto diag2 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
-                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag2.capacity, g_userHeap.physicalSize);
-                fflush(stderr);
-                if (diag2.capacity != g_userHeap.physicalSize) {
-                    fprintf(stderr, "[heap] ERROR: VdInitializeRingBuffer CORRUPTED physical heap!\n");
-                    fflush(stderr);
-                    abort();
-                }
-
                 VdEnableRingBufferRPtrWriteBack(wb_guest);
-
-                fprintf(stderr, "[heap] AFTER VdEnableRingBufferRPtrWriteBack: checking physical heap...\n");
-                fflush(stderr);
-                const auto diag3 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
-                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag3.capacity, g_userHeap.physicalSize);
-                fflush(stderr);
-                if (diag3.capacity != g_userHeap.physicalSize) {
-                    fprintf(stderr, "[heap] ERROR: VdEnableRingBufferRPtrWriteBack CORRUPTED physical heap!\n");
-                    fflush(stderr);
-                    abort();
-                }
-
                 VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
-
-                fprintf(stderr, "[heap] AFTER VdSetSystemCommandBufferGpuIdentifierAddress: checking physical heap...\n");
-                fflush(stderr);
-                const auto diag4 = o1heapGetDiagnostics(g_userHeap.physicalHeap);
-                fprintf(stderr, "[heap] Physical heap capacity=0x%zX (expected 0x%zX)\n",
-                        diag4.capacity, g_userHeap.physicalSize);
-                fflush(stderr);
-                if (diag4.capacity != g_userHeap.physicalSize) {
-                    fprintf(stderr, "[heap] ERROR: VdSetSystemCommandBufferGpuIdentifierAddress CORRUPTED physical heap!\n");
-                    fflush(stderr);
-                    abort();
-                }
-                // Optionally try to kick MW05's PM4 builder once we have ring/sysid
-                uint32_t seed = Mw05Trace_LastSchedR3();
-                if (!(seed >= 0x1000u)) seed = 0x00060E30u;
-                if (seed >= 0x1000u) {
-                    KernelTraceHostOpF("HOST.ForceVD.pm4_kick r3=%08X", seed);
-                    Mw05TryBuilderKickNoForward(seed);
-                    // Also forward-call the guest PM4 builder once to ensure TYPE3 emission
-                    {
-                        PPCContext ctx{};
-                        if (auto* cur = GetPPCContext()) ctx = *cur;
-                        ctx.r3.u32 = seed;
-                        if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40; // typical arg observed
-                        uint8_t* base = g_memory.base;
-                        KernelTraceHostOpF("HOST.ForceVD.pm4_forward r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
-                        MW05Shim_sub_825972B0(ctx, base);
-                    }
-                    // One-time ring scan to surface any pre-existing TYPE3 packets
-                    KernelTraceHostOpF("HOST.PM4.ScanLinear.Ring base=%08X bytes=%u", ring_guest, 1u << len_log2);
-                    PM4_ScanLinear(ring_guest, 1u << len_log2);
-
-                }
-
             }
         }
     }
 
-    // Then bring engines up explicitly.
     Mw05ApplyVdPokesOnce();
-    VdInitializeEngines(0, 0, 0, 0, 0);  // Call with all zeros to trigger callback injection
-
-    // Make sure the system command buffer is allocated (idempotent).
+    VdInitializeEngines(0, 0, 0, 0, 0);
     VdGetSystemCommandBuffer(nullptr, nullptr);
-
-    // One-time tick notification if ISR already registered
     VdCallGraphicsNotificationRoutines(0u);
-
-    // Start vblank pump to keep things flowing even if the title idles early.
     Mw05StartVblankPumpOnce();
+}
+
 // fwd decls for locally-defined VD bridge helpers used below
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
-
-
-    // DISABLED: Forced callback registration causes crashes (see ITERATION_18_REGISTRATION_CRASH.md)
-    // The game doesn't naturally register a callback at this stage.
-    // Forcing it causes the game to enter uninitialized code paths and crash.
-    // Let the game register callbacks naturally when it's ready.
-    // Mw05ForceRegisterGfxNotifyIfRequested();
-
-    KernelTraceHostOp("HOST.ForceVD.init.done");
-
-    if (log) {
-        fprintf(log, "[Mw05ForceVdInitOnce] COMPLETED\n");
-        fflush(log);
-        fclose(log);
-    }
-
-}
 
 
 // Optional: force-register a graphics notify/ISR callback from env (for bring-up)

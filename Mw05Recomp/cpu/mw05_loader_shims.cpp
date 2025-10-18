@@ -113,10 +113,12 @@ namespace {
     }
 
     inline void ProbeForPath(const char* origin, uint32_t ea) {
-        if (!GuestRangeValid(ea, 4)) return;
+        if (!GuestRangeValid(ea, 0x200)) return; // Check full range we'll be reading
         if (auto* p = static_cast<const uint8_t*>(g_memory.Translate(ea))) {
             // Inspect a larger window of potential pointers and inline strings.
             for (int off = 0; off < 0x200; off += 4) {
+                // Additional safety check for each read
+                if (!GuestRangeValid(ea + off, 4)) break;
                 uint32_t v = 0; std::memcpy(&v, p + off, 4);
 #if defined(_MSC_VER)
                 const uint32_t be = _byteswap_ulong(v);

@@ -14,6 +14,7 @@ struct Heap
     O1HeapInstance* physicalHeap;
     void* physicalBase{};
     size_t physicalSize{};
+    size_t physicalAllocated{};  // Track allocated bytes for bump allocator
 
     void Init();
 

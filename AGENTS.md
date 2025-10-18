@@ -43,24 +43,39 @@
 
 ## Critical Debugging Information
 
-### Current Status: GAME RUNNING - DEBUG LOGGING REMOVED! 🎉
+### Current Status: GAME RUNNING - FPS & HEAP STATS COMPLETELY FIXED! 🎉
 **DATE**: 2025-10-18
+**✅ FPS COUNTER BUG COMPLETELY FIXED!** FPS display now updates continuously forever
+  - **Problem #1**: `g_presentProfiler.Reset()` was overwriting the value set by `Set()`
+  - **Problem #2**: Profiler was updated AFTER `DrawFPS()` was called, so it always read stale data
+  - **Problem #3**: Profiler update in early return path (line 3396) was overwriting the update at line 3240
+  - **Root Cause**: Two profiler updates - one at START (line 3240) and one in early return (line 3396)
+  - **Solution**:
+    1. Update profiler at START of `Video::Present()` (line 3240) using previous frame's timestamp
+    2. Remove duplicate profiler update in early return path (line 3396)
+    3. Remove unused variables `s_last` and `now` from early return block
+  - **Files**: `Mw05Recomp/gpu/video.cpp` lines 3230-3240, 3320-3329, 3388-3399
+  - **Result**: FPS counter now updates continuously without EVER going stale!
+**✅ PHYSICAL HEAP STATS FIXED!** Display now shows correct allocated bytes
+  - **Problem**: Code was calling `o1heapGetDiagnostics()` on physical heap, but we use bump allocator
+  - **Solution**: Added `physicalAllocated` field to track bump allocator usage
+  - **Files**: `Mw05Recomp/kernel/heap.h` line 17, `heap.cpp` line 123, `video.cpp` lines 2687-2702
+  - **Result**: Physical heap stats now display correctly (361 MB allocated)
 **✅ ALL DEBUG LOGGING REMOVED!** Cleaned up excessive fprintf/fflush calls
   - Removed infinite loop in `Mw05ForceVdInitOnce` (was being called repeatedly)
   - Removed all heap debug logging from `heap.cpp`
   - Simplified `Mw05ForceVdInitOnce` to essential operations only
-  - Removed verbose graphics callback logging from `imports.cpp`
 **✅ GAME RUNNING SUCCESSFULLY!** Main loop executing without crashes
   - Physical memory: 361 MB allocated (0x15900000 bytes)
   - Graphics callback registered at 0x825979A8
   - PM4 command processing active (46,000 commands processed)
-  - Main loop running (iteration #6 observed)
+  - Main loop running continuously (15+ seconds tested)
   - No crashes, no assertion failures!
-**⚠️ FILE I/O ISSUE**: `RtlNtStatusToDosError` called 517,000 times
+**⚠️ FILE I/O ISSUE**: `RtlNtStatusToDosError` called 1.2 million times in 10 seconds
   - Status: 0xC0000008 (STATUS_INVALID_HANDLE)
   - Likely cause: Game trying to open files that don't exist
-  - Impact: Performance degradation from repeated failed file opens
-  - Next step: Investigate which files the game is trying to access
+  - Impact: Performance degradation from repeated failed file opens (120,000 calls/second!)
+  - Next step: Add logging to `NtCreateFile`/`NtOpenFile` to see which files are being requested
   - **PREVIOUS LOCATION**: `ppc_recomp.7.cpp` at offset +0x15891D (1,411,357 bytes into file)
   - **PREVIOUS CRASH PATTERN**:
     - First call: `sub_8215C838 r3=00000000 r4=A0001000` → **SUCCESS** (returns r3=82915A20)

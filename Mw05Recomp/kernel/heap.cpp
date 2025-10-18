@@ -118,14 +118,15 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
         return nullptr;
     }
 
-    // Update next available address
+    // Update next available address and track allocated bytes
     nextPhysicalAddr = endAddr;
+    physicalAllocated = nextPhysicalAddr - (size_t)physicalBase;
 
     fprintf(stderr, "[AllocPhysical] size=%zu align=%zu aligned=%p next=%p\n",
             size, alignment, (void*)aligned, (void*)nextPhysicalAddr);
     fprintf(stderr, "[AllocPhysical] Physical heap usage: %zu / %zu bytes (%.2f%%)\n",
-            nextPhysicalAddr - (size_t)physicalBase, physicalSize,
-            100.0 * (nextPhysicalAddr - (size_t)physicalBase) / physicalSize);
+            physicalAllocated, physicalSize,
+            100.0 * physicalAllocated / physicalSize);
     fflush(stderr);
 
     return (void*)aligned;

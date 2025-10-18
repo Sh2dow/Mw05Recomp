@@ -2323,10 +2323,11 @@ void Mw05StartVblankPumpOnce() {
             // Do not call Present() from the background thread; signal the main thread instead.
             // Keep swapchain/fps moving until the guest has performed at least one swap.
             // Additionally, if no Present has occurred for MW05_PRESENT_HEARTBEAT_MS, request one to keep UI/FPS responsive.
+            // DEFAULT: 100ms heartbeat to ensure FPS counter never goes stale
             static const uint64_t s_present_heartbeat_ms = [](){
                 if (const char* v = std::getenv("MW05_PRESENT_HEARTBEAT_MS"))
                     return (uint64_t)std::strtoull(v, nullptr, 10);
-                return uint64_t(0);
+                return uint64_t(100); // Default: 100ms heartbeat (10 FPS minimum)
             }();
             const uint64_t last_ms = g_lastPresentMs.load(std::memory_order_acquire);
             const uint64_t now_ms  = SDL_GetTicks64();

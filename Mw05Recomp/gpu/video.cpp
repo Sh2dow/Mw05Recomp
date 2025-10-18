@@ -2684,20 +2684,21 @@ static void DrawProfiler()
 
         ImGui::NewLine();
 
-        if (g_userHeap.heap != nullptr && g_userHeap.physicalHeap != nullptr)
+        if (g_userHeap.heap != nullptr)
         {
-            O1HeapDiagnostics diagnostics, physicalDiagnostics;
+            O1HeapDiagnostics diagnostics;
+            size_t physicalAllocated;
             {
                 std::lock_guard lock(g_userHeap.mutex);
                 diagnostics = o1heapGetDiagnostics(g_userHeap.heap);
             }
             {
                 std::lock_guard lock(g_userHeap.physicalMutex);
-                physicalDiagnostics = o1heapGetDiagnostics(g_userHeap.physicalHeap);
+                physicalAllocated = g_userHeap.physicalAllocated;
             }
 
             ImGui::Text("Heap Allocated: %d MB", int32_t(diagnostics.allocated / (1024 * 1024)));
-            ImGui::Text("Physical Heap Allocated: %d MB", int32_t(physicalDiagnostics.allocated / (1024 * 1024)));
+            ImGui::Text("Physical Heap Allocated: %d MB", int32_t(physicalAllocated / (1024 * 1024)));
         }
 
         ImGui::Text("GPU Waits: %d", int32_t(g_waitForGPUCount));
@@ -3228,9 +3229,15 @@ bool Video::ConsumePresentRequest()
 
 void Video::Present()
 {
-    // CRITICAL FIX: Measure present time from the start of the function
-    // This ensures the FPS counter continues to update after the renderer becomes ready
+    // CRITICAL FIX: Measure frame time at START of function and update profiler
+    // This ensures DrawFPS() always sees the current frame time, even after renderer initialization
+    static auto s_prev_present_start = std::chrono::steady_clock::now();
     auto s_present_start = std::chrono::steady_clock::now();
+    auto frame_time_ms = std::chrono::duration<double, std::milli>(s_present_start - s_prev_present_start).count();
+    s_prev_present_start = s_present_start;
+
+    // Update profiler immediately so DrawFPS() sees the current frame time
+    g_presentProfiler.Set(frame_time_ms);
 
     // Always write a host trace entry when Present is entered to diagnose bring-up
     KernelTraceHostOp("HOST.VideoPresent.enter2");
@@ -3239,7 +3246,9 @@ void Video::Present()
     static uint64_t s_presentCount = 0;
     ++s_presentCount;
     if (s_presentCount <= 10 || (s_presentCount % 60) == 0) {
-        fprintf(stderr, "[PRESENT] Call #%llu\n", (unsigned long long)s_presentCount);
+        fprintf(stderr, "[PRESENT] Call #%llu ready=%d fps=%.1f\n",
+                (unsigned long long)s_presentCount, g_rendererReady ? 1 : 0,
+                frame_time_ms > 0 ? 1000.0 / frame_time_ms : 0.0);
         fflush(stderr);
     }
 
@@ -3317,9 +3326,6 @@ void Video::Present()
             KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, (void*)g_device.get(), (void*)g_queue.get());
             s_loggedSkip = true;
         }
-        // Tick present profiler so FPS overlay won't appear stale while renderer initializes
-        static auto s_last = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
     // Optionally bridge System Command Buffer -> Ring buffer on present if no draws seen yet
     {
         static const bool s_sysbuf_to_ring = [](){ if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
@@ -3384,8 +3390,8 @@ void Video::Present()
 
     }
 
-        g_presentProfiler.Set(std::chrono::duration<double, std::milli>(now - s_last).count());
-        s_last = now;
+        // NOTE: Profiler is already updated at the START of Present() (line 3240)
+        // No need to update it again here - that was causing the FPS to go stale
         return;
     }
     // Mark that at least one Present occurred so the boot banner can clear
@@ -3751,14 +3757,6 @@ void Video::Present()
 
         s_next += 1000000000ns / Config::FPS;
     }
-
-    // CRITICAL FIX: Update present profiler with actual frame time before resetting
-    // This ensures the FPS counter continues to update after the renderer becomes ready
-    // The profiler value is read by DrawFPS() to calculate the FPS display
-    auto s_present_end = std::chrono::steady_clock::now();
-    g_presentProfiler.Set(std::chrono::duration<double, std::milli>(s_present_end - s_present_start).count());
-
-    g_presentProfiler.Reset();
 }
 
 void Video::StartPipelinePrecompilation()

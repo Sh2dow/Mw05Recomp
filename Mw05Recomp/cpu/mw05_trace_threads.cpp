@@ -278,6 +278,103 @@ static std::atomic<bool> g_forcedGraphicsInit{false};
 extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags);
 extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount);
 
+// CRITICAL FIX: Force creation of missing worker threads
+// Thread #1 (entry=0x828508A8) is supposed to create 6 additional worker threads, but it's stuck in a busy loop
+// This function manually creates the missing threads to unblock the game
+static void Mw05ForceCreateMissingWorkerThreads() {
+    static std::atomic<bool> s_created{false};
+    if (s_created.exchange(true)) return;  // Only create once
+
+    fprintf(stderr, "[FORCE_WORKERS] Creating missing worker threads...\n");
+    fflush(stderr);
+
+    // From Xenia log, Thread #1 creates these threads:
+    // tid=9-12: entry=0x828508A8 (4 worker threads)
+    // tid=13: entry=0x825AA970 (special thread)
+    // tid=14: entry=0x828508A8 (1 more worker thread)
+
+    // Allocate contexts for the threads (similar to how Thread #1 and #2 were created)
+    // Each context is a simple structure with a few fields
+
+    // CRITICAL FIX: Initialize worker thread contexts with callback pointers
+    // The first worker thread (Thread #1) has a properly initialized context at 0x001616D0:
+    //   +0x00: 0x00000000
+    //   +0x04: 0xFFFFFFFF
+    //   +0x08: 0x00000000
+    //   +0x54 (84): 0x8261A558  <-- CALLBACK FUNCTION POINTER!
+    //   +0x58 (88): 0x82A2B318  <-- CALLBACK PARAMETER!
+    // We need to initialize the manually-created worker thread contexts with the same values.
+
+    extern Memory g_memory;
+    extern Heap g_userHeap;
+
+    for (int i = 0; i < 5; ++i) {  // Create 5 worker threads with entry=0x828508A8
+        be<uint32_t> thread_handle = 0;
+        be<uint32_t> thread_id = 0;
+        uint32_t stack_size = 0x40000;  // 256KB stack (same as other game threads)
+
+        // Allocate a context structure on the heap (256 bytes to be safe)
+        void* ctx_host = g_userHeap.Alloc(256);
+        if (!ctx_host) {
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to allocate context for worker thread #%d\n", i + 3);
+            fflush(stderr);
+            continue;
+        }
+
+        // Zero out the context
+        std::memset(ctx_host, 0, 256);
+
+        // Map to guest address
+        uint32_t ctx_addr = g_memory.MapVirtual(ctx_host);
+
+        // Initialize the context structure (in big-endian format)
+        be<uint32_t>* ctx_u32 = reinterpret_cast<be<uint32_t>*>(ctx_host);
+        ctx_u32[0] = be<uint32_t>(0x00000000);  // +0x00
+        ctx_u32[1] = be<uint32_t>(0xFFFFFFFF);  // +0x04
+        ctx_u32[2] = be<uint32_t>(0x00000000);  // +0x08
+        ctx_u32[84/4] = be<uint32_t>(0x8261A558);  // +0x54 (84) - callback function pointer
+        ctx_u32[88/4] = be<uint32_t>(0x82A2B318);  // +0x58 (88) - callback parameter
+
+        fprintf(stderr, "[FORCE_WORKERS] Creating worker thread #%d: entry=0x828508A8 ctx=0x%08X\n", i + 3, ctx_addr);
+        fprintf(stderr, "[FORCE_WORKERS]   Context initialized: +0x54=0x8261A558, +0x58=0x82A2B318\n");
+        fflush(stderr);
+
+        uint32_t result = ExCreateThread(&thread_handle, stack_size, &thread_id, 0, 0x828508A8, ctx_addr, 0x00000000);  // NOT SUSPENDED
+
+        if (result == 0) {  // STATUS_SUCCESS
+            fprintf(stderr, "[FORCE_WORKERS] Worker thread #%d created: handle=0x%08X tid=0x%08X\n", i + 3, (uint32_t)thread_handle, (uint32_t)thread_id);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to create worker thread #%d: status=0x%08X\n", i + 3, result);
+            fflush(stderr);
+        }
+    }
+
+    // Create the special thread (entry=0x825AA970)
+    {
+        be<uint32_t> thread_handle = 0;
+        be<uint32_t> thread_id = 0;
+        uint32_t stack_size = 0x40000;
+        uint32_t ctx_addr = 0x40009D2C;  // From Xenia log
+
+        fprintf(stderr, "[FORCE_WORKERS] Creating special thread: entry=0x825AA970 ctx=0x%08X\n", ctx_addr);
+        fflush(stderr);
+
+        uint32_t result = ExCreateThread(&thread_handle, stack_size, &thread_id, 0, 0x825AA970, ctx_addr, 0x00000000);  // NOT SUSPENDED
+
+        if (result == 0) {
+            fprintf(stderr, "[FORCE_WORKERS] Special thread created: handle=0x%08X tid=0x%08X\n", (uint32_t)thread_handle, (uint32_t)thread_id);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to create special thread: status=0x%08X\n", result);
+            fflush(stderr);
+        }
+    }
+
+    fprintf(stderr, "[FORCE_WORKERS] All missing worker threads created!\n");
+    fflush(stderr);
+}
+
 
 PPC_FUNC_IMPL(__imp__sub_828508A8);
 PPC_FUNC(sub_828508A8) 
@@ -418,6 +515,20 @@ PPC_FUNC(sub_828508A8)
     static std::atomic<int> s_call_count{0};
     int call_num = ++s_call_count;
 
+    // CRITICAL FIX: Force creation of missing worker threads after a short delay
+    // Thread #1 is supposed to create these threads, but it's stuck in a busy loop
+    // Create them manually to unblock the game
+    std::thread force_workers([]() {
+        // Wait 2 seconds to let Thread #1 create Thread #2 first
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        fprintf(stderr, "[FORCE_WORKERS] Triggering forced worker thread creation...\n");
+        fflush(stderr);
+
+        Mw05ForceCreateMissingWorkerThreads();
+    });
+    force_workers.detach();
+
     // Start a monitoring thread to detect if this thread gets stuck
     std::thread monitor([call_num]() {
         for (int i = 0; i < 60; ++i) {  // Monitor for 60 seconds
@@ -443,7 +554,8 @@ PPC_FUNC(sub_828508A8)
 PPC_FUNC_IMPL(__imp__sub_82812ED0);
 PPC_FUNC(sub_82812ED0)
 {
-    fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called! r3=0x%08X\n", ctx.r3.u32);
+    DWORD thread2_tid = GetCurrentThreadId();
+    fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called! r3=0x%08X tid=0x%08X\n", ctx.r3.u32, thread2_tid);
     fflush(stderr);
 
     // Check what's at the context address
@@ -771,21 +883,8 @@ PPC_FUNC(sub_8262D998)
     }
 }
 
-PPC_FUNC_IMPL(__imp__sub_823AF590);
-PPC_FUNC(sub_823AF590) 
-{
-    fprintf(stderr, "[sub_823AF590] ENTERED - Game initialization function\n");
-    fprintf(stderr, "[sub_823AF590] About to call __imp__sub_823AF590\n");
-    fflush(stderr);
-
-    SetPPCContext(ctx);
-
-    // Call the original function - this will block until initialization completes
-    __imp__sub_823AF590(ctx, base);
-
-    fprintf(stderr, "[sub_823AF590] RETURNED - Initialization complete!\n");
-    fflush(stderr);
-}
+// sub_823AF590 wrapper is defined below (line 854+)
+// Removed duplicate definition here
 
 PPC_FUNC_IMPL(__imp__sub_8215D598);
 PPC_FUNC(sub_8215D598) 
@@ -845,28 +944,15 @@ PPC_FUNC(sub_82812F10)
 PPC_FUNC_IMPL(__imp__sub_82630378);
 PPC_FUNC(sub_82630378)
 {
-    static int s_callCount = 0;
-    int callNum = ++s_callCount;
-
-    if (callNum <= 20) {  // Log first 20 calls
-        // Read the actual value from memory at 0x828F1F90
-        uint32_t mem_value_le = *(uint32_t*)(base + 0x828F1F90);
-        uint32_t mem_value_be = __builtin_bswap32(mem_value_le);
-
-        fprintf(stderr, "[WAIT-WRAPPER] sub_82630378 call #%d: r3(handle)=0x%08X r4(timeout)=0x%08X mem[0x828F1F90]=0x%08X(BE)\n",
-                callNum, ctx.r3.u32, ctx.r4.u32, mem_value_be);
-        fflush(stderr);
-    }
-
+    // Just call the original implementation - logging removed for performance
     SetPPCContext(ctx);
     __imp__sub_82630378(ctx, base);
-
-    if (callNum <= 20) {
-        fprintf(stderr, "[WAIT-WRAPPER] sub_82630378 call #%d returned: r3(status)=0x%08X\n",
-                callNum, ctx.r3.u32);
-        fflush(stderr);
-    }
 }
+
+// NOTE: sub_8245FBD0 wrapper is already defined above (lines 805-812)
+
+// NOTE: sub_826346A8 wrapper is already defined in mw05_boot_shims.cpp
+// We'll add memory tracking there instead of creating a duplicate wrapper here
 
 // Wrapper for sub_82813598 to fix qword_828F1F98 initialization
 // This function manually sets qword_828F1F98 before/after calling the original function

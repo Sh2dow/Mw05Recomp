@@ -4502,26 +4502,15 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
     int count = s_waitCount.fetch_add(1);
 
     // CRITICAL DEBUG: Log Thread #2 (entry=0x82812ED0) wait calls
-    static std::atomic<int> s_thread2WaitCount{0};
+    // Log ALL calls to NtWaitForSingleObjectEx to debug Thread #2 issue
+    static std::atomic<int> s_allWaitCount{0};
+    int waitNum = s_allWaitCount.fetch_add(1);
     DWORD currentTid = GetCurrentThreadId();
-    static DWORD s_thread2Tid = 0;
-    static uint32_t s_thread2Handle = 0;
 
-    // Detect Thread #2 by checking if it's calling from worker function (handle stored in dword_828F1F90)
-    // The handle value is dynamic, so we detect it by the calling pattern
-    if (s_thread2Handle == 0 || Handle == s_thread2Handle) {
-        if (s_thread2Handle == 0) {
-            s_thread2Handle = Handle;
-            s_thread2Tid = currentTid;
-            fprintf(stderr, "[THREAD2_WAIT] Thread #2 detected: tid=0x%08X handle=0x%08X\n", currentTid, Handle);
-            fflush(stderr);
-        }
-        int t2count = s_thread2WaitCount.fetch_add(1);
-        if (t2count < 20) {  // Log first 20 calls
-            fprintf(stderr, "[THREAD2_WAIT] Call #%d: tid=0x%08X handle=0x%08X WaitMode=%u Alertable=%u\n",
-                    t2count + 1, currentTid, Handle, WaitMode, Alertable);
-            fflush(stderr);
-        }
+    if (waitNum < 50) {  // Log first 50 calls from ALL threads
+        fprintf(stderr, "[ALL_WAIT] Call #%d: tid=0x%08X handle=0x%08X WaitMode=%u Alertable=%u\n",
+                waitNum + 1, currentTid, Handle, WaitMode, Alertable);
+        fflush(stderr);
     }
 
     if (count < 10) {  // Log first 10 waits
@@ -4603,20 +4592,7 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             return STATUS_INVALID_HANDLE;
         }
 
-        // CRITICAL DEBUG: Log Thread #2 wait details
-        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
-            fprintf(stderr, "[THREAD2_WAIT] Kernel object found for handle 0x%08X\n", Handle);
-            if (auto* ev = dynamic_cast<Event*>(kernel)) {
-                fprintf(stderr, "[THREAD2_WAIT] Object is Event: manualReset=%d guestHeaderEA=0x%08X\n",
-                        ev->manualReset, ev->guestHeaderEA);
-            } else if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
-                fprintf(stderr, "[THREAD2_WAIT] Object is Semaphore: guestHeaderEA=0x%08X\n",
-                        sem->guestHeaderEA);
-            } else {
-                fprintf(stderr, "[THREAD2_WAIT] Object is unknown type\n");
-            }
-            fflush(stderr);
-        }
+
 
         if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
             if (!(tlw[0]=='0' && tlw[1]==0)) {
@@ -4654,24 +4630,7 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             }
         }
 
-        // CRITICAL DEBUG: Log Thread #2 wait call
-        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
-            fprintf(stderr, "[THREAD2_WAIT] About to call kernel->Wait(timeout=%u ms)\n", timeout);
-            fflush(stderr);
-        }
-
         NTSTATUS result = kernel->Wait(timeout);
-
-        // CRITICAL DEBUG: Log Thread #2 wait result
-        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
-            fprintf(stderr, "[THREAD2_WAIT] kernel->Wait() returned: 0x%08X", result);
-            if (result == STATUS_SUCCESS) fprintf(stderr, " (SUCCESS)");
-            else if (result == STATUS_TIMEOUT) fprintf(stderr, " (TIMEOUT)");
-            else if (result == STATUS_ALERTED) fprintf(stderr, " (ALERTED)");
-            else if (result == STATUS_USER_APC) fprintf(stderr, " (USER_APC)");
-            fprintf(stderr, "\n");
-            fflush(stderr);
-        }
 
         return result;
     }
@@ -6503,6 +6462,67 @@ static uint32_t Mw05EnsureGraphicsContextAllocated() {
 
     fprintf(stderr, "[GFX-CTX] Initialized context members: +0x3CEC, +0x3CF0, +0x3CF4, +0x3CF8, +0x3CFC\n");
     KernelTraceHostOpF("HOST.GfxContext.members_initialized count=5");
+
+    // CRITICAL FIX: Initialize VdGlobalDevice to point to a pointer to the graphics context
+    // The game's allocator wrapper (sub_825960B8) reads a fallback allocator pointer from
+    // VdGlobalDevice at offset 0x3D0C when the primary allocator (a1[4]) is NULL.
+    // The structure is: VdGlobalDevice → pointer → structure with fallback at +0x3D0C
+    // We need to create an extra level of indirection.
+
+    // Allocate a pointer to the graphics context
+    void* vd_ptr_host = g_userHeap.Alloc(sizeof(uint32_t));
+    if (vd_ptr_host) {
+        const uint32_t vd_ptr_ea = g_memory.MapVirtual(vd_ptr_host);
+
+        // Store the graphics context address in the pointer (in big-endian format)
+        be<uint32_t>* vd_ptr = reinterpret_cast<be<uint32_t>*>(vd_ptr_host);
+        *vd_ptr = be<uint32_t>(ctx_ea);
+
+        // Set VdGlobalDevice to point to the pointer
+        VdGlobalDevice = be<uint32_t>(vd_ptr_ea);
+        VdGlobalXamDevice = be<uint32_t>(vd_ptr_ea);  // Same for XAM device
+
+        fprintf(stderr, "[GFX-CTX] Set VdGlobalDevice and VdGlobalXamDevice to 0x%08X (points to 0x%08X)\n", vd_ptr_ea, ctx_ea);
+        fflush(stderr);
+
+        // CRITICAL FIX: Initialize the static pointers at 0x101BE and 0x101BF
+        // These are used by sub_825960B8 when KeGetCurrentProcessType() returns 1 or 2
+        // 0x101BE = pointer to VdGlobalDevice (for process type != 2)
+        // 0x101BF = pointer to VdGlobalXamDevice (for process type == 2)
+        be<uint32_t>* ptr_101BE = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(0x101BE));
+        be<uint32_t>* ptr_101BF = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(0x101BF));
+        if (ptr_101BE && ptr_101BF) {
+            *ptr_101BE = be<uint32_t>(vd_ptr_ea);  // Point to VdGlobalDevice
+            *ptr_101BF = be<uint32_t>(vd_ptr_ea);  // Point to VdGlobalXamDevice (same for now)
+
+            fprintf(stderr, "[GFX-CTX] Initialized static pointers: 0x101BE=0x%08X, 0x101BF=0x%08X\n", vd_ptr_ea, vd_ptr_ea);
+            fflush(stderr);
+        }
+    } else {
+        fprintf(stderr, "[GFX-CTX] ERROR: Failed to allocate VdGlobalDevice pointer\n");
+        fflush(stderr);
+    }
+
+    // CRITICAL FIX: Initialize the fallback allocator pointer at offset 0x3D0C
+    // The game reads this pointer when the primary allocator is NULL
+    // We need to provide a valid allocator pointer here
+    // For now, we'll set it to point to a small heap-allocated buffer that can be used as a fallback
+    constexpr uint32_t FALLBACK_SIZE = 0x1080;  // 4224 bytes (size requested by sub_825960B8)
+    void* fallback_host = g_userHeap.Alloc(FALLBACK_SIZE);
+    if (fallback_host) {
+        std::memset(fallback_host, 0, FALLBACK_SIZE);
+        const uint32_t fallback_ea = g_memory.MapVirtual(fallback_host);
+
+        // Write the fallback pointer to offset 0x3D0C in the graphics context
+        be<uint32_t>* fallback_ptr = reinterpret_cast<be<uint32_t>*>(static_cast<uint8_t*>(ctx_host) + 0x3D0C);
+        *fallback_ptr = be<uint32_t>(fallback_ea);
+
+        fprintf(stderr, "[GFX-CTX] Set fallback allocator at offset 0x3D0C to 0x%08X\n", fallback_ea);
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[GFX-CTX] WARNING: Failed to allocate fallback buffer\n");
+        fflush(stderr);
+    }
 
     return ctx_ea;
 }

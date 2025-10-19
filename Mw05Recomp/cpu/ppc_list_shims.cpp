@@ -64,7 +64,11 @@ static inline bool ListIsEmpty(uint8_t* base, uint32_t headEA) {
 void sub_8215FEF0(PPCContext& ctx, uint8_t* base)
 {
     KernelTraceHostOp("HOST.ListShim.Enter");
-    if (!Mw05ListShimsEnabled()) { __imp__sub_8215FEF0(ctx, base); return; }
+    if (!Mw05ListShimsEnabled()) 
+    { 
+        __imp__sub_8215FEF0(ctx, base); 
+        return; 
+    }
 
     const uint32_t head = ctx.r3.u32;
 

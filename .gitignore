@@ -412,3 +412,5 @@ FodyWeavers.xsd
 # Debug/trace folders
 traces/*
 IDA_dumps/*
+
+Last_AI_Response.txt

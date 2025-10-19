@@ -86,7 +86,8 @@ inline bool GuestCodeRangeContains(uint32_t ea) {
 }
 
 inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA) {
-    PPC_STORE_U32(blockEA + 0, 0);
+    // DO NOT clear offset +0 - this is the event handle that Thread #2 waits on!
+    // PPC_STORE_U32(blockEA + 0, 0);
     PPC_STORE_U32(blockEA + 4, 0);
     // DO NOT clear offset +8 and +12 - this is the "should continue running" qword flag!
     // PPC_STORE_U32(blockEA + 8, 0);
@@ -179,11 +180,10 @@ void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
 // sub_826346A8: wrapper around a NtWaitForSingleObjectEx loop
 
 PPC_FUNC_IMPL(__imp__sub_826346A8); // Actual wait function
-PPC_FUNC(sub_826346A8) 
+PPC_FUNC(sub_826346A8)
 {
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_826346A8");
-
     const uint32_t handleEA = ctx.r3.u32;
     const uint32_t blockEA = ctx.r29.u32;
     const uint32_t timeoutEA = ctx.r30.u32;
@@ -204,6 +204,7 @@ PPC_FUNC(sub_826346A8)
     KernelTraceHostOpF("HOST.sub_826346A8.loop_breaker_check fastBoot=%d breakLoop=%d lr=%08llX",
                        fastBootEnabled, breakLoopEnabled, ctx.lr);
 
+    // CRITICAL DEBUG: Check if we're about to modify memory at 0x828F1F90
     if(fastBootEnabled || breakLoopEnabled) {
         // Targeted break for the tight loop at lr=0x82813514
         // Caller is sub_828134E0 pump; it loops until [blockEA+8] becomes 0.
@@ -215,8 +216,28 @@ PPC_FUNC(sub_826346A8)
                 const uint64_t addr64 = static_cast<uint64_t>(blockEA) + 8ull;
                 if(addr64 + sizeof(uint64_t) <= kPpcMemLimit) {
                     const uint32_t addr = static_cast<uint32_t>(addr64);
+
+                    // CRITICAL DEBUG: Log what we're about to zero
+                    fprintf(stderr, "[FASTBOOT-DEBUG] About to zero [0x%08X] (blockEA=0x%08X, blockEA+8=0x%08X)\n",
+                            addr, blockEA, addr);
+                    fflush(stderr);
+
+                    // Check if this overlaps with 0x828F1F90
+                    if (addr <= 0x828F1F90 && (addr + 8) > 0x828F1F90) {
+                        fprintf(stderr, "[FASTBOOT-DEBUG] *** WARNING *** This write OVERLAPS with 0x828F1F90!\n");
+                        fprintf(stderr, "[FASTBOOT-DEBUG] Write range: [0x%08X - 0x%08X]\n", addr, addr + 7);
+                        fprintf(stderr, "[FASTBOOT-DEBUG] Target range: [0x828F1F90 - 0x828F1F93]\n");
+                        fflush(stderr);
+                    }
+
                     KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 blockEA=%08X addr=%08X", blockEA, addr);
                     *reinterpret_cast<uint64_t*>(base + addr) = 0ull;
+
+                    // CRITICAL DEBUG: Check if we just cleared 0x828F1F90
+                    uint32_t* check_ptr = reinterpret_cast<uint32_t*>(base + 0x828F1F90);
+                    uint32_t check_value = __builtin_bswap32(*check_ptr);
+                    fprintf(stderr, "[FASTBOOT-DEBUG] After zeroing, dword_828F1F90 = 0x%08X\n", check_value);
+                    fflush(stderr);
                 }
             } else {
                 KernelTraceHostOpF("HOST.FastBoot.BreakLoop.82813514 SKIP blockEA=00000000");
@@ -239,6 +260,7 @@ PPC_FUNC(sub_826346A8)
                 }
             }
             // Return success to break the caller's wait loop cleanly
+            // Fast boot hack applied
             ctx.r3.u64 = 0;
             return;
         }
@@ -320,6 +342,7 @@ PPC_FUNC(sub_826346A8)
                             KernelTraceHostOpF("HOST.sub_826346A8.synth_wake.invoke entry=%08X", w1);
                             entryFunc(ctx, base);
                             // Return success after calling the entry function
+                            // Synthetic wake event invoked
                             ctx.r3.u64 = 0;
                             return;
                         } else {
@@ -438,6 +461,19 @@ PPC_FUNC(sub_828134E0)
     } else {
         fprintf(stderr, "[WORKER-FUNC] qword_828F1F98 is NOT MAPPED!\n");
     }
+
+    // Check the actual value of dword_828F1F90 (event handle)
+    const uint32_t dword_addr = 0x828F1F90;
+    void* dword_ptr = g_memory.Translate(dword_addr);
+    if (dword_ptr) {
+        uint32_t* dword = (uint32_t*)dword_ptr;
+        uint32_t value_raw = *dword;
+        uint32_t value_swapped = __builtin_bswap32(value_raw);
+        fprintf(stderr, "[WORKER-FUNC] dword_828F1F90 (event handle) raw=0x%08X swapped=0x%08X\n", value_raw, value_swapped);
+        fprintf(stderr, "[WORKER-FUNC] This is what PPC_LOAD_U32(0x828F1F90) should return: 0x%08X\n", value_swapped);
+    } else {
+        fprintf(stderr, "[WORKER-FUNC] dword_828F1F90 is NOT MAPPED!\n");
+    }
     fflush(stderr);
 
     // Make ctx visible to the watched-store hook (so it can log lr)
@@ -486,3 +522,4 @@ PPC_FUNC(sub_828134E0)
 
 // NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
 // It saves/restores qword_828F1F98 to prevent corruption
+// NOTE: sub_82630378 wrapper is also in mw05_trace_threads.cpp - wait function wrapper

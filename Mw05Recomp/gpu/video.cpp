@@ -8654,6 +8654,7 @@ void RegisterMw05VideoManualHooks()
     g_memory.InsertFunction(0x825972B0, sub_825972B0); // PM4 builder (CRITICAL: seeds allocator/syscmd)
     g_memory.InsertFunction(0x82596E40, sub_82596E40); // Builder variant
     g_memory.InsertFunction(0x825968B0, sub_825968B0); // Builder variant
+    g_memory.InsertFunction(0x825960B8, sub_825960B8); // Allocator wrapper (checks a1[4] validity)
 
     // Additional PM4 builder and present-path helpers
     g_memory.InsertFunction(0x82597650, sub_82597650);

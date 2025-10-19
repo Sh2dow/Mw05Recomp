@@ -1257,6 +1257,15 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] RegisterMw05VideoManualHooks() completed\n");
     fflush(stderr);
 
+    // CRITICAL: Register file system hooks BEFORE any guest threads are created
+    // This ensures X* file functions are hooked before the game tries to call them
+    extern void RegisterFileSystemHooks();
+    fprintf(stderr, "[MAIN] Calling RegisterFileSystemHooks() EARLY\n");
+    fflush(stderr);
+    RegisterFileSystemHooks();
+    fprintf(stderr, "[MAIN] RegisterFileSystemHooks() completed\n");
+    fflush(stderr);
+
     // MW'05 runtime function mappings for small PPC shims
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
@@ -1382,6 +1391,22 @@ int main(int argc, char *argv[])
     UnblockMainThreadEarly();
     fprintf(stderr, "[MAIN] after_UnblockMainThreadEarly\n"); fflush(stderr);
 
+    // DEBUG: Check work queue state BEFORE guest starts
+    fprintf(stderr, "[MAIN] Checking work queue state BEFORE guest starts...\n"); fflush(stderr);
+    {
+        const uint32_t queue_base = 0x829091A0;
+        const uint32_t queue_head = 0x829091C8;
+        const uint32_t queue_tail = 0x829091CC;
+
+        uint32_t base_val = LoadBE32_Watched(g_memory.base, queue_base);
+        uint32_t head_val = LoadBE32_Watched(g_memory.base, queue_head);
+        uint32_t tail_val = LoadBE32_Watched(g_memory.base, queue_tail);
+
+        fprintf(stderr, "[MAIN] Work queue BEFORE guest: base=0x%08X head=0x%08X tail=0x%08X\n",
+                base_val, head_val, tail_val);
+        fflush(stderr);
+    }
+
     fprintf(stderr, "[MAIN] before_guest_start\n"); fflush(stderr);
     KernelTraceHostOp("HOST.main.before_guest_start");
 
@@ -1464,10 +1489,28 @@ int main(int argc, char *argv[])
     fflush(stderr);
 
     uint64_t loop_iterations = 0;
+    bool work_queue_logged = false;
     for (;;) {
         ++loop_iterations;
         if (loop_iterations <= 10 || (loop_iterations % 600) == 0) {
             fprintf(stderr, "[MAIN-LOOP] Iteration #%llu\n", (unsigned long long)loop_iterations);
+            fflush(stderr);
+        }
+
+        // DEBUG: Check work queue state AFTER guest has been running for a bit
+        if (!work_queue_logged && loop_iterations == 100) {
+            work_queue_logged = true;
+            fprintf(stderr, "[MAIN] Checking work queue state AFTER guest has been running...\n"); fflush(stderr);
+            const uint32_t queue_base = 0x829091A0;
+            const uint32_t queue_head = 0x829091C8;
+            const uint32_t queue_tail = 0x829091CC;
+
+            uint32_t base_val = LoadBE32_Watched(g_memory.base, queue_base);
+            uint32_t head_val = LoadBE32_Watched(g_memory.base, queue_head);
+            uint32_t tail_val = LoadBE32_Watched(g_memory.base, queue_tail);
+
+            fprintf(stderr, "[MAIN] Work queue AFTER guest: base=0x%08X head=0x%08X tail=0x%08X\n",
+                    base_val, head_val, tail_val);
             fflush(stderr);
         }
 

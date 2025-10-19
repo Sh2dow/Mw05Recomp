@@ -318,6 +318,18 @@ uint32_t XReadFile
     XOVERLAPPED* lpOverlapped
 )
 {
+    // CRITICAL: Validate buffer pointer before use
+    if (lpBuffer == nullptr)
+    {
+        fprintf(stderr, "[XReadFile] ERROR: lpBuffer is NULL!\n");
+        fflush(stderr);
+        if (lpNumberOfBytesRead != nullptr)
+        {
+            *lpNumberOfBytesRead = 0;
+        }
+        return FALSE;
+    }
+
     if (!EnsureLiveFileHandle(hFile))
     {
         if (lpNumberOfBytesRead != nullptr)
@@ -786,7 +798,7 @@ GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile);
 
 // Register X* file API hooks (direct recompiled functions)
 // Note: Nt* imports are automatically registered by ProcessImportTable()
-static void RegisterFileSystemHooks() {
+void RegisterFileSystemHooks() {
     KernelTraceHostOp("HOST.FileSystem.RegisterXFileHooks");
 
     // Register X* file API hooks at their known addresses

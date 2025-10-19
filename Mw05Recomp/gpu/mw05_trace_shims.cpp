@@ -784,7 +784,7 @@ PPC_FUNC(sub_82880FA0) {
     KernelTraceHostOpF("sub_82880FA0.lr=%08llX r3=%08X r4=%08X r5=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     extern void sub_82880FA0(PPCContext& ctx, uint8_t* base);
-    sub_82880FA0(ctx, base);
+    __imp__sub_82880FA0(ctx, base);
     KernelTraceHostOpF("sub_82880FA0.ret r3=%08X", ctx.r3.u32);
 }
 
@@ -807,7 +807,7 @@ PPC_FUNC(sub_82885A70) {
     KernelTraceHostOpF("sub_82885A70.lr=%08llX r3=%08X r4=%08X r30_ptr=%08X check_value=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, r30_ptr, check_value);
     extern void sub_82885A70(PPCContext& ctx, uint8_t* base);
-    sub_82885A70(ctx, base);
+    __imp__sub_82885A70(ctx, base);
     KernelTraceHostOpF("sub_82885A70.ret r3=%08X", ctx.r3.u32);
 }
 
@@ -1101,13 +1101,13 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
         KernelTraceHostOpF("HOST.BuilderKick.forward r3=%08X", ctx.r3.u32);
     #if defined(_MSC_VER)
         __try {
-            sub_825972B0(ctx, base);
+            __imp__sub_825972B0(ctx, base);
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION code=%08X", (unsigned)GetExceptionCode());
         }
     #else
         try {
-            sub_825972B0(ctx, base);
+            __imp__sub_825972B0(ctx, base);
         } catch (...) {
             KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION cpp");
         }
@@ -1203,7 +1203,7 @@ PPC_FUNC(sub_82598A20) {
 
 // Declare the original recompiled functions
 PPC_FUNC_IMPL(__imp__sub_825960B8);
-PPC_FUNC_IMPL(__imp__sub_825968B0);
+// NOTE: sub_825968B0 override moved to ppc_manual_overrides_symbols.cpp
 PPC_FUNC_IMPL(__imp__sub_8214B490);
 
 // Full replacement for sub_8214B490 to check parameter validity
@@ -1240,120 +1240,8 @@ PPC_FUNC(sub_8214B490) {
     __imp__sub_8214B490(ctx, base);
 }
 
-// Full replacement for sub_825960B8 to check structure validity
-PPC_FUNC(sub_825960B8) {
-    uint32_t a1 = ctx.r3.u32;
-
-    // Check if a1 is valid
-    if (a1 < 0x1000 || a1 >= PPC_MEMORY_SIZE) {
-        KernelTraceHostOpF("HOST.825960B8.invalid_a1 r3=%08X - returning 0", a1);
-        ctx.r3.u32 = 0;
-        return;
-    }
-
-    // CRITICAL FIX: Don't skip the call when a1[4] is NULL!
-    // The original function has error handling code that runs when a1[4] is NULL.
-    // It sets *a1 = 0 and continues with fallback logic.
-    // Skipping the call breaks the game's error handling flow.
-    // Let the original function handle the NULL case properly.
-
-    // Log the call for debugging
-    uint32_t a1_4 = ReadBE32(a1 + 16);
-    if (a1_4 == 0) {
-        KernelTraceHostOpF("HOST.825960B8.a1[4]=NULL r3=%08X - calling original (will use fallback)", a1);
-    }
-
-    // Always call the original function - it has proper error handling
-    SetPPCContext(ctx);
-    SetPPCContext(ctx);
-
-    __imp__sub_825960B8(ctx, base);
-}
-
-// Convert MW05Shim_sub_825968B0 to PPC_FUNC_IMPL pattern (removed duplicate PPC_FUNC definition)
-PPC_FUNC_IMPL(__imp__sub_825968B0);
-PPC_FUNC(sub_825968B0) {
-    fprintf(stderr, "[SHIM-ENTRY] sub_825968B0 lr=%08llX r3=%08X\n", (unsigned long long)ctx.lr, ctx.r3.u32);
-    fflush(stderr);
-    KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-
-    // Check if r3 is valid before accessing memory
-    // If invalid, ALWAYS provide a fake allocation to prevent NULL pointer crashes
-    if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-        KernelTraceHostOpF("HOST.825968B0.invalid_r3 r3=%08X - providing fake allocation", ctx.r3.u32);
-
-        // CRITICAL: When r3 is NULL, just return NULL immediately
-        // Don't try to seed from environment or last known context
-        // The caller will handle the NULL return value properly
-        const uint32_t sys_payload = 0x00000000u;
-        KernelTraceHostOpF("HOST.825968B0.fake_alloc_null ret=%08X (r3 was NULL)", sys_payload);
-        ctx.r3.u32 = sys_payload;
-        return;
-    }
-
-    // CRITICAL FIX: Check if r3 is valid BEFORE reading from it
-    // The previous check (lines 1253-1286) might have set r3 to a fake value,
-    // but we need to check again here to make sure it's valid
-    if (ctx.r3.u32 < 0x1000 || ctx.r3.u32 >= PPC_MEMORY_SIZE) {
-        // r3 is still invalid after all the fixes above
-        // This should never happen, but if it does, return a fake allocation
-        const uint32_t sys_base    = 0x00140400u;
-        const uint32_t sys_payload = sys_base + 0x10u;
-        KernelTraceHostOpF("HOST.825968B0.fake_alloc_final ret=%08X (r3=%08X still invalid)", sys_payload, ctx.r3.u32);
-        ctx.r3.u32 = sys_payload;
-        return;
-    }
-
-    if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
-    uint32_t fp_ea = ReadBE32(ctx.r3.u32 + 13620);
-    uint32_t cbctx = ReadBE32(ctx.r3.u32 + 13624);
-    KernelTraceHostOpF("HOST.825968B0.cb fp=%08X ctx=%08X", fp_ea, cbctx);
-    uint32_t f10432w = ReadBE32(ctx.r3.u32 + 10432);
-    uint8_t b10433 = (uint8_t)(f10432w & 0xFF);
-    KernelTraceHostOpF("HOST.825968B0.flags10433=%02X", (unsigned)b10433);
-    // If the allocator callback is NULL or invalid, ALWAYS fake an allocation to prevent crashes
-    // Check if function pointer is NULL or outside valid PPC range
-    bool fp_invalid = (fp_ea == 0 || fp_ea < 0x82000000 || fp_ea >= 0x82CD0000);
-    if (fp_invalid) {
-        // CRITICAL: Always skip calling the original function when fake_alloc is enabled
-        // The original function will try to call through fp_ea, which might be NULL or invalid
-        if (fp_invalid) {
-            // Known default guest EA for syscmd buffer base from our bridge: 0x00140400
-            // Return a pointer just past the 16-byte header we seed (payload begins at +0x10)
-            const uint32_t sys_base    = 0x00140400u;
-            const uint32_t sys_payload = sys_base + 0x10u;
-            const uint32_t sys_end     = sys_base + 0x10000u; // 64 KiB
-            // Seed basic allocator state so subsequent code can advance pointers
-            WriteBE32(ctx.r3.u32 + 14012, sys_payload); // current write ptr
-            WriteBE32(ctx.r3.u32 + 14016, sys_payload); // running end ptr
-
-
-            WriteBE32(ctx.r3.u32 + 14020, sys_end);     // buffer end
-            // Clear forbid bit (top bit of 10433) if set, to avoid early exits
-            uint32_t f10432w2 = ReadBE32(ctx.r3.u32 + 10432);
-            uint8_t b10433_2 = (uint8_t)(f10432w2 & 0xFF);
-            if (b10433_2 & 0x80) {
-                WriteBE8(ctx.r3.u32 + 10433, (uint8_t)(b10433_2 & ~0x80));
-            }
-            KernelTraceHostOpF("HOST.825968B0.fake ret=%08X (fp_ea=%08X was invalid)", sys_payload, fp_ea);
-            ctx.r3.u32 = sys_payload;
-            return;
-        } else {
-            // fp_ea is valid, but we still don't want to call the original function
-            // because it might call through fp_ea which could cause issues
-            // Instead, return a fake allocation
-            const uint32_t sys_base    = 0x00140400u;
-            const uint32_t sys_payload = sys_base + 0x10u;
-            KernelTraceHostOpF("HOST.825968B0.fake ret=%08X (fp_ea=%08X was valid but skipped)", sys_payload, fp_ea);
-            ctx.r3.u32 = sys_payload;
-            return;
-        }
-    }
-    SetPPCContext(ctx);
-
-    __imp__sub_825968B0(ctx, base);
-    KernelTraceHostOpF("HOST.825968B0.ret r3=%08X", ctx.r3.u32);
-}
+// NOTE: sub_825960B8 override moved to ppc_manual_overrides_symbols.cpp to avoid duplicate symbol
+// NOTE: sub_825968B0 override moved to ppc_manual_overrides_symbols.cpp to avoid duplicate symbol
 
 // Convert MW05Shim_sub_82596E40 to PPC_FUNC_IMPL pattern
 PPC_FUNC_IMPL(__imp__sub_82596E40);
@@ -1562,15 +1450,15 @@ PPC_FUNC(sub_825A54F0) {
         }
         KernelTraceHostOpF("HOST.sub_825A54F0.post.try_825972B0 r3=%08X", ctx.r3.u32);
         // Call the PM4 builder through our shim so gating clears and fake alloc run
-        sub_825972B0(ctx, base);
+        __imp__sub_825972B0(ctx, base);
         if (s_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_825A54F0.post.try_deep r3=%08X", ctx.r3.u32);
             // Route through our deep shims to keep gating clears and allocator seeding
-            sub_82597650(ctx, base);
-            sub_825976D8(ctx, base);
+            __imp__sub_82597650(ctx, base);
+            __imp__sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            sub_825968B0(ctx, base);
-            sub_82596E40(ctx, base);
+            __imp__sub_825968B0(ctx, base);
+            __imp__sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }
@@ -1629,14 +1517,14 @@ PPC_FUNC(sub_82441CF0) {
         uint32_t saved_r3 = ctx.r3.u32;
         ctx.r3.u32 = ctx.r5.u32;
         KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        sub_825972B0(ctx, base);
+        __imp__sub_825972B0(ctx, base);
         if (s_loop_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_deep r3=%08X", ctx.r3.u32);
-            sub_82597650(ctx, base);
-            sub_825976D8(ctx, base);
+            __imp__sub_82597650(ctx, base);
+            __imp__sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            sub_825968B0(ctx, base);
-            sub_82596E40(ctx, base);
+            __imp__sub_825968B0(ctx, base);
+            __imp__sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }
@@ -1647,14 +1535,14 @@ PPC_FUNC(sub_82441CF0) {
         uint32_t saved_r3 = ctx.r3.u32;
         ctx.r3.u32 = ctx.r5.u32;
         KernelTraceHostOpF("HOST.sub_82441CF0.post.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        sub_825972B0(ctx, base);
+        __imp__sub_825972B0(ctx, base);
         if (s_loop_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_82441CF0.post.try_deep r3=%08X", ctx.r3.u32);
-            sub_82597650(ctx, base);
-            sub_825976D8(ctx, base);
+            __imp__sub_82597650(ctx, base);
+            __imp__sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            sub_825968B0(ctx, base);
-            sub_82596E40(ctx, base);
+            __imp__sub_825968B0(ctx, base);
+            __imp__sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }

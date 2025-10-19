@@ -63,9 +63,15 @@ PPC_FUNC(sub_8211E470)
     uint32_t new_size = ctx.r4.u32;
 
     // Check if struct_addr is valid BEFORE trying to translate it
-    bool is_valid_addr = (struct_addr >= 0x82000000 && struct_addr < 0xA0000000);
+    // Valid ranges:
+    // - User heap: 0x00020000-0x7FEA0000 (2046.50 MB)
+    // - XEX code/data: 0x82000000-0x82CD0000 (12.8 MB)
+    // - Physical heap: 0xA0000000-0x100000000 (1536 MB)
+    bool is_valid_addr = (struct_addr >= 0x00020000 && struct_addr < 0x7FEA0000) ||  // User heap
+                         (struct_addr >= 0x82000000 && struct_addr < 0x82CD0000) ||  // XEX
+                         (struct_addr >= 0xA0000000 && struct_addr < PPC_MEMORY_SIZE);  // Physical heap
 
-    // Log ALL calls with invalid addresses, and first 10 calls with valid addresses
+    // Log only first 10 calls with valid addresses, and ALL invalid addresses
     if (!is_valid_addr || call_count <= 10) {
         fprintf(stderr, "[HOOK-8211E470] call#%d struct=0x%08X new_size=%u lr=0x%08llX %s\n",
                 call_count, struct_addr, new_size, (unsigned long long)ctx.lr,
@@ -73,15 +79,17 @@ PPC_FUNC(sub_8211E470)
         fflush(stderr);
     }
 
-    if (!is_valid_addr) {
-        fprintf(stderr, "[HOOK-8211E470] ERROR: Invalid structure address 0x%08X (should be in range 0x82000000-0xA0000000)\n", struct_addr);
-        fprintf(stderr, "[HOOK-8211E470] Caller lr=0x%08llX\n", (unsigned long long)ctx.lr);
-        fflush(stderr);
-
-        // Don't call the original function - just return to avoid crash
-        ctx.r3.u32 = 0;
-        return;
-    }
+    // DISABLED: Don't skip invalid addresses - this is a recompiler bug that needs to be fixed
+    // The hook was preventing the game from progressing
+    // if (!is_valid_addr) {
+    //     fprintf(stderr, "[HOOK-8211E470] ERROR: Invalid structure address 0x%08X (not in user heap, XEX, or physical heap)\n", struct_addr);
+    //     fprintf(stderr, "[HOOK-8211E470] Caller lr=0x%08llX\n", (unsigned long long)ctx.lr);
+    //     fflush(stderr);
+    //
+    //     // Don't call the original function - just return to avoid crash
+    //     ctx.r3.u32 = 0;
+    //     return;
+    // }
 
     // Read structure fields (big-endian) only for first 10 valid calls
     if (call_count <= 10) {

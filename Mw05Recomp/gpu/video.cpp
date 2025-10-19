@@ -53,8 +53,7 @@ extern "C"
 }
 #include <ppc/ppc_context.h>
 #include <kernel/memory.h>
-extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
-
+// NOTE: MW05Shim_sub_* functions are now defined in mw05_trace_shims.cpp using PPC_FUNC_IMPL pattern
 extern "C" void __imp__sub_825972B0(PPCContext& ctx, uint8_t* base);
 
 extern "C" {
@@ -1571,9 +1570,9 @@ static void CreateImGuiBackend()
     ButtonGuide::Init();
     MessageWindow::Init();
     OptionsMenu::Init();
-    #if MW05_ENABLE_UNLEASHED
+#if MW05_ENABLE_UNLEASHED
     InstallerWizard::Init();
-    #endif
+#endif
 
     ImGui_ImplSDL3_InitForOther(GameWindow::s_pWindow);
 
@@ -3273,7 +3272,7 @@ void Video::Present()
             if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
             uint8_t* base = g_memory.base;
             KernelTraceHostOpF("HOST.VideoPresent.pm4_force_once r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
-            MW05Shim_sub_825972B0(ctx, base);
+            sub_825972B0(ctx, base);
         }
     }
 
@@ -3304,7 +3303,7 @@ void Video::Present()
                     __imp__sub_825972B0(ctx, base);
 
                     KernelTraceHostOpF("HOST.VideoPresent.pm4_forward r3=%08X r4=%08X try=%u", ctx.r3.u32, ctx.r4.u32, s_pm4KickTries);
-                    MW05Shim_sub_825972B0(ctx, base);
+                    sub_825972B0(ctx, base);
                 }
 
                 ++s_pm4KickTries;
@@ -8281,9 +8280,6 @@ PPC_FUNC(sub_825E4300)
 {
     g_csdFilterState = ctx.r5.u32 == 0 ? CsdFilterState::On : CsdFilterState::Off;
     ctx.r5.u32 = 1;
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_825E4300(ctx, base);
-#endif
 }
 
 // SWA::CCsdPlatformMirage::EndScene
@@ -8291,9 +8287,6 @@ PPC_FUNC_IMPL(__imp__sub_825E2F78);
 PPC_FUNC(sub_825E2F78)
 {
     g_csdFilterState = CsdFilterState::Unknown;
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_825E2F78(ctx, base);
-#endif
 }
 
 // Game shares surfaces with identical descriptions. We don't want to share shadow maps,
@@ -8431,10 +8424,6 @@ PPC_FUNC(sub_82E44AF8)
         }
     }
 
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_82E44AF8(ctx, base);
-#endif
-
     if (newIndicesToFree != nullptr)
         g_userHeap.Free(newIndicesToFree);
 }
@@ -8443,10 +8432,6 @@ PPC_FUNC(sub_82E44AF8)
 PPC_FUNC_IMPL(__imp__sub_82E250D0);
 PPC_FUNC(sub_82E250D0)
 {
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_82E250D0(ctx, base);
-#endif
-
     for (auto newIndicesToFree : g_newIndicesToFree)
         g_userHeap.Free(newIndicesToFree);
 
@@ -8490,10 +8475,6 @@ PPC_FUNC(sub_82E3AFC8)
         }
     }
 
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_82E3AFC8(ctx, base);
-#endif
-
     if (newIndices != nullptr)
         g_userHeap.Free(newIndices);
 }
@@ -8534,10 +8515,6 @@ PPC_FUNC(sub_82E3B1C0)
             lightAndIndexBufferResource->indices = static_cast<uint32_t>(reinterpret_cast<uint8_t*>(newIndices) - base);
         }
     }
-
-#if MW05_ENABLE_UNLEASHED
-    __imp__sub_82E3B1C0(ctx, base);
-#endif
 
     if (newIndices != nullptr)
         g_userHeap.Free(newIndices);
@@ -8583,130 +8560,34 @@ static void MW05_GfxNotify_Logged(PPCContext& ctx, uint8_t* base) {
     __imp__sub_825979A8(ctx, base);
 }
 
-#if MW05_ENABLE_UNLEASHED
-// Unleashed (Hedgehog) hooks
-GUEST_FUNCTION_HOOK(sub_82BD99B0, CreateDevice);
-
-GUEST_FUNCTION_HOOK(sub_82BE6230, DestructResource);
-
-GUEST_FUNCTION_HOOK(sub_82BE9300, LockTextureRect);
-GUEST_FUNCTION_HOOK(sub_82BE7780, UnlockTextureRect);
-
-
-GUEST_FUNCTION_HOOK(sub_82BE6B98, LockVertexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE6BE8, UnlockVertexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE61D0, GetVertexBufferDesc);
-
-GUEST_FUNCTION_HOOK(sub_82BE6CA8, LockIndexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE6CF0, UnlockIndexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE6200, GetIndexBufferDesc);
-
-GUEST_FUNCTION_HOOK(sub_82BE96F0, GetSurfaceDesc);
-
-GUEST_FUNCTION_HOOK(sub_82BE04B0, GetVertexDeclaration);
-GUEST_FUNCTION_HOOK(sub_82BE0530, HashVertexDeclaration);
-
-GUEST_FUNCTION_HOOK(sub_82BDA8C0, Video::Present);
-GUEST_FUNCTION_HOOK(sub_82BDD330, GetBackBuffer);
-
-GUEST_FUNCTION_HOOK(sub_82BE9498, CreateTexture);
-GUEST_FUNCTION_HOOK(sub_82BE6AD0, CreateVertexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE6BF8, CreateIndexBuffer);
-GUEST_FUNCTION_HOOK(sub_82BE95B8, CreateSurface);
-
-GUEST_FUNCTION_HOOK(sub_82BF6400, StretchRect);
-
-GUEST_FUNCTION_HOOK(sub_82BDD9F0, SetRenderTarget);
-GUEST_FUNCTION_HOOK(sub_82BDDD38, SetDepthStencilSurface);
-
-GUEST_FUNCTION_HOOK(sub_82BFE4C8, Clear);
-
-GUEST_FUNCTION_HOOK(sub_82BDD8C0, SetViewport);
-
-GUEST_FUNCTION_HOOK(sub_82BE9818, SetTexture);
-GUEST_FUNCTION_HOOK(sub_82BDCFB0, SetScissorRect);
-
-GUEST_FUNCTION_HOOK(sub_82BE5900, DrawPrimitive);
-GUEST_FUNCTION_HOOK(sub_82BE5CF0, DrawIndexedPrimitive);
-GUEST_FUNCTION_HOOK(sub_82BE52F8, DrawPrimitiveUP);
-
-GUEST_FUNCTION_HOOK(sub_82BE0428, CreateVertexDeclaration);
-GUEST_FUNCTION_HOOK(sub_82BE02E0, SetVertexDeclaration);
-
-GUEST_FUNCTION_HOOK(sub_82BE1A80, CreateVertexShader);
-GUEST_FUNCTION_HOOK(sub_82BE0110, SetVertexShader);
-
-GUEST_FUNCTION_HOOK(sub_82BDD0F8, SetStreamSource);
-GUEST_FUNCTION_HOOK(sub_82BDD218, SetIndices);
-
-GUEST_FUNCTION_HOOK(sub_82BE1990, CreatePixelShader);
-GUEST_FUNCTION_HOOK(sub_82BDFE58, SetPixelShader);
-
-GUEST_FUNCTION_HOOK(sub_82C003B8, D3DXFillTexture);
-GUEST_FUNCTION_HOOK(sub_82C00910, D3DXFillVolumeTexture);
-
-GUEST_FUNCTION_HOOK(sub_82E43FC8, MakePictureData);
-
-GUEST_FUNCTION_HOOK(sub_82E9EE38, SetResolution);
-
-GUEST_FUNCTION_HOOK(sub_82AE2BF8, ScreenShaderInit);
-#else
-
 // Generic pass-through probes for MW05 to locate real video entry points in this XEX build
 // These log when hit and then tail-call the original guest bodies.
 // Once identified, we will swap them to proper CreateDevice/SetResolution/Present hooks.
-struct PPCContext; extern "C" void __imp__sub_825E4300(PPCContext&, uint8_t*);
+struct PPCContext; 
+extern "C" void __imp__sub_825E4300(PPCContext&, uint8_t*);
 static void MW05_Probe_sub_825E4300(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.VideoProbe.sub_825E4300");
     __imp__sub_825E4300(ctx, base);
 }
-struct PPCContext; extern "C" void sub_8258B558(PPCContext&, uint8_t*);
+struct PPCContext; 
+extern "C" void sub_8258B558(PPCContext&, uint8_t*);
 static void MW05_Probe_sub_8258B558(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.VideoProbe.sub_8258B558");
     sub_8258B558(ctx, base);
 }
 
-struct PPCContext; extern "C" void sub_8250FC70(PPCContext&, uint8_t*);
+struct PPCContext; 
+extern "C" void sub_8250FC70(PPCContext&, uint8_t*);
 static void MW05_Probe_sub_8250FC70(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.VideoProbe.sub_8250FC70");
     sub_8250FC70(ctx, base);
 }
 
-// Trace shims for scheduler gating analysis
-struct PPCContext; void MW05Shim_sub_82596978(PPCContext&, uint8_t*);
-struct PPCContext; void MW05Shim_sub_825A97B8(PPCContext&, uint8_t*);
-struct PPCContext; void MW05Shim_sub_825979A8(PPCContext&, uint8_t*);
-struct PPCContext; void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
-
-struct PPCContext; void MW05Shim_sub_82598A20(PPCContext&, uint8_t*);
-
-struct PPCContext; void MW05Shim_sub_82441CF0(PPCContext&, uint8_t*);
-
-
-// Route graphics ISR through entry shim that can normalize r3
-// CRITICAL: Call the shim DIRECTLY, not via HostToGuestFunction!
-// MW05Shim_sub_825979A8 is a HOST function, not a GUEST function!
-PPC_FUNC(sub_825979A8) {
-    KernelTraceImport("sub_825979A8", ctx);
-    MW05Shim_sub_825979A8(ctx, base);
-}
-
-
-
-
-
-
-// MW05 hooks (identified from MW05 recompiled mapping / IDA HTML)
-// - Present path pass-through: let original guest body run so it can call VdSwap and pre-swap helpers
-GUEST_FUNCTION_HOOK(sub_82598A20, MW05Shim_sub_82598A20);
-GUEST_FUNCTION_HOOK(sub_82596978, MW05Shim_sub_82596978);
-GUEST_FUNCTION_HOOK(sub_825A97B8, MW05Shim_sub_825A97B8);
-
-// Hook a hot caller observed from TitleState, to opportunistically try PM4 builds
-GUEST_FUNCTION_HOOK(sub_82441CF0, MW05Shim_sub_82441CF0);
+// NOTE: All MW05Shim_sub_* functions have been converted to PPC_FUNC_IMPL pattern in mw05_trace_shims.cpp
+// No forward declarations or GUEST_FUNCTION_HOOK calls needed here anymore
 
 // Register probes for addresses that exist in this build's override table
-// Register probes for addresses that exist in this build's override table
+// GUEST_FUNCTION_HOOK(sub_825E4300, MW05_Probe_sub_825E4300);
 GUEST_FUNCTION_HOOK(sub_8258B558, MW05_Probe_sub_8258B558);
 GUEST_FUNCTION_HOOK(sub_8250FC70, MW05_Probe_sub_8250FC70);
 
@@ -8716,32 +8597,33 @@ GUEST_FUNCTION_HOOK(sub_82598230, MW05_CreateDevicePass);
 // - Apply/set display mode and update cached display info
 GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
 
-    // MW05: Wire core render-state and draw hooks to backend implementations
-    // These addresses come from tools/hooks_mw05.csv and are safe pass-throughs to
-    // our engine; they will log via KernelTraceHostOp/GpuTraceHostCall only.
-    GUEST_FUNCTION_HOOK(sub_82BDD9F0, SetRenderTarget);
-    GUEST_FUNCTION_HOOK(sub_82BDDD38, SetDepthStencilSurface);
-    GUEST_FUNCTION_HOOK(sub_82BFE4C8, Clear);
-    GUEST_FUNCTION_HOOK(sub_82BDD8C0, SetViewport);
-    GUEST_FUNCTION_HOOK(sub_82BE9818, SetTexture);
-    GUEST_FUNCTION_HOOK(sub_82BDCFB0, SetScissorRect);
-    GUEST_FUNCTION_HOOK(sub_82BE5900, DrawPrimitive);
-    GUEST_FUNCTION_HOOK(sub_82BE5CF0, DrawIndexedPrimitive);
-    GUEST_FUNCTION_HOOK(sub_82BE52F8, DrawPrimitiveUP);
-    GUEST_FUNCTION_HOOK(sub_82BE0428, CreateVertexDeclaration);
-    GUEST_FUNCTION_HOOK(sub_82BE02E0, SetVertexDeclaration);
-    GUEST_FUNCTION_HOOK(sub_82BE1A80, CreateVertexShader);
-    GUEST_FUNCTION_HOOK(sub_82BE0110, SetVertexShader);
-    GUEST_FUNCTION_HOOK(sub_82BDD0F8, SetStreamSource);
-    GUEST_FUNCTION_HOOK(sub_82BDD218, SetIndices);
-    GUEST_FUNCTION_HOOK(sub_82BE1990, CreatePixelShader);
-    GUEST_FUNCTION_HOOK(sub_82BDFE58, SetPixelShader);
-    GUEST_FUNCTION_HOOK(sub_82C003B8, D3DXFillTexture);
-    GUEST_FUNCTION_HOOK(sub_82C00910, D3DXFillVolumeTexture);
+// MW05: Wire core render-state and draw hooks to backend implementations
+// These addresses come from tools/hooks_mw05.csv and are safe pass-throughs to
+// our engine; they will log via KernelTraceHostOp/GpuTraceHostCall only.
+GUEST_FUNCTION_HOOK(sub_82BDD9F0, SetRenderTarget);
+GUEST_FUNCTION_HOOK(sub_82BDDD38, SetDepthStencilSurface);
+GUEST_FUNCTION_HOOK(sub_82BFE4C8, Clear);
+GUEST_FUNCTION_HOOK(sub_82BDD8C0, SetViewport);
+GUEST_FUNCTION_HOOK(sub_82BE9818, SetTexture);
+GUEST_FUNCTION_HOOK(sub_82BDCFB0, SetScissorRect);
+GUEST_FUNCTION_HOOK(sub_82BE5900, DrawPrimitive);
+GUEST_FUNCTION_HOOK(sub_82BE5CF0, DrawIndexedPrimitive);
+GUEST_FUNCTION_HOOK(sub_82BE52F8, DrawPrimitiveUP);
+GUEST_FUNCTION_HOOK(sub_82BE0428, CreateVertexDeclaration);
+GUEST_FUNCTION_HOOK(sub_82BE02E0, SetVertexDeclaration);
+GUEST_FUNCTION_HOOK(sub_82BE1A80, CreateVertexShader);
+GUEST_FUNCTION_HOOK(sub_82BE0110, SetVertexShader);
+GUEST_FUNCTION_HOOK(sub_82BDD0F8, SetStreamSource);
+GUEST_FUNCTION_HOOK(sub_82BDD218, SetIndices);
+GUEST_FUNCTION_HOOK(sub_82BE1990, CreatePixelShader);
+GUEST_FUNCTION_HOOK(sub_82BDFE58, SetPixelShader);
+GUEST_FUNCTION_HOOK(sub_82C003B8, D3DXFillTexture);
+GUEST_FUNCTION_HOOK(sub_82C00910, D3DXFillVolumeTexture);
 
 
 // Ensure MW05 probe/video hooks are registered even if not present in PPCFuncMappings
-void RegisterMw05VideoManualHooks() {
+void RegisterMw05VideoManualHooks() 
+{
     fprintf(stderr, "[VIDEO-CTOR] RegisterMw05VideoManualHooks() CALLED\n");
     fflush(stderr);
     KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
@@ -8830,85 +8712,13 @@ void RegisterMw05VideoManualHooks() {
 #else
     __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
 #endif
-    void MW05Shim_sub_82597650(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825976D8(PPCContext&, uint8_t*);
+    // NOTE: All function declarations moved to mw05_trace_shims.cpp
 
 
 // Forward decls for MW05 research shim handlers
-struct PPCContext;
-void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
-void MW05Shim_sub_825972B0(PPCContext&, uint8_t*);
-void MW05Shim_sub_825A54F0(PPCContext&, uint8_t*);
-void MW05Shim_sub_825A6DF0(PPCContext&, uint8_t*);
-void MW05Shim_sub_825A65A8(PPCContext&, uint8_t*);
-    void MW05Shim_sub_82596E40(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825968B0(PPCContext&, uint8_t*);
-
-
-    void MW05Shim_sub_825986F8(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825987E0(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825988B0(PPCContext&, uint8_t*);
-    void MW05Shim_sub_82599010(PPCContext&, uint8_t*);
-    void MW05Shim_sub_82599208(PPCContext&, uint8_t*);
-    void MW05Shim_sub_82599338(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7A40(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7DE8(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7E60(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7EA0(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7208(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7B78(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A74B8(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7F10(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A7F88(PPCContext&, uint8_t*);
-    void MW05Shim_sub_825A8040(PPCContext&, uint8_t*);
-    // New: scheduler/notify-adjacent shims (from Store64 writer LRs)
-    void MW05Shim_sub_8262F248(PPCContext&, uint8_t*);
-    void MW05Shim_sub_8262F2A0(PPCContext&, uint8_t*);
-    void MW05Shim_sub_8262F330(PPCContext&, uint8_t*);
-    void MW05Shim_sub_823BC638(PPCContext&, uint8_t*);
-    void MW05Shim_sub_82812E20(PPCContext&, uint8_t*);
-
-    GUEST_FUNCTION_HOOK(sub_82597650, MW05Shim_sub_82597650);
-    GUEST_FUNCTION_HOOK(sub_825976D8, MW05Shim_sub_825976D8);
-
-// Note: MW05 draw diagnostic shims are defined in gpu/mw05_draw_diagnostic.cpp
-// and their declarations are already in ppc_recomp_shared.h
-
-
-// Research: trace MW05 pre-swap helpers (defined in gpu/mw05_trace_shims.cpp)
-GUEST_FUNCTION_HOOK(sub_82595FC8, MW05Shim_sub_82595FC8);
-GUEST_FUNCTION_HOOK(sub_825972B0, MW05Shim_sub_825972B0);
-    GUEST_FUNCTION_HOOK(sub_82596E40, MW05Shim_sub_82596E40);
-    // sub_825968B0 is now a full PPC_FUNC replacement, not a hook
-
-GUEST_FUNCTION_HOOK(sub_825A54F0, MW05Shim_sub_825A54F0);
-GUEST_FUNCTION_HOOK(sub_825A6DF0, MW05Shim_sub_825A6DF0);
-GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);
-
-    // Additional MW05 dynamic-discovery traces (log + forward only)
-    GUEST_FUNCTION_HOOK(sub_825986F8, MW05Shim_sub_825986F8);
-    GUEST_FUNCTION_HOOK(sub_825987E0, MW05Shim_sub_825987E0);
-    GUEST_FUNCTION_HOOK(sub_825988B0, MW05Shim_sub_825988B0);
-    GUEST_FUNCTION_HOOK(sub_82599010, MW05Shim_sub_82599010);
-    GUEST_FUNCTION_HOOK(sub_82599208, MW05Shim_sub_82599208);
-    GUEST_FUNCTION_HOOK(sub_82599338, MW05Shim_sub_82599338);
-    GUEST_FUNCTION_HOOK(sub_825A7A40, MW05Shim_sub_825A7A40);
-    GUEST_FUNCTION_HOOK(sub_825A7DE8, MW05Shim_sub_825A7DE8);
-    GUEST_FUNCTION_HOOK(sub_825A7E60, MW05Shim_sub_825A7E60);
-    // Additional scheduler/notify-adjacent discovery hooks
-    GUEST_FUNCTION_HOOK(sub_8262F248, MW05Shim_sub_8262F248);
-    GUEST_FUNCTION_HOOK(sub_8262F2A0, MW05Shim_sub_8262F2A0);
-    // sub_8262F330 is provided by mw05_boot_shims.cpp; avoid duplicate/override here
-    GUEST_FUNCTION_HOOK(sub_823BC638, MW05Shim_sub_823BC638);
-    GUEST_FUNCTION_HOOK(sub_82812E20, MW05Shim_sub_82812E20);
-
-    GUEST_FUNCTION_HOOK(sub_825A7EA0, MW05Shim_sub_825A7EA0);
-    GUEST_FUNCTION_HOOK(sub_825A7208, MW05Shim_sub_825A7208);
-    GUEST_FUNCTION_HOOK(sub_825A7B78, MW05Shim_sub_825A7B78);
-    GUEST_FUNCTION_HOOK(sub_825A74B8, MW05Shim_sub_825A74B8);
-    GUEST_FUNCTION_HOOK(sub_825A7F10, MW05Shim_sub_825A7F10);
-    GUEST_FUNCTION_HOOK(sub_825A7F88, MW05Shim_sub_825A7F88);
-    GUEST_FUNCTION_HOOK(sub_825A8040, MW05Shim_sub_825A8040);
+// NOTE: All MW05Shim_sub_* functions have been converted to PPC_FUNC_IMPL pattern in mw05_trace_shims.cpp
+// No forward declarations or GUEST_FUNCTION_HOOK calls needed here anymore
+// The functions are now automatically registered via the recompiled function table
 
 // Note: MW05 draw diagnostic shims are defined in gpu/mw05_draw_diagnostic.cpp
 // They are automatically registered via the recompiled function table and don't need GUEST_FUNCTION_HOOK here
@@ -8927,13 +8737,11 @@ GUEST_FUNCTION_HOOK(sub_825A65A8, MW05Shim_sub_825A65A8);
 //
 // Temporary research shims moved to gpu/mw05_trace_shims.cpp
 // They log callsites and tail-call the original recompiled routines.
-#endif
 
 // This is a buggy function that recreates framebuffers
 // if the inverse capture ratio is not 2.0, but the parameter
 // is completely unused and not stored, so it ends up
 // recreating framebuffers every single frame instead.
-#if MW05_ENABLE_UNLEASHED
 GUEST_FUNCTION_STUB(sub_82BAAD38);
 
 GUEST_FUNCTION_STUB(sub_822C15D8);
@@ -8947,13 +8755,6 @@ GUEST_FUNCTION_STUB(sub_82BEA308);
 GUEST_FUNCTION_STUB(sub_82CD5D68);
 GUEST_FUNCTION_STUB(sub_82BE9B28);
 GUEST_FUNCTION_STUB(sub_82BEA018);
-#endif
 GUEST_FUNCTION_STUB(sub_82BEA7C0);
 GUEST_FUNCTION_STUB(sub_82BFFF88); // D3DXFilterTexture
 GUEST_FUNCTION_STUB(sub_82BD96D0);
-
-
-
-
-
-

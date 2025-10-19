@@ -387,13 +387,7 @@ SHIM(sub_82599338)
 SHIM(sub_825A7208)
 // sub_825A74B8 has a custom implementation with SEH exception handling below (line 473)
 
-// Forward decls of local shim helpers used before their definitions (C++ linkage)
-struct PPCContext;
-void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
-void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base);
-void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base);
-void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base);
-void MW05Shim_sub_82596E40(PPCContext& ctx, uint8_t* base);
+// Forward declarations removed - all functions now use PPC_FUNC_IMPL pattern
 
 
 SHIM(sub_825A7F10)
@@ -409,7 +403,9 @@ SHIM(sub_825988B0)
 // CRITICAL FIX: This function has a divide-by-zero bug when viewport dimensions are invalid
 // The game sometimes passes all-zero viewport dimensions, causing crash at 0x825A7AEC (divwu r30, r9, r10)
 // We add a safety check to prevent the crash
-void MW05Shim_sub_825A7A40(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825A7A40 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825A7A40);
+PPC_FUNC(sub_825A7A40) {
     // Read parameters
     uint32_t r6 = ctx.r6.u32;  // input viewport struct pointer
     uint32_t r7 = ctx.r7.u32;  // output viewport struct pointer
@@ -448,13 +444,17 @@ void MW05Shim_sub_825A7A40(PPCContext& ctx, uint8_t* base) {
     }
 
     // Valid dimensions - call original function
+    SetPPCContext(ctx);
+
     __imp__sub_825A7A40(ctx, base);
 }
 
 // CRITICAL FIX: Catch-all for divide-by-zero in rendering functions
 // The crash happens after sub_825A7A40 returns, likely in a function that does aspect ratio calculations
 // We'll add shims for other viewport-related functions that might have divide-by-zero issues
-void MW05Shim_sub_825A7B78(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825A7B78 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825A7B78);
+PPC_FUNC(sub_825A7B78) {
     // sub_825A7B78 is the viewport setup function that calls sub_825A7A40 and sub_825A74B8
     // It might have its own divide-by-zero issues
     KernelTraceHostOpF("HOST.sub_825A7B78.enter r3=%08X r4=%08X r5=%08X r6=%08X",
@@ -462,6 +462,8 @@ void MW05Shim_sub_825A7B78(PPCContext& ctx, uint8_t* base) {
 
     // Call the original function with SEH exception handling for divide-by-zero
     __try {
+        SetPPCContext(ctx);
+
         __imp__sub_825A7B78(ctx, base);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         KernelTraceHostOpF("HOST.sub_825A7B78.exception caught code=%08X", GetExceptionCode());
@@ -470,13 +472,17 @@ void MW05Shim_sub_825A7B78(PPCContext& ctx, uint8_t* base) {
     }
 }
 
-void MW05Shim_sub_825A74B8(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825A74B8 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825A74B8);
+PPC_FUNC(sub_825A74B8) {
     // sub_825A74B8 is another viewport-related function
     KernelTraceHostOpF("HOST.sub_825A74B8.enter r3=%08X r4=%08X r5=%08X",
                        ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
 
     // Call the original function with SEH exception handling for divide-by-zero
     __try {
+        SetPPCContext(ctx);
+
         __imp__sub_825A74B8(ctx, base);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         KernelTraceHostOpF("HOST.sub_825A74B8.exception caught code=%08X", GetExceptionCode());
@@ -490,14 +496,21 @@ SHIM(sub_825A7E60)
 SHIM(sub_825A7EA0)
 
 // Scheduler/notify-adjacent shims (log, dump key pointers, and forward)
-void MW05Shim_sub_8262F248(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_8262F248 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_8262F248);
+PPC_FUNC(sub_8262F248) {
     KernelTraceHostOpF("sub_8262F248.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     DumpEAWindow("8262F248.r3", ctx.r3.u32);
     DumpEAWindow("8262F248.r4", ctx.r4.u32);
     DumpEAWindow("8262F248.r5", ctx.r5.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_8262F248(ctx, base);
 }
-void MW05Shim_sub_8262F2A0(PPCContext& ctx, uint8_t* base) {
+
+PPC_FUNC_IMPL(__imp__sub_8262F2A0);
+PPC_FUNC(sub_8262F2A0)
+{
     // RECOMPILER BUG FIX: This function has a bug in the auto-generated code
     // The sleep loop doesn't exit when Alertable=FALSE because the recompiler
     // generates incorrect code for the loop condition check.
@@ -571,40 +584,47 @@ void MW05Shim_sub_8262F2A0(PPCContext& ctx, uint8_t* base) {
         fflush(stderr);
     }
 }
-void MW05Shim_sub_8262F330(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOpF("sub_8262F330.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-    if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
-    DumpEAWindow("8262F330.r3", ctx.r3.u32);
-    DumpEAWindow("8262F330.r4", ctx.r4.u32);
-    DumpEAWindow("8262F330.r5", ctx.r5.u32);
-    DumpSchedState("8262F330", ctx.r3.u32);
-    __imp__sub_8262F330(ctx, base);
-}
-void MW05Shim_sub_823BC638(PPCContext& ctx, uint8_t* base) {
+// NOTE: sub_8262F330 is defined in mw05_boot_shims.cpp with fast boot logic
+// Convert MW05Shim_sub_823BC638 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_823BC638);
+PPC_FUNC(sub_823BC638) {
     KernelTraceHostOpF("sub_823BC638.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     DumpEAWindow("823BC638.r3", ctx.r3.u32);
     DumpEAWindow("823BC638.r4", ctx.r4.u32);
     DumpEAWindow("823BC638.r5", ctx.r5.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_823BC638(ctx, base);
 }
-void MW05Shim_sub_82812E20(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82812E20 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82812E20);
+PPC_FUNC(sub_82812E20) {
     KernelTraceHostOpF("sub_82812E20.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
     DumpEAWindow("82812E20.r3", ctx.r3.u32);
     DumpEAWindow("82812E20.r4", ctx.r4.u32);
     DumpEAWindow("82812E20.r5", ctx.r5.u32);
     DumpSchedState("82812E20", ctx.r3.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_82812E20(ctx, base);
 }
 
-void MW05Shim_sub_82596978(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82596978 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82596978);
+PPC_FUNC(sub_82596978) {
     KernelTraceHostOpF("sub_82596978.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     DumpEAWindow("82596978.r3", ctx.r3.u32);
     DumpEAWindow("82596978.r4", ctx.r4.u32);
+    SetPPCContext(ctx);
+    SetPPCContext(ctx);
+
     __imp__sub_82596978(ctx, base);
 }
 
-void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825979A8 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825979A8);
+PPC_FUNC(sub_825979A8) {
     // DEBUG: Log first 10 calls to see if callback is being invoked
     static std::atomic<int> s_gfx_call_count{0};
     int gfx_count = s_gfx_call_count.fetch_add(1, std::memory_order_relaxed);
@@ -740,18 +760,27 @@ void MW05Shim_sub_825979A8(PPCContext& ctx, uint8_t* base) {
     // }
     // fflush(stderr);
 
+    SetPPCContext(ctx);
+    SetPPCContext(ctx);
+
     __imp__sub_825979A8(ctx, base);
 }
 
 
-void MW05Shim_sub_825A97B8(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825A97B8 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825A97B8);
+PPC_FUNC(sub_825A97B8) {
     KernelTraceHostOpF("sub_825A97B8.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     DumpEAWindow("825A97B8.r3", ctx.r3.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_825A97B8(ctx, base);
 }
 
 // Shim for sub_82880FA0 - logs calls to the function that calls sub_82885A70
-void MW05Shim_sub_82880FA0(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82880FA0 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82880FA0);
+PPC_FUNC(sub_82880FA0) {
     KernelTraceHostOpF("sub_82880FA0.lr=%08llX r3=%08X r4=%08X r5=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     extern void sub_82880FA0(PPCContext& ctx, uint8_t* base);
@@ -760,7 +789,9 @@ void MW05Shim_sub_82880FA0(PPCContext& ctx, uint8_t* base) {
 }
 
 // Shim for sub_82885A70 - logs the condition check for thread creation
-void MW05Shim_sub_82885A70(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82885A70 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82885A70);
+PPC_FUNC(sub_82885A70) {
     // Log the input structure to understand what's being checked
     uint32_t r25 = ctx.r3.u32;  // r25 = r3 (first parameter)
     uint32_t r30_ptr = 0;
@@ -837,7 +868,9 @@ void MW05HostAllocCb(PPCContext& ctx, uint8_t* base) {
 // It checks if there's enough space in the PM4 command buffer and returns a pointer.
 // The previous implementation was WRONG - it was treating it as array access.
 // Now we call the original recompiled function to get the correct behavior.
-void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82595FC8 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82595FC8);
+PPC_FUNC(sub_82595FC8) {
     static int call_count = 0;
     call_count++;
 
@@ -852,6 +885,8 @@ void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
     }
 
     // Call the original recompiled function to get the correct buffer pointer
+    SetPPCContext(ctx);
+
     __imp__sub_82595FC8(ctx, base);
 
     // Log the result
@@ -861,7 +896,9 @@ void MW05Shim_sub_82595FC8(PPCContext& ctx, uint8_t* base) {
     }
 }
 
-void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825972B0 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825972B0);
+PPC_FUNC(sub_825972B0) {
     KernelTraceHostOpF("sub_825972B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     uint32_t pre_r3 = ctx.r3.u32;
 
@@ -928,6 +965,8 @@ void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base) {
     // Keep dumps minimal; avoid heavy structure mutation here (XEX variant sensitive)
     DumpEAWindow("825972B0.r3", ctx.r3.u32);
     DumpSchedState("825972B0", ctx.r3.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_825972B0(ctx, base);
 
     // Optional post-call dump of syscmd payload region to catch freshly written PM4
@@ -1062,13 +1101,13 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
         KernelTraceHostOpF("HOST.BuilderKick.forward r3=%08X", ctx.r3.u32);
     #if defined(_MSC_VER)
         __try {
-            MW05Shim_sub_825972B0(ctx, base);
+            sub_825972B0(ctx, base);
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION code=%08X", (unsigned)GetExceptionCode());
         }
     #else
         try {
-            MW05Shim_sub_825972B0(ctx, base);
+            sub_825972B0(ctx, base);
         } catch (...) {
             KernelTraceHostOpF("HOST.BuilderKick.forward.EXCEPTION cpp");
         }
@@ -1107,10 +1146,9 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
 }
 
 // ---- Present function trace shim -------------------------------------------------
-void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base);
-
-
-void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82598A20 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82598A20);
+PPC_FUNC(sub_82598A20) {
     // Lightweight entry trace. Keep stderr + trace consistent with other shims.
     KernelTraceHostOpF("sub_82598A20.PRESENT enter lr=%08llX r3=%08X r4=%08X r5=%08X r31=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r31.u32);
@@ -1148,6 +1186,8 @@ void MW05Shim_sub_82598A20(PPCContext& ctx, uint8_t* base) {
     }
 
     // Forward to original present implementation
+    SetPPCContext(ctx);
+
     __imp__sub_82598A20(ctx, base);
 
     // Post-call breadcrumbs
@@ -1195,6 +1235,8 @@ PPC_FUNC(sub_8214B490) {
 
     // Parameters are valid, call the original function
     SetPPCContext(ctx);
+    SetPPCContext(ctx);
+
     __imp__sub_8214B490(ctx, base);
 }
 
@@ -1223,16 +1265,14 @@ PPC_FUNC(sub_825960B8) {
 
     // Always call the original function - it has proper error handling
     SetPPCContext(ctx);
+    SetPPCContext(ctx);
+
     __imp__sub_825960B8(ctx, base);
 }
 
-// Full replacement for sub_825968B0 to avoid NULL function pointer calls
+// Convert MW05Shim_sub_825968B0 to PPC_FUNC_IMPL pattern (removed duplicate PPC_FUNC definition)
+PPC_FUNC_IMPL(__imp__sub_825968B0);
 PPC_FUNC(sub_825968B0) {
-    // Forward to the shim implementation
-    MW05Shim_sub_825968B0(ctx, base);
-}
-
-void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[SHIM-ENTRY] sub_825968B0 lr=%08llX r3=%08X\n", (unsigned long long)ctx.lr, ctx.r3.u32);
     fflush(stderr);
     KernelTraceHostOpF("sub_825968B0.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
@@ -1309,19 +1349,27 @@ void MW05Shim_sub_825968B0(PPCContext& ctx, uint8_t* base) {
             return;
         }
     }
+    SetPPCContext(ctx);
+
     __imp__sub_825968B0(ctx, base);
     KernelTraceHostOpF("HOST.825968B0.ret r3=%08X", ctx.r3.u32);
 }
 
-void MW05Shim_sub_82596E40(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82596E40 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82596E40);
+PPC_FUNC(sub_82596E40) {
     KernelTraceHostOpF("sub_82596E40.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     if (ctx.r3.u32 >= 0x1000 && ctx.r3.u32 < PPC_MEMORY_SIZE) { MaybeLogSchedCapture(ctx.r3.u32); s_lastSchedR3.store(ctx.r3.u32, std::memory_order_release); s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel); }
     uint32_t v13520c = ReadBE32(ctx.r3.u32 + 13520);
     uint8_t v10432c = (uint8_t)(ReadBE32(ctx.r3.u32 + 10432) & 0xFF);
     KernelTraceHostOpF("HOST.82596E40.pre 13520=%08X 10432=%02X", v13520c, (unsigned)v10432c);
+    SetPPCContext(ctx);
+
     __imp__sub_82596E40(ctx, base);
 }
-void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82597650 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82597650);
+PPC_FUNC(sub_82597650) {
     KernelTraceHostOpF("sub_82597650.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     uint32_t pre_r3 = ctx.r3.u32;
 
@@ -1353,6 +1401,8 @@ void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
         }
         DumpSchedState("82597650.pre", ctx.r3.u32);
     }
+    SetPPCContext(ctx);
+
     __imp__sub_82597650(ctx, base);
     // Optional post-call dump of syscmd payload region (same guard as 825972B0)
     static const bool s_dump_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_DUMP_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
@@ -1407,7 +1457,9 @@ void MW05Shim_sub_82597650(PPCContext& ctx, uint8_t* base) {
 
 }
 
-void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825976D8 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825976D8);
+PPC_FUNC(sub_825976D8) {
     KernelTraceHostOpF("sub_825976D8.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     uint32_t pre_r3 = ctx.r3.u32;
 
@@ -1436,6 +1488,8 @@ void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
         }
         DumpSchedState("825976D8.pre", ctx.r3.u32);
     }
+    SetPPCContext(ctx);
+
     __imp__sub_825976D8(ctx, base);
     // Optional post-call dump of syscmd payload region (same guard)
     static const bool s_dump_after_builder = [](){ if (const char* v = std::getenv("MW05_PM4_DUMP_AFTER_BUILDER")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
@@ -1449,7 +1503,9 @@ void MW05Shim_sub_825976D8(PPCContext& ctx, uint8_t* base) {
 
 }
 
-void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_825A54F0 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_825A54F0);
+PPC_FUNC(sub_825A54F0) {
     KernelTraceHostOpF("sub_825A54F0.lr=%08llX r3=%08X r4=%08X r5=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     // Ensure r3 looks like a pointer; if not, seed from last-sched
@@ -1488,6 +1544,8 @@ void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
     DumpEAWindow("825A54F0.r3.pre", ctx.r3.u32);
     DumpEAWindow("825A54F0.r3+40.pre", ctx.r3.u32 ? ctx.r3.u32 + 0x40 : 0);
     DumpSchedState("825A54F0.pre", ctx.r3.u32);
+    SetPPCContext(ctx);
+
     __imp__sub_825A54F0(ctx, base);
     DumpEAWindow("825A54F0.r3.post", ctx.r3.u32);
     DumpEAWindow("825A54F0.r3+40.post", ctx.r3.u32 ? ctx.r3.u32 + 0x40 : 0);
@@ -1504,22 +1562,24 @@ void MW05Shim_sub_825A54F0(PPCContext& ctx, uint8_t* base) {
         }
         KernelTraceHostOpF("HOST.sub_825A54F0.post.try_825972B0 r3=%08X", ctx.r3.u32);
         // Call the PM4 builder through our shim so gating clears and fake alloc run
-        MW05Shim_sub_825972B0(ctx, base);
+        sub_825972B0(ctx, base);
         if (s_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_825A54F0.post.try_deep r3=%08X", ctx.r3.u32);
             // Route through our deep shims to keep gating clears and allocator seeding
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
+            sub_82597650(ctx, base);
+            sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
+            sub_825968B0(ctx, base);
+            sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }
 }
 
 // Main loop caller shim observed in logs (lr=82441D4C around TitleState calls)
-void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
+// Convert MW05Shim_sub_82441CF0 to PPC_FUNC_IMPL pattern
+PPC_FUNC_IMPL(__imp__sub_82441CF0);
+PPC_FUNC(sub_82441CF0) {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
@@ -1569,14 +1629,14 @@ void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
         uint32_t saved_r3 = ctx.r3.u32;
         ctx.r3.u32 = ctx.r5.u32;
         KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
+        sub_825972B0(ctx, base);
         if (s_loop_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_deep r3=%08X", ctx.r3.u32);
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
+            sub_82597650(ctx, base);
+            sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
+            sub_825968B0(ctx, base);
+            sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }
@@ -1587,20 +1647,15 @@ void MW05Shim_sub_82441CF0(PPCContext& ctx, uint8_t* base) {
         uint32_t saved_r3 = ctx.r3.u32;
         ctx.r3.u32 = ctx.r5.u32;
         KernelTraceHostOpF("HOST.sub_82441CF0.post.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        MW05Shim_sub_825972B0(ctx, base);
+        sub_825972B0(ctx, base);
         if (s_loop_try_pm4_deep) {
             KernelTraceHostOpF("HOST.sub_82441CF0.post.try_deep r3=%08X", ctx.r3.u32);
-            MW05Shim_sub_82597650(ctx, base);
-            MW05Shim_sub_825976D8(ctx, base);
+            sub_82597650(ctx, base);
+            sub_825976D8(ctx, base);
             // Additional allocator/callback prep + gating clear
-            MW05Shim_sub_825968B0(ctx, base);
-            MW05Shim_sub_82596E40(ctx, base);
+            sub_825968B0(ctx, base);
+            sub_82596E40(ctx, base);
         }
         ctx.r3.u32 = saved_r3;
     }
 }
-
-
-
-SHIM(sub_825A6DF0)
-SHIM(sub_825A65A8)

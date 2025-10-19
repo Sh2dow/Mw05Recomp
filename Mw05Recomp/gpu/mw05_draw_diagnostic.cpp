@@ -364,41 +364,26 @@ void sub_825A5D60(PPCContext& ctx, uint8_t* base) {
                     if (sched_ea >= 0x1000 && sched_ea < PPC_MEMORY_SIZE) {
                         DumpEAU32Window("sched.hdr", sched_ea, 8);
                         // Build PM4 with proper r3=scheduler; unconditionally run deep chain
-                        extern void MW05Shim_sub_82595FC8(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_825972B0(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_82597650(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_825976D8(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_825968B0(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_82596E40(PPCContext&, uint8_t*);
-                        extern void MW05Shim_sub_825A54F0(PPCContext&, uint8_t*);
                         uint32_t saved_r3 = ctx.r3.u32;
                         ctx.r3.u32 = sched_ea;
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_alloc r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_825968B0(ctx, base);
                         // Ensure r3 stays as scheduler for subsequent calls
                         ctx.r3.u32 = sched_ea;
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_pre r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_82595FC8(ctx, base);
                         ctx.r3.u32 = sched_ea;
                         // Run tail helpers BEFORE main, in case main long-jumps out
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_tail_pre r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_82597650(ctx, base);
                         ctx.r3.u32 = sched_ea;
-                        MW05Shim_sub_825976D8(ctx, base);
                         ctx.r3.u32 = sched_ea;
-                        MW05Shim_sub_82596E40(ctx, base);
                         ctx.r3.u32 = sched_ea;
                         // Try present-manager once before main builder to advance swap state
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_present_pre r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_825A54F0(ctx, base);
                         ctx.r3.u32 = sched_ea;
                         // Now attempt main builder
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_main r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_825972B0(ctx, base);
                         // Post helpers may not execute if main long-jumps; still try
                         ctx.r3.u32 = sched_ea;
                         KernelTraceHostOpF("HOST.DrawDiag.sub_825A5D60.try_post r3=%08X", ctx.r3.u32);
-                        MW05Shim_sub_825A54F0(ctx, base);
                         ctx.r3.u32 = saved_r3;
                     }
                 }

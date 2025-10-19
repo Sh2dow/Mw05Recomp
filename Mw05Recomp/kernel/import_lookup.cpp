@@ -422,10 +422,6 @@ PPC_EXTERN_FUNC(__imp__XMASetLoopData);
 PPC_EXTERN_FUNC(__imp__Refresh);
 
 
-PPC_EXTERN_FUNC(__imp__sub_82539870);
-PPC_EXTERN_FUNC(__imp__sub_82849BF8);
-PPC_EXTERN_FUNC(__imp__sub_82881020);
-
 // Build lookup table
 static std::unordered_map<std::string, PPCFunc*> g_importLookup;
 
@@ -853,9 +849,9 @@ static void InitializeImportLookup()
     g_importLookup["__imp__XexGetModuleSection"] = &__imp__XexGetModuleSection;
     g_importLookup["__imp__XexGetProcedureAddress"] = &__imp__XexGetProcedureAddress;
     g_importLookup["__imp____C_specific_handler"] = &__imp____C_specific_handler;
-    g_importLookup["__imp__sub_82539870"] = &__imp__sub_82539870;
-    g_importLookup["__imp__sub_82849BF8"] = &__imp__sub_82849BF8;
-    g_importLookup["__imp__sub_82881020"] = &__imp__sub_82881020;
+    g_importLookup["__imp__sub_82539870"] = sub_82539870;
+    g_importLookup["__imp__sub_82849BF8"] = sub_82849BF8;
+    g_importLookup["__imp__sub_82881020"] = sub_82881020;
 
 }
 

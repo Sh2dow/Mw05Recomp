@@ -14,17 +14,40 @@
 
 extern std::atomic<uint32_t> g_watchEA;
 
-extern "C" {
-    void __imp__sub_828508A8(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_82812ED0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_824411E0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_82442080(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8262F2A0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8262D9D0(PPCContext& ctx, uint8_t* base);  // Sleep function called from main loop
-    void __imp__sub_82813598(PPCContext& ctx, uint8_t* base);  // Worker thread initialization
-    void __imp__sub_82813678(PPCContext& ctx, uint8_t* base);  // Worker thread shutdown
+PPC_FUNC_IMPL(__imp__sub_82442080);
+PPC_FUNC(sub_82442080)
+{
+    fprintf(stderr, "[INIT-TRACE] sub_82442080 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_82442080(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_82442080 RETURN\n"); fflush(stderr);
+}
 
+PPC_FUNC_IMPL(__imp__sub_824411E0);
+PPC_FUNC(sub_824411E0) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_824411E0 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_824411E0(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_824411E0 RETURN\n"); fflush(stderr);
+}
+
+// Wrapper for sub_8262D9D0 - sleep function called from main loop
+// This is called when the sleep-skip flag at 0x82A1FF40 is ZERO
+PPC_FUNC_IMPL(__imp__sub_8262D9D0);
+PPC_FUNC(sub_8262D9D0) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    // Log every call - this should be called if the sleep-skip flag is ZERO
+    KernelTraceHostOpF("HOST.sub_8262D9D0.called lr=%08llX count=%llu r3=%08X",
+                      ctx.lr, count, ctx.r3.u32);
+
+    // Call the original
+    __imp__sub_8262D9D0(ctx, base);
+}
+
+extern "C" {
     uint32_t Mw05PeekSchedulerBlockEA();
 	void Mw05RegisterVdInterruptEvent(uint32_t eventEA, bool manualReset);
     void Mw05ForceVdInitOnce();
@@ -39,7 +62,17 @@ extern "C" {
     void VdInitializeRingBuffer(uint32_t base, uint32_t len_log2);
     void VdEnableRingBufferRPtrWriteBack(uint32_t base);
     void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr);
+
+    // Trace key initialization functions to find where sub_823AF590 is blocking
+    // void __imp__sub_8215D598(PPCContext& ctx, uint8_t* base);
+    // void __imp__sub_8262D010(PPCContext& ctx, uint8_t* base);
+    // void __imp__sub_8215E510(PPCContext& ctx, uint8_t* base);
+    // void __imp__sub_8245FBD0(PPCContext& ctx, uint8_t* base);
+    // void __imp__sub_823BCBF0(PPCContext& ctx, uint8_t* base);
+    // void __imp__sub_82812F10(PPCContext& ctx, uint8_t* base);
+
 }
+
 
 static inline bool KickVideoInitEnabled() {
     const char* env = std::getenv("MW05_KICK_VIDEO");
@@ -245,10 +278,73 @@ static std::atomic<bool> g_forcedGraphicsInit{false};
 extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags);
 extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount);
 
-void sub_828508A8(PPCContext& ctx, uint8_t* base) {
+
+PPC_FUNC_IMPL(__imp__sub_828508A8);
+PPC_FUNC(sub_828508A8) 
+{
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
-    fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx\n", GetCurrentThreadId());
+    fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
     fflush(stderr);
+
+    // CRITICAL DEBUG: Check what's in the context structure at offset +84
+    // This should contain the callback function pointer that sub_82850820 will call
+    if (ctx.r3.u32 != 0) {
+        uint8_t* ctx_ptr = base + ctx.r3.u32;
+        uint32_t* ctx_u32 = (uint32_t*)ctx_ptr;
+
+        fprintf(stderr, "[THREAD_828508A8] Context structure at 0x%08X:\n", ctx.r3.u32);
+        fprintf(stderr, "  +0x00: 0x%08X\n", __builtin_bswap32(ctx_u32[0]));
+        fprintf(stderr, "  +0x04: 0x%08X\n", __builtin_bswap32(ctx_u32[1]));
+        fprintf(stderr, "  +0x08: 0x%08X\n", __builtin_bswap32(ctx_u32[2]));
+        fprintf(stderr, "  +0x54 (84): 0x%08X  <-- CALLBACK FUNCTION POINTER!\n", __builtin_bswap32(ctx_u32[84/4]));
+        fprintf(stderr, "  +0x58 (88): 0x%08X  <-- CALLBACK PARAMETER!\n", __builtin_bswap32(ctx_u32[88/4]));
+        fflush(stderr);
+
+        // Check if the callback pointer is valid
+        uint32_t callback_ptr = __builtin_bswap32(ctx_u32[84/4]);
+        uint32_t callback_param = __builtin_bswap32(ctx_u32[88/4]);
+
+        if (callback_ptr == 0) {
+            fprintf(stderr, "[THREAD_828508A8] ERROR: Callback pointer at +84 is NULL!\n");
+            fprintf(stderr, "[THREAD_828508A8] This is why sub_82850820 doesn't call sub_82441E80!\n");
+            fprintf(stderr, "[THREAD_828508A8] The callback should be 0x823B0190 or similar.\n");
+            fflush(stderr);
+        } else if (callback_ptr >= 0x82000000 && callback_ptr < 0x83000000) {
+            fprintf(stderr, "[THREAD_828508A8] Callback pointer looks valid: 0x%08X\n", callback_ptr);
+            fflush(stderr);
+
+            // Dump the callback parameter structure
+            if (callback_param != 0 && callback_param >= 0x82000000 && callback_param < 0x83000000) {
+                uint8_t* param_ptr = base + callback_param;
+                uint32_t* param_u32 = (uint32_t*)param_ptr;
+
+                fprintf(stderr, "[THREAD_828508A8] Callback parameter structure at 0x%08X:\n", callback_param);
+                fprintf(stderr, "  +0x00 (0):  0x%08X\n", __builtin_bswap32(param_u32[0]));
+                fprintf(stderr, "  +0x04 (4):  0x%08X\n", __builtin_bswap32(param_u32[1]));
+                fprintf(stderr, "  +0x08 (8):  0x%08X  <-- STATE\n", __builtin_bswap32(param_u32[2]));
+                fprintf(stderr, "  +0x0C (12): 0x%08X  <-- RESULT\n", __builtin_bswap32(param_u32[3]));
+                fprintf(stderr, "  +0x10 (16): 0x%08X  <-- FUNCTION POINTER!\n", __builtin_bswap32(param_u32[4]));
+                fprintf(stderr, "  +0x14 (20): 0x%08X  <-- FUNCTION PARAMETER!\n", __builtin_bswap32(param_u32[5]));
+                fprintf(stderr, "  +0x18 (24): 0x%08X\n", __builtin_bswap32(param_u32[6]));
+                fprintf(stderr, "  +0x1C (28): 0x%08X  <-- FLAG (2 params if non-zero)\n", __builtin_bswap32(param_u32[7]));
+                fflush(stderr);
+
+                uint32_t work_func = __builtin_bswap32(param_u32[4]);
+                if (work_func == 0) {
+                    fprintf(stderr, "[THREAD_828508A8] ERROR: Work function pointer at +16 is NULL!\n");
+                    fprintf(stderr, "[THREAD_828508A8] This is why Thread #1 doesn't do any work!\n");
+                    fprintf(stderr, "[THREAD_828508A8] The work queue at 0x829091C8 is probably empty.\n");
+                    fflush(stderr);
+                } else {
+                    fprintf(stderr, "[THREAD_828508A8] Work function pointer: 0x%08X\n", work_func);
+                    fflush(stderr);
+                }
+            }
+        } else {
+            fprintf(stderr, "[THREAD_828508A8] WARNING: Callback pointer looks suspicious: 0x%08X\n", callback_ptr);
+            fflush(stderr);
+        }
+    }
 
     if(KickVideoInitEnabled()) KickMinimalVideo();
 	if (ForceVdInitEnabled()) { Mw05ForceVdInitOnce(); Mw05LogIsrIfRegisteredOnce(); }
@@ -317,46 +413,36 @@ void sub_828508A8(PPCContext& ctx, uint8_t* base) {
 
     fprintf(stderr, "[THREAD_828508A8] Calling __imp__sub_828508A8 tid=%lx\n", GetCurrentThreadId());
     fflush(stderr);
-    __imp__sub_828508A8(ctx, base);
 
-    fprintf(stderr, "[THREAD_828508A8] __imp__sub_828508A8 returned tid=%lx\n", GetCurrentThreadId());
-    fflush(stderr);
-    KernelTraceHostOp("HOST.ThreadEntry.828508A8.returned");
+    // CRITICAL: Add periodic logging to detect if thread is stuck
+    static std::atomic<int> s_call_count{0};
+    int call_num = ++s_call_count;
 
-    // After the first thread completes, try forcing graphics init
-    if (!g_forcedGraphicsInit.exchange(true, std::memory_order_acq_rel)) {
-        fprintf(stderr, "[THREAD_828508A8] Checking MW05_FORCE_GRAPHICS_INIT tid=%lx\n", GetCurrentThreadId());
-        fflush(stderr);
-
-        if (const char* force = std::getenv("MW05_FORCE_GRAPHICS_INIT")) {
-            fprintf(stderr, "[THREAD_828508A8] MW05_FORCE_GRAPHICS_INIT=%s tid=%lx\n", force, GetCurrentThreadId());
-            fflush(stderr);
-
-            if (!(force[0]=='0' && force[1]=='\0')) {
-                KernelTraceHostOp("HOST.sub_828508A8.FORCE_GRAPHICS_INIT calling sub_823AF590");
-                fprintf(stderr, "[FORCE_GFX_INIT] Calling sub_823AF590 from thread %lx\n", GetCurrentThreadId());
-                fflush(stderr);
-
-                // Call the graphics init function
-                __imp__sub_823AF590(ctx, base);
-
-                KernelTraceHostOp("HOST.sub_828508A8.FORCE_GRAPHICS_INIT sub_823AF590 returned");
-                fprintf(stderr, "[FORCE_GFX_INIT] sub_823AF590 returned\n");
+    // Start a monitoring thread to detect if this thread gets stuck
+    std::thread monitor([call_num]() {
+        for (int i = 0; i < 60; ++i) {  // Monitor for 60 seconds
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (i % 10 == 0) {
+                fprintf(stderr, "[THREAD_828508A8_MONITOR] Thread #%d still running after %d seconds\n", call_num, i);
                 fflush(stderr);
             }
-        } else {
-            fprintf(stderr, "[THREAD_828508A8] MW05_FORCE_GRAPHICS_INIT not set tid=%lx\n", GetCurrentThreadId());
-            fflush(stderr);
         }
-    }
+        fprintf(stderr, "[THREAD_828508A8_MONITOR] Thread #%d completed or timed out after 60 seconds\n", call_num);
+        fflush(stderr);
+    });
+    monitor.detach();
 
-    fprintf(stderr, "[THREAD_828508A8] EXIT tid=%lx\n", GetCurrentThreadId());
+    // Call the original thread entry point
+    __imp__sub_828508A8(ctx, base);
+
+    fprintf(stderr, "[THREAD_828508A8] EXIT tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
     fflush(stderr);
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.exit");
 }
 
-
-void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_82812ED0);
+PPC_FUNC(sub_82812ED0)
+{
     fprintf(stderr, "[WRAPPER_82812ED0] ENTER - wrapper is being called! r3=0x%08X\n", ctx.r3.u32);
     fflush(stderr);
 
@@ -441,6 +527,34 @@ void sub_82812ED0(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[WRAPPER_82812ED0] About to call __imp__sub_82812ED0\n");
     fflush(stderr);
 
+    // CRITICAL FIX: Explicitly set the state flag from host code BEFORE calling original
+    // This ensures the flag is visible to other threads even if the PPC code caches it
+    if (ctx.r3.u32 != 0) {
+        uint32_t* ctx_ptr = (uint32_t*)(base + ctx.r3.u32);
+        ctx_ptr[0] = __builtin_bswap32(1);  // Set state = 1 (big-endian)
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        fprintf(stderr, "[WRAPPER_82812ED0] Explicitly set state flag to 1 at 0x%08X\n", ctx.r3.u32);
+        fflush(stderr);
+    }
+
+    // Check dword_828F1F90 (event handle) before calling worker
+    const uint32_t dword_828F1F90_addr = 0x828F1F90;
+    uint8_t* dword_host = base + dword_828F1F90_addr;
+    if (dword_host) {
+        uint32_t* dword_ptr = (uint32_t*)dword_host;
+        uint32_t event_handle_be = __builtin_bswap32(*dword_ptr);
+        uint32_t event_handle_le = *dword_ptr;
+        fprintf(stderr, "[WRAPPER_82812ED0] dword_828F1F90 (event handle) BE=0x%08X LE=0x%08X raw=0x%08X\n",
+                event_handle_be, event_handle_le, *dword_ptr);
+        fflush(stderr);
+
+        // Also check what the worker function will read using PPC_LOAD_U32
+        // This simulates the exact same load that the worker function does
+        uint32_t loaded_value = __builtin_bswap32(*dword_ptr);  // Same as PPC_LOAD_U32
+        fprintf(stderr, "[WRAPPER_82812ED0] Worker will read handle as: 0x%08X (after byte-swap)\n", loaded_value);
+        fflush(stderr);
+    }
+
     __imp__sub_82812ED0(ctx, base);
 
     fprintf(stderr, "[WRAPPER_82812ED0] __imp__sub_82812ED0 returned\n");
@@ -464,7 +578,9 @@ static inline bool BreakCRTInitLoopEnabled() {
 }
 
 // Wrapper for sub_8262DD80 to detect and break infinite string formatting loops
-void sub_8262DD80(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8262DD80);
+PPC_FUNC(sub_8262DD80)
+{
     static std::atomic<uint64_t> s_callCount{0};
     static std::atomic<uint64_t> s_lastLogTime{0};
 
@@ -503,7 +619,9 @@ void sub_8262DD80(PPCContext& ctx, uint8_t* base) {
 
 // Wrapper for sub_8262DE60 - frame update function (NOT CRT init!)
 // This is called from the main game loop and should NOT be skipped
-void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8262DE60);
+PPC_FUNC(sub_8262DE60)
+{
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
@@ -553,158 +671,14 @@ void sub_8262DE60(PPCContext& ctx, uint8_t* base) {
     }
 }
 
-// Wrapper for sub_8262D9D0 - sleep function called from main loop
-// This is called when the sleep-skip flag at 0x82A1FF40 is ZERO
-void sub_8262D9D0(PPCContext& ctx, uint8_t* base) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    // Log every call - this should be called if the sleep-skip flag is ZERO
-    KernelTraceHostOpF("HOST.sub_8262D9D0.called lr=%08llX count=%llu r3=%08X",
-                      ctx.lr, count, ctx.r3.u32);
-
-    // Call the original
-    __imp__sub_8262D9D0(ctx, base);
-}
-
-// Wrapper for sub_8262D9A0 - another sleep function
-// NOTE: This function is not actually called in our implementation, but we keep the wrapper for logging
-// void sub_8262D9A0(PPCContext& ctx, uint8_t* base) {
-//     static std::atomic<uint64_t> s_callCount{0};
-//     uint64_t count = s_callCount.fetch_add(1);
-
-//     // Log every call
-//     KernelTraceHostOpF("HOST.sub_8262D9A0.called lr=%08llX count=%llu r3=%08X",
-//                       ctx.lr, count, ctx.r3.u32);
-
-//     // Call the original
-//     __imp__sub_8262D9A0(ctx, base);
-// }
-
-// Worker thread initialization function (sets up qword_828F1F98 and creates Thread #2)
-void sub_82813598(PPCContext& ctx, uint8_t* base) {
-    fprintf(stderr, "[WORKER-INIT] sub_82813598 CALLED - Worker thread initialization!\n");
-    fprintf(stderr, "[WORKER-INIT] Parameters: r3=0x%08X (used for division!)\n", ctx.r3.u32);
-    fprintf(stderr, "[WORKER-INIT] This function should:\n");
-    fprintf(stderr, "[WORKER-INIT]   1. Create event (call sub_8284E6C0)\n");
-    fprintf(stderr, "[WORKER-INIT]   2. Calculate: divw r9, 0xFF676980, r3 (r3 MUST be > 0!)\n");
-    fprintf(stderr, "[WORKER-INIT]   3. Store r9 into qword_828F1F98\n");
-    fprintf(stderr, "[WORKER-INIT]   4. Create Thread #2 (call sub_82813418)\n");
-
-    // Check if r3 is valid for division
-    if (ctx.r3.u32 == 0) {
-        fprintf(stderr, "[WORKER-INIT] ERROR: r3 is 0! Division will fail and trap!\n");
-        fprintf(stderr, "[WORKER-INIT] This will prevent qword_828F1F98 from being set!\n");
-    } else {
-        // Calculate what the value should be
-        int32_t r10 = (int32_t)0xFF676980;
-        int32_t r30 = (int32_t)ctx.r3.u32;
-        int32_t r9 = r10 / r30;
-        int64_t r11 = (int64_t)r9; // extsw - sign extend
-        fprintf(stderr, "[WORKER-INIT] Expected calculation: 0x%08X / 0x%08X = 0x%08X (sign-extended: 0x%016llX)\n",
-                (uint32_t)r10, (uint32_t)r30, (uint32_t)r9, (uint64_t)r11);
-    }
-
-    // Check qword_828F1F98 BEFORE initialization
-    const uint32_t qword_addr = 0x828F1F98;
-    void* qword_host = g_memory.Translate(qword_addr);
-    if (qword_host) {
-        uint64_t* qword_ptr = (uint64_t*)qword_host;
-        uint64_t value_before = __builtin_bswap64(*qword_ptr);
-        fprintf(stderr, "[WORKER-INIT] BEFORE: qword_828F1F98 = 0x%016llX\n", value_before);
-    }
-
-    // CRITICAL FIX: Manually set qword_828F1F98 BEFORE calling the original function
-    // The recompiled code has a bug where the value is not stored correctly
-    if (ctx.r3.u32 != 0 && qword_host) {
-        int32_t dividend = (int32_t)0xFF676980;
-        int32_t divisor = (int32_t)ctx.r3.u32;
-        int64_t result = (int64_t)dividend / (int64_t)divisor;
-
-        uint64_t* qword_ptr = (uint64_t*)qword_host;
-        uint64_t value_be = __builtin_bswap64((uint64_t)result);
-        *qword_ptr = value_be;
-
-        fprintf(stderr, "[WORKER-INIT-FIX] Manually set qword_828F1F98 to 0x%016llX\n", (uint64_t)result);
-        fflush(stderr);
-    }
-
-    fflush(stderr);
-
-    SetPPCContext(ctx);
-
-    // DEBUG: Check register values BEFORE calling the function
-    fprintf(stderr, "[WORKER-INIT-DEBUG] BEFORE call: r3=0x%016llX r30=0x%016llX r31=0x%016llX\n",
-            ctx.r3.u64, ctx.r30.u64, ctx.r31.u64);
-
-    // DEBUG: Check the initialization flag value
-    // Address: 0x82A384B0 (r29 + 5932, where r29 = 0x82A36D84, 5932 = 0x172C)
-    uint32_t init_flag_addr = 0x82A384B0;
-    uint8_t* init_flag_host = base + init_flag_addr;
-    if (init_flag_host) {
-        uint32_t* init_flag_ptr = (uint32_t*)init_flag_host;
-        uint32_t init_flag_before = __builtin_bswap32(*init_flag_ptr);
-        fprintf(stderr, "[WORKER-INIT-DEBUG] BEFORE call: init_flag at 0x%08X = 0x%08X\n", init_flag_addr, init_flag_before);
-        if (init_flag_before != 0) {
-            fprintf(stderr, "[WORKER-INIT-DEBUG] WARNING: init_flag is already set! Function will skip initialization!\n");
-            fprintf(stderr, "[WORKER-INIT-DEBUG] This means qword_828F1F98 will NOT be set!\n");
-        }
-    }
-    fflush(stderr);
-
-    __imp__sub_82813598(ctx, base);
-
-    // DEBUG: Check register values AFTER calling the function
-    fprintf(stderr, "[WORKER-INIT-DEBUG] AFTER call: r9=0x%016llX r10=0x%016llX r11=0x%016llX r30=0x%016llX r31=0x%016llX\n",
-            ctx.r9.u64, ctx.r10.u64, ctx.r11.u64, ctx.r30.u64, ctx.r31.u64);
-    fprintf(stderr, "[WORKER-INIT-DEBUG] r9.s32=0x%08X r9.s64=0x%016llX\n",
-            ctx.r9.u32, ctx.r9.u64);
-    fprintf(stderr, "[WORKER-INIT-DEBUG] r10.s32=0x%08X r10.s64=0x%016llX\n",
-            ctx.r10.u32, ctx.r10.u64);
-    fprintf(stderr, "[WORKER-INIT-DEBUG] r11.s32=0x%08X r11.s64=0x%016llX\n",
-            ctx.r11.u32, ctx.r11.u64);
-    fprintf(stderr, "[WORKER-INIT-DEBUG] r30.s32=0x%08X r30.s64=0x%016llX\n",
-            ctx.r30.u32, ctx.r30.u64);
-    fflush(stderr);
-
-    // Check qword_828F1F98 AFTER initialization
-    if (qword_host) {
-        uint64_t* qword_ptr = (uint64_t*)qword_host;
-        uint64_t value_after = __builtin_bswap64(*qword_ptr);
-        fprintf(stderr, "[WORKER-INIT] AFTER: qword_828F1F98 = 0x%016llX\n", value_after);
-        if (value_after == 0) {
-            fprintf(stderr, "[WORKER-INIT] ERROR: qword_828F1F98 is still 0! Recompiler fix didn't work!\n");
-            fprintf(stderr, "[WORKER-INIT] Applying FINAL FIX - setting value AFTER original function returns...\n");
-
-            // FINAL FIX: Set the value AFTER the original function returns
-            // The original function overwrites it back to 0, so we restore it here
-            if (ctx.r3.u32 != 0) {
-                int32_t dividend = (int32_t)0xFF676980;
-                int32_t divisor = (int32_t)ctx.r3.u32;
-                int64_t result = (int64_t)dividend / (int64_t)divisor;
-
-                uint64_t value_be = __builtin_bswap64((uint64_t)result);
-                *qword_ptr = value_be;
-
-                uint64_t verified = __builtin_bswap64(*qword_ptr);
-                fprintf(stderr, "[WORKER-INIT-FINAL-FIX] Set qword_828F1F98 to 0x%016llX (verified: 0x%016llX)\n",
-                        (uint64_t)result, verified);
-                fflush(stderr);
-            }
-        } else {
-            fprintf(stderr, "[WORKER-INIT] SUCCESS: qword_828F1F98 is set to non-zero value! Recompiler fix works!\n");
-        }
-    }
-
-    fprintf(stderr, "[WORKER-INIT] sub_82813598 RETURNED\n");
-    fflush(stderr);
-}
+// REMOVED: sub_82813598 wrapper - causes infinite recursion
+// The generated code uses PPC_WEAK_FUNC, so we can't call the "original"
+// We would need to copy the entire generated function body here to add logging
 
 // Event creation function (called by sub_82813598)
-extern "C" void __imp__sub_82814068(PPCContext&, uint8_t*);
-extern "C" void __imp__sub_8284E6C0(PPCContext&, uint8_t*);
-
-void sub_82814068_wrapper(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_82814068);
+PPC_FUNC(sub_82814068)
+{
     uint64_t r30_before = ctx.r30.u64;
     fprintf(stderr, "[INIT-FUNC] sub_82814068 CALLED - Initialization function!\n");
     fprintf(stderr, "[INIT-FUNC] r30 BEFORE call: 0x%016llX\n", r30_before);
@@ -721,7 +695,9 @@ void sub_82814068_wrapper(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
 }
 
-void sub_8284E6C0(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8284E6C0);
+PPC_FUNC(sub_8284E6C0)
+{
     uint64_t r30_before = ctx.r30.u64;
     fprintf(stderr, "[EVENT-CREATE] sub_8284E6C0 CALLED - Event creation!\n");
     fprintf(stderr, "[EVENT-CREATE] r30 BEFORE call: 0x%016llX (should be 0x00000064 if mr r30,r3 executed!)\n", r30_before);
@@ -739,7 +715,9 @@ void sub_8284E6C0(PPCContext& ctx, uint8_t* base) {
 }
 
 // Worker thread shutdown function (sets qword_828F1F98 to 0 and waits for Thread #2 to exit)
-void sub_82813678(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_82813678);
+PPC_FUNC(sub_82813678)
+{
     fprintf(stderr, "[WORKER-SHUTDOWN] sub_82813678 CALLED - Worker thread shutdown!\n");
     fflush(stderr);
 
@@ -750,11 +728,18 @@ void sub_82813678(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
 }
 
-// sub_8262D998 wrapper - this function corrupts qword_828F1F98
-// ROOT CAUSE: sub_8262D998 is called by sub_82813418 and overwrites qword_828F1F98
-// FIX: Save and restore qword_828F1F98 around the call
-extern "C" void __imp__sub_8262D998(PPCContext& ctx, uint8_t* base);
-void sub_8262D998_wrapper(PPCContext& ctx, uint8_t* base) {
+// REMOVED: All PPC_FUNC wrappers that call __imp__... functions
+// These cause infinite recursion because __imp__... functions don't exist
+// The generated code uses PPC_WEAK_FUNC, so when we override with PPC_WEAK_FUNC,
+// we completely replace the function - there's no "original" to call back to
+//
+// To add logging, we would need to:
+// 1. Copy the entire generated function body into our override, OR
+// 2. Use a different hooking mechanism that doesn't replace the function
+
+PPC_FUNC_IMPL(__imp__sub_8262D998);
+PPC_FUNC(sub_8262D998)
+{
     // Address of the global flag that controls worker thread execution
     const uint32_t qword_828F1F98_addr = 0x828F1F98;
     uint8_t* qword_host = base + qword_828F1F98_addr;
@@ -782,6 +767,192 @@ void sub_8262D998_wrapper(PPCContext& ctx, uint8_t* base) {
             fprintf(stderr, "[sub_8262D998_wrapper] RESTORING qword_828F1F98 to 0x%016llX\n", saved_value);
             fflush(stderr);
             *qword_ptr = __builtin_bswap64(saved_value);
+        }
+    }
+}
+
+PPC_FUNC_IMPL(__imp__sub_823AF590);
+PPC_FUNC(sub_823AF590) 
+{
+    fprintf(stderr, "[sub_823AF590] ENTERED - Game initialization function\n");
+    fprintf(stderr, "[sub_823AF590] About to call __imp__sub_823AF590\n");
+    fflush(stderr);
+
+    SetPPCContext(ctx);
+
+    // Call the original function - this will block until initialization completes
+    __imp__sub_823AF590(ctx, base);
+
+    fprintf(stderr, "[sub_823AF590] RETURNED - Initialization complete!\n");
+    fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8215D598);
+PPC_FUNC(sub_8215D598) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_8215D598 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_8215D598(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_8215D598 RETURN\n"); fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8262D010);
+PPC_FUNC(sub_8262D010) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_8262D010 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_8262D010(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_8262D010 RETURN\n"); fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8215E510); 
+PPC_FUNC(sub_8215E510) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_8215E510 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_8215E510(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_8215E510 RETURN\n"); fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8245FBD0);
+PPC_FUNC(sub_8245FBD0) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_8245FBD0 ENTER (this creates Thread #2)\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_8245FBD0(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_8245FBD0 RETURN (Thread #2 should be running)\n"); fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_823BCBF0);
+PPC_FUNC(sub_823BCBF0) 
+{
+    fprintf(stderr, "[INIT-TRACE] sub_823BCBF0 ENTER (file check)\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_823BCBF0(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_823BCBF0 RETURN r3=%08X\n", ctx.r3.u32); fflush(stderr);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82812F10);
+PPC_FUNC(sub_82812F10)
+{
+    fprintf(stderr, "[INIT-TRACE] sub_82812F10 ENTER\n"); fflush(stderr);
+    SetPPCContext(ctx);
+    __imp__sub_82812F10(ctx, base);
+    fprintf(stderr, "[INIT-TRACE] sub_82812F10 RETURN\n"); fflush(stderr);
+}
+
+// Wrapper for sub_82630378 to log the handle parameter
+PPC_FUNC_IMPL(__imp__sub_82630378);
+PPC_FUNC(sub_82630378)
+{
+    static int s_callCount = 0;
+    int callNum = ++s_callCount;
+
+    if (callNum <= 20) {  // Log first 20 calls
+        // Read the actual value from memory at 0x828F1F90
+        uint32_t mem_value_le = *(uint32_t*)(base + 0x828F1F90);
+        uint32_t mem_value_be = __builtin_bswap32(mem_value_le);
+
+        fprintf(stderr, "[WAIT-WRAPPER] sub_82630378 call #%d: r3(handle)=0x%08X r4(timeout)=0x%08X mem[0x828F1F90]=0x%08X(BE)\n",
+                callNum, ctx.r3.u32, ctx.r4.u32, mem_value_be);
+        fflush(stderr);
+    }
+
+    SetPPCContext(ctx);
+    __imp__sub_82630378(ctx, base);
+
+    if (callNum <= 20) {
+        fprintf(stderr, "[WAIT-WRAPPER] sub_82630378 call #%d returned: r3(status)=0x%08X\n",
+                callNum, ctx.r3.u32);
+        fflush(stderr);
+    }
+}
+
+// Wrapper for sub_82813598 to fix qword_828F1F98 initialization
+// This function manually sets qword_828F1F98 before/after calling the original function
+// to work around a bug in the recompiled PPC code.
+PPC_FUNC_IMPL(__imp__sub_82813598);
+PPC_FUNC(sub_82813598)
+{
+    static int s_callCount = 0;
+    int callNum = ++s_callCount;
+
+    if (callNum <= 5) {
+        fprintf(stderr, "[WRAPPER-82813598] Worker init function called! r3=0x%08X\n", ctx.r3.u32);
+        fflush(stderr);
+    }
+
+    // The expected calculation: divw r9, 0xFF676980, r3
+    // When r3 = 0x64 (100 decimal):
+    // 0xFF676980 / 0x64 = 0xFFFE7960 (sign-extended to 64-bit: 0xFFFFFFFFFFFE7960)
+    const int32_t dividend = (int32_t)0xFF676980;  // -9999488 in decimal
+    const int32_t divisor = (int32_t)ctx.r3.u32;
+
+    if (divisor == 0) {
+        fprintf(stderr, "[WRAPPER-82813598] ERROR: divisor is 0! Cannot divide!\n");
+        fflush(stderr);
+        ctx.r3.u64 = 0;
+        return;
+    }
+
+    const int64_t result = (int64_t)dividend / (int64_t)divisor;
+
+    if (callNum <= 5) {
+        fprintf(stderr, "[WRAPPER-82813598] Calculation: 0x%08X / 0x%08X = 0x%016llX\n",
+                (uint32_t)dividend, (uint32_t)divisor, (uint64_t)result);
+        fflush(stderr);
+    }
+
+    // Store the result into qword_828F1F98 BEFORE calling the original function
+    const uint32_t qword_addr = 0x828F1F98;
+    void* qword_ptr = g_memory.Translate(qword_addr);
+    if (qword_ptr) {
+        // Write new value (big-endian)
+        uint64_t value_be = __builtin_bswap64((uint64_t)result);
+        *(uint64_t*)qword_ptr = value_be;
+
+        if (callNum <= 5) {
+            fprintf(stderr, "[WRAPPER-82813598] qword_828F1F98 set to 0x%016llX\n", (uint64_t)result);
+            fflush(stderr);
+        }
+    } else {
+        fprintf(stderr, "[WRAPPER-82813598] ERROR: Failed to translate address 0x%08X\n", qword_addr);
+        fflush(stderr);
+    }
+
+    // Call the original recompiled function to do the rest of the work
+    if (callNum <= 5) {
+        fprintf(stderr, "[WRAPPER-82813598] Calling original function...\n");
+        fflush(stderr);
+    }
+
+    SetPPCContext(ctx);
+    __imp__sub_82813598(ctx, base);
+
+    if (callNum <= 5) {
+        fprintf(stderr, "[WRAPPER-82813598] Original function returned, r3=0x%08X\n", ctx.r3.u32);
+        fflush(stderr);
+    }
+
+    // Verify qword_828F1F98 is still set correctly after the original function returns
+    if (qword_ptr) {
+        uint64_t final_value = __builtin_bswap64(*(uint64_t*)qword_ptr);
+
+        if (callNum <= 5) {
+            fprintf(stderr, "[WRAPPER-82813598] FINAL: qword_828F1F98 = 0x%016llX\n", final_value);
+            fflush(stderr);
+        }
+
+        if (final_value != (uint64_t)result) {
+            fprintf(stderr, "[WRAPPER-82813598] WARNING: Value was corrupted! Restoring...\n");
+            fflush(stderr);
+
+            // Restore the value
+            uint64_t value_be = __builtin_bswap64((uint64_t)result);
+            *(uint64_t*)qword_ptr = value_be;
+
+            fprintf(stderr, "[WRAPPER-82813598] Value restored to 0x%016llX\n", (uint64_t)result);
+            fflush(stderr);
         }
     }
 }

@@ -4,89 +4,24 @@
 #include <cpu/ppc_context.h>
 
 // MW05-specific function hooks to fix bugs in recompiled PPC code
-
-// Forward declare the original recompiled function
-extern void sub_82813598(PPCContext& __restrict ctx, uint8_t* base);
+// NOTE: Most hooks have been converted to PPC_FUNC_IMPL wrappers in mw05_trace_threads.cpp
+// This file is kept for legacy hooks that haven't been converted yet
 
 // sub_82813598_hook: Wrapper for worker thread initialization function
 // This function manually sets qword_828F1F98 before/after calling the original function
 // to work around a bug in the recompiled PPC code.
-static void sub_82813598_hook(PPCContext& __restrict ctx, uint8_t* base) {
-    fprintf(stderr, "[HOOK-82813598] Worker init function called! r3=0x%08X\n", ctx.r3.u32);
-    fflush(stderr);
-
-    // The expected calculation: divw r9, 0xFF676980, r3
-    // When r3 = 0x64 (100 decimal):
-    // 0xFF676980 / 0x64 = 0xFFFE7960 (sign-extended to 64-bit: 0xFFFFFFFFFFFE7960)
-    const int32_t dividend = (int32_t)0xFF676980;  // -9999488 in decimal
-    const int32_t divisor = (int32_t)ctx.r3.u32;
-
-    if (divisor == 0) {
-        fprintf(stderr, "[HOOK-82813598] ERROR: divisor is 0! Cannot divide!\n");
-        fflush(stderr);
-        ctx.r3.u64 = 0;
-        return;
-    }
-
-    const int64_t result = (int64_t)dividend / (int64_t)divisor;
-
-    fprintf(stderr, "[HOOK-82813598] Calculation: 0x%08X / 0x%08X = 0x%016llX\n",
-            (uint32_t)dividend, (uint32_t)divisor, (uint64_t)result);
-    fflush(stderr);
-
-    // Store the result into qword_828F1F98 BEFORE calling the original function
-    const uint32_t qword_addr = 0x828F1F98;
-    void* qword_ptr = g_memory.Translate(qword_addr);
-    if (qword_ptr) {
-        // Write new value (big-endian)
-        uint64_t value_be = __builtin_bswap64((uint64_t)result);
-        *(uint64_t*)qword_ptr = value_be;
-
-        fprintf(stderr, "[HOOK-82813598] qword_828F1F98 set to 0x%016llX\n", (uint64_t)result);
-        fflush(stderr);
-    } else {
-        fprintf(stderr, "[HOOK-82813598] ERROR: Failed to translate address 0x%08X\n", qword_addr);
-        fflush(stderr);
-    }
-
-    // Call the original recompiled function to do the rest of the work
-    fprintf(stderr, "[HOOK-82813598] Calling original function...\n");
-    fflush(stderr);
-
-    sub_82813598(ctx, base);
-
-    fprintf(stderr, "[HOOK-82813598] Original function returned, r3=0x%08X\n", ctx.r3.u32);
-    fflush(stderr);
-
-    // Verify qword_828F1F98 is still set correctly after the original function returns
-    if (qword_ptr) {
-        uint64_t final_value = __builtin_bswap64(*(uint64_t*)qword_ptr);
-        fprintf(stderr, "[HOOK-82813598] FINAL: qword_828F1F98 = 0x%016llX\n", final_value);
-        fflush(stderr);
-
-        if (final_value != (uint64_t)result) {
-            fprintf(stderr, "[HOOK-82813598] WARNING: Value was corrupted! Restoring...\n");
-            fflush(stderr);
-
-            // Restore the value
-            uint64_t value_be = __builtin_bswap64((uint64_t)result);
-            *(uint64_t*)qword_ptr = value_be;
-
-            fprintf(stderr, "[HOOK-82813598] Value restored to 0x%016llX\n", (uint64_t)result);
-            fflush(stderr);
-        }
-    }
-}
 
 // sub_8215FDC0_hook: Memory pool initialization function
 // This function is called lazily by sub_8215CB08 when dword_82A2BF44 is 0
-static void sub_8215FDC0_hook(PPCContext& __restrict ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8215FDC0);
+PPC_FUNC(sub_8215FDC0)
+{
     fprintf(stderr, "[HOOK-8215FDC0] Memory pool init called! lr=0x%08llX\n", (unsigned long long)ctx.lr);
     fflush(stderr);
 
     // Call the original function
     extern void sub_8215FDC0(PPCContext& ctx, uint8_t* base);
-    sub_8215FDC0(ctx, base);
+    __imp__sub_8215FDC0(ctx, base);
 
     fprintf(stderr, "[HOOK-8215FDC0] Memory pool init completed, r3=0x%08X\n", ctx.r3.u32);
     fflush(stderr);
@@ -94,30 +29,33 @@ static void sub_8215FDC0_hook(PPCContext& __restrict ctx, uint8_t* base) {
 
 // sub_8215CB08_hook: Memory allocator function
 // This function checks dword_82A2BF44 and calls sub_8215FDC0 if it's 0
-static void sub_8215CB08_hook(PPCContext& __restrict ctx, uint8_t* base) {
-    // Check dword_82A2BF44 value
-    const uint32_t dword_addr = 0x82A2BF44;
-    void* dword_ptr = g_memory.Translate(dword_addr);
-    uint32_t dword_value = 0;
-    if (dword_ptr) {
-        dword_value = __builtin_bswap32(*(uint32_t*)dword_ptr);
-    }
-
-    fprintf(stderr, "[HOOK-8215CB08] Allocator called! r3=0x%08X dword_82A2BF44=0x%08X lr=0x%08llX\n",
-            ctx.r3.u32, dword_value, (unsigned long long)ctx.lr);
-    fflush(stderr);
-
-    // Call the original function
-    extern void sub_8215CB08(PPCContext& ctx, uint8_t* base);
-    sub_8215CB08(ctx, base);
-
-    fprintf(stderr, "[HOOK-8215CB08] Allocator returned, r3=0x%08X\n", ctx.r3.u32);
-    fflush(stderr);
-}
+// PPC_FUNC_IMPL(__imp__sub_8215CB08);
+// PPC_FUNC(sub_8215CB08)
+// {
+//     // Check dword_82A2BF44 value
+//     const uint32_t dword_addr = 0x82A2BF44;
+//     void* dword_ptr = g_memory.Translate(dword_addr);
+//     uint32_t dword_value = 0;
+//     if (dword_ptr) {
+//         dword_value = __builtin_bswap32(*(uint32_t*)dword_ptr);
+//     }
+// 
+//     fprintf(stderr, "[HOOK-8215CB08] Allocator called! r3=0x%08X dword_82A2BF44=0x%08X lr=0x%08llX\n",
+//             ctx.r3.u32, dword_value, (unsigned long long)ctx.lr);
+//     fflush(stderr);
+// 
+//     // Call the original function
+//     __imp__sub_8215CB08(ctx, base);
+// 
+//     fprintf(stderr, "[HOOK-8215CB08] Allocator returned, r3=0x%08X\n", ctx.r3.u32);
+//     fflush(stderr);
+// }
 
 // sub_8211E470_hook: Vector resize function
 // This function is crashing because the structure is not properly initialized
-static void sub_8211E470_hook(PPCContext& __restrict ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8211E470);
+PPC_FUNC(sub_8211E470)
+{
     static int call_count = 0;
     call_count++;
 
@@ -177,8 +115,7 @@ static void sub_8211E470_hook(PPCContext& __restrict ctx, uint8_t* base) {
     }
 
     // Call the original function
-    extern void sub_8211E470(PPCContext& ctx, uint8_t* base);
-    sub_8211E470(ctx, base);
+    __imp__sub_8211E470(ctx, base);
 
     if (call_count <= 10) {
         fprintf(stderr, "[HOOK-8211E470] Vector resize completed, r3=0x%08X\n", ctx.r3.u32);
@@ -188,7 +125,9 @@ static void sub_8211E470_hook(PPCContext& __restrict ctx, uint8_t* base) {
 
 // sub_820EA958_hook: Constructor that initializes the problematic vector
 // This function sets up the structure that later crashes
-static void sub_820EA958_hook(PPCContext& __restrict ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_820EA958);
+PPC_FUNC(sub_820EA958)
+{
     uint32_t a1 = ctx.r3.u32;
 
     fprintf(stderr, "[HOOK-820EA958] Constructor called! a1=0x%08X lr=0x%08llX\n",
@@ -196,8 +135,7 @@ static void sub_820EA958_hook(PPCContext& __restrict ctx, uint8_t* base) {
     fflush(stderr);
 
     // Call the original function
-    extern void sub_820EA958(PPCContext& ctx, uint8_t* base);
-    sub_820EA958(ctx, base);
+    __imp__sub_820EA958(ctx, base);
 
     // After the original function, check the vector structure at a1+196
     uint32_t vector_addr = a1 + 196;
@@ -225,9 +163,9 @@ static void sub_820EA958_hook(PPCContext& __restrict ctx, uint8_t* base) {
 // So we don't need a hook for it
 
 // Forward declaration of the original function
-extern "C" void __imp__sub_82112168(PPCContext& ctx, uint8_t* base);
-
-void sub_82112168_hook(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_82112168);
+PPC_FUNC(sub_82112168)
+{
     fprintf(stderr, "[MW05-HOOKS] sub_82112168 called with r3=%08X\n", (uint32_t)ctx.r3.u32);
     fflush(stderr);
     // Call the original function
@@ -236,11 +174,14 @@ void sub_82112168_hook(PPCContext& ctx, uint8_t* base) {
 
 // Register the hook at static initialization time
 static void RegisterMw05FunctionHooks() {
-    fprintf(stderr, "[MW05-HOOKS] Function hooks DISABLED - letting recompiled code run naturally\n");
+    fprintf(stderr, "[MW05-HOOKS] Registering function hooks...\n");
     fflush(stderr);
 
-    // All hooks disabled - recompiler bugs have been fixed
-    // The recompiled code should work correctly now with the DIVW/DIVWU fixes
+    // NOTE: sub_82813598 hook has been converted to PPC_FUNC_IMPL wrapper in mw05_trace_threads.cpp
+    // No hooks to register at this time
+
+    fprintf(stderr, "[MW05-HOOKS] No legacy hooks to register (all converted to PPC_FUNC_IMPL)\n");
+    fflush(stderr);
 }
 
 // Use static constructor to register hooks early

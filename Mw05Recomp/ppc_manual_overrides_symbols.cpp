@@ -6,14 +6,6 @@
 #include <cpu/ppc_context.h>
 #include <ppc/ppc_recomp_shared.h>
 
-// Forward to original recompiled bodies when overrides are disabled
-extern "C" 
-{
-    void __imp__sub_82625D60(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8261E320(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_82855308(PPCContext& ctx, uint8_t* base);
-}
-
 static inline bool OverridesDisabled() {
     if (const char* v = std::getenv("MW05_DISABLE_OVERRIDES")) {
         return v[0] && v[0] != '0';
@@ -21,7 +13,11 @@ static inline bool OverridesDisabled() {
     return false;
 }
 
-void sub_82625D60(PPCContext& ctx, uint8_t* base)
+
+// Guard for guest function at 0x82625D60 which repeatedly AVs while booting.
+// Behavior is unknown; until we understand it, stub it to a no-op that returns 0.
+PPC_FUNC_IMPL(__imp__sub_82625D60);
+PPC_FUNC(sub_82625D60)
 {
     if (OverridesDisabled()) { __imp__sub_82625D60(ctx, base); return; }
     KernelTraceHostOpF("HOST.SymbolOverride.sub_82625D60 stub r3=%08X r4=%08X r5=%08X r6=%08X",
@@ -30,7 +26,8 @@ void sub_82625D60(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-void sub_8261E320(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_8261E320);
+PPC_FUNC(sub_8261E320)
 {
     if (OverridesDisabled()) { __imp__sub_8261E320(ctx, base); return; }
     KernelTraceHostOpF("HOST.SymbolOverride.sub_8261E320 stub r3=%08X r4=%08X r5=%08X r6=%08X",
@@ -38,7 +35,8 @@ void sub_8261E320(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-void sub_82855308(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_82855308);
+PPC_FUNC(sub_82855308)
 {
     if (OverridesDisabled()) { __imp__sub_82855308(ctx, base); return; }
     KernelTraceHostOpF("HOST.SymbolOverride.sub_82855308 stub r3=%08X r4=%08X r5=%08X r6=%08X",

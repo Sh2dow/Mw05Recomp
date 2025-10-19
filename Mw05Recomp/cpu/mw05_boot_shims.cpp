@@ -27,12 +27,9 @@ static inline void ResetSchedulerTracking() {
 
 extern "C"
 {
-    void __imp__sub_8262F330(PPCContext& ctx, uint8_t* base);
     void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_826346A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
-    void __imp__sub_8262D998(PPCContext& ctx, uint8_t* base);  // Function that corrupts qword_828F1F98
 
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
@@ -156,7 +153,9 @@ static inline void DumpGuestStackWindow(uint8_t* base, uint32_t spEA, int count 
 }
 
 // sub_8262F330: tight delay/yield helper used during early init
-void sub_8262F330(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC_IMPL(__imp__sub_8262F330);
+PPC_FUNC(sub_8262F330)
+{
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_8262F330");
     if(FastBootEnabled()) {
@@ -178,7 +177,10 @@ void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
     __imp__sub_8262F3F0(ctx, base);
 }
 // sub_826346A8: wrapper around a NtWaitForSingleObjectEx loop
-void sub_826346A8(PPCContext& ctx, uint8_t* base) {
+
+PPC_FUNC_IMPL(__imp__sub_826346A8); // Actual wait function
+PPC_FUNC(sub_826346A8) 
+{
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_826346A8");
 
@@ -482,32 +484,5 @@ PPC_FUNC(sub_828134E0)
     KernelTraceHostOpF("HOST.sub_828134E0.exit lr=%08llX", ctx.lr);
 }
 
-// sub_8262D998 wrapper - this function corrupts qword_828F1F98
-// ROOT CAUSE: sub_8262D998 is called by the worker function and overwrites qword_828F1F98
-// FIX: Save and restore qword_828F1F98 around the call
-PPC_FUNC(sub_8262D998)
-{
-    // Address of the global flag that controls worker thread execution
-    const uint32_t qword_828F1F98_addr = 0x828F1F98;
-    void* qword_host = g_memory.Translate(qword_828F1F98_addr);
-
-    // Save the value of qword_828F1F98 before calling the function
-    uint64_t saved_value = 0;
-    if (qword_host) {
-        uint64_t* qword_ptr = (uint64_t*)qword_host;
-        saved_value = __builtin_bswap64(*qword_ptr);
-    }
-
-    SetPPCContext(ctx);
-    __imp__sub_8262D998(ctx, base);
-
-    // Restore qword_828F1F98 if it was corrupted
-    if (qword_host && saved_value != 0) {
-        uint64_t* qword_ptr = (uint64_t*)qword_host;
-        uint64_t current_value = __builtin_bswap64(*qword_ptr);
-        // Always restore if the value changed and saved value was non-zero
-        if (current_value != saved_value) {
-            *qword_ptr = __builtin_bswap64(saved_value);
-        }
-    }
-}
+// NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
+// It saves/restores qword_828F1F98 to prevent corruption

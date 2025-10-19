@@ -53,6 +53,19 @@ PPC_EXTERN_FUNC(__imp__VdShutdownEngines);
 PPC_EXTERN_FUNC(__imp__VdSetGraphicsInterruptCallback);
 // ... (we'll need to add more as we discover which ones are actually used)
 
+
+// --- MW'05 specific tiny PPC shims discovered via traces/IDA ---
+// 0x8243B618: clears two 32-bit words at r3 and returns (used as default callback)
+PPC_FUNC(sub_8243B618)
+{
+    uint8_t* p = static_cast<uint8_t*>(g_memory.Translate(ctx.r3.u32));
+    if (p)
+    {
+        *reinterpret_cast<uint32_t*>(p + 0) = 0;
+        *reinterpret_cast<uint32_t*>(p + 4) = 0;
+    }
+}
+
 static void MwSetEnv(const char* k, const char* v) {
 #ifdef _WIN32
     _putenv_s(k, v ? v : "");
@@ -112,6 +125,7 @@ static void MwApplyDebugProfile() {
 PPC_EXTERN_FUNC(sub_82621640);
 PPC_EXTERN_FUNC(sub_8284E658);
 PPC_EXTERN_FUNC(sub_826346A8);
+PPC_EXTERN_FUNC(sub_828508A8);  // Thread #1 entry point wrapper
 PPC_EXTERN_FUNC(sub_82812ED0);
 PPC_EXTERN_FUNC(sub_828134E0);
 PPC_EXTERN_FUNC(sub_824411E0);
@@ -1244,7 +1258,6 @@ int main(int argc, char *argv[])
     fflush(stderr);
 
     // MW'05 runtime function mappings for small PPC shims
-    extern void sub_8243B618(PPCContext& __restrict ctx, uint8_t* base);
     g_memory.InsertFunction(0x8243B618, sub_8243B618);
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
     // KernelTraceHostOpF("HOST.sub_8243B618.install host=%p entry=%p",
@@ -1287,9 +1300,19 @@ int main(int argc, char *argv[])
     //     reinterpret_cast<const void*>(sub_826346A8),
     //     reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
 
+    fprintf(stderr, "[MAIN] before_sub_828508A8_install\n"); fflush(stderr);
+    g_memory.InsertFunction(0x828508A8, sub_828508A8);
+    fprintf(stderr, "[MAIN] after_sub_828508A8_install\n"); fflush(stderr);
+
     fprintf(stderr, "[MAIN] before_sub_82812ED0_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x82812ED0, sub_82812ED0);
     fprintf(stderr, "[MAIN] after_sub_82812ED0_install\n"); fflush(stderr);
+
+    // NOTE: Init trace functions use PPC_FUNC_IMPL + PPC_FUNC pattern
+    // They automatically override the generated functions via weak linkage
+    // No need to call g_memory.InsertFunction() for them
+    fprintf(stderr, "[MAIN] Init trace functions will override generated PPC functions via weak linkage\n");
+    fflush(stderr);
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
     // KernelTraceHostOpF("HOST.sub_82812ED0.install host=%p entry=%p",
     //     reinterpret_cast<const void*>(sub_82812ED0),
@@ -1308,33 +1331,27 @@ int main(int argc, char *argv[])
     // Install wrappers for worker thread init/shutdown functions
     // ROOT CAUSE FOUND: sub_8262D998 is called by sub_82813418 and corrupts qword_828F1F98
     // FIX: Wrap sub_8262D998 to save/restore qword_828F1F98
-    extern void sub_8262D998_wrapper(PPCContext&, uint8_t*);  // Corrupts qword_828F1F98, needs wrapper
-    extern void sub_82813598(PPCContext&, uint8_t*);
-    extern void sub_82813678(PPCContext&, uint8_t*);
-    extern void sub_82814068_wrapper(PPCContext&, uint8_t*);
-    extern void sub_8284E6C0(PPCContext&, uint8_t*);
-    fprintf(stderr, "[MAIN] Installing sub_8262D998_wrapper (protects qword_828F1F98)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x8262D998, sub_8262D998_wrapper);
-    fprintf(stderr, "[MAIN] sub_8262D998_wrapper installed\n"); fflush(stderr);
+    // extern void sub_8262D998_wrapper(PPCContext&, uint8_t*);  // Corrupts qword_828F1F98, needs wrapper
+    // fprintf(stderr, "[MAIN] Installing sub_8262D998_wrapper (protects qword_828F1F98)\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x8262D998, sub_8262D998_wrapper);
+    // fprintf(stderr, "[MAIN] sub_8262D998_wrapper installed\n"); fflush(stderr);
     fprintf(stderr, "[MAIN] DISABLED sub_82813598 hook - letting recompiled code run naturally\n"); fflush(stderr);
     // g_memory.InsertFunction(0x82813598, sub_82813598);  // DISABLED - recompiler bugs fixed
     fprintf(stderr, "[MAIN] DISABLED sub_82813678 hook - letting recompiled code run naturally\n"); fflush(stderr);
     // g_memory.InsertFunction(0x82813678, sub_82813678);  // DISABLED - recompiler bugs fixed
     fprintf(stderr, "[MAIN] before_sub_82814068_install (init func)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x82814068, sub_82814068_wrapper);
+    g_memory.InsertFunction(0x82814068, sub_82814068);
     fprintf(stderr, "[MAIN] before_sub_8284E6C0_install (event create)\n"); fflush(stderr);
     g_memory.InsertFunction(0x8284E6C0, sub_8284E6C0);
     fprintf(stderr, "[MAIN] after_sub_8284E6C0_install\n"); fflush(stderr);
     fprintf(stderr, "[MAIN] after_sub_82813678_install\n"); fflush(stderr);
 
     // Install wrapper for string formatting function to detect infinite loops
-    extern void sub_8262DD80(PPCContext&, uint8_t*);
     fprintf(stderr, "[MAIN] before_sub_8262DD80_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x8262DD80, sub_8262DD80);
     fprintf(stderr, "[MAIN] after_sub_8262DD80_install\n"); fflush(stderr);
 
     // Install wrapper for CRT init function that calls sub_8262DD80 in a loop
-    extern void sub_8262DE60(PPCContext&, uint8_t*);
     fprintf(stderr, "[MAIN] before_sub_8262DE60_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
     fprintf(stderr, "[MAIN] after_sub_8262DE60_install\n"); fflush(stderr);
@@ -1631,15 +1648,3 @@ PPC_FUNC(__imp__vsprintf)
 PPC_FUNC(__imp__vswprintf)    { /* not supported via template */ ctx.r3.u64 = 0; }
 PPC_FUNC(__imp___vscwprintf)  { /* returns needed chars, not including NUL */ ctx.r3.u64 = 0; }
 PPC_FUNC(__imp__swprintf)     { /* variadic, ABI mismatch */ ctx.r3.u64 = 0; }
-
-// --- MW'05 specific tiny PPC shims discovered via traces/IDA ---
-// 0x8243B618: clears two 32-bit words at r3 and returns (used as default callback)
-PPC_FUNC(sub_8243B618)
-{
-    uint8_t* p = static_cast<uint8_t*>(g_memory.Translate(ctx.r3.u32));
-    if (p)
-    {
-        *reinterpret_cast<uint32_t*>(p + 0) = 0;
-        *reinterpret_cast<uint32_t*>(p + 4) = 0;
-    }
-}

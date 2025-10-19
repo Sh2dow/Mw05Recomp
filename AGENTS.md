@@ -43,19 +43,30 @@
 
 ## Critical Debugging Information
 
-### Current Status: GAME RUNNING - FPS & HEAP STATS COMPLETELY FIXED! 🎉
+### Current Status: ROOT CAUSE FOUND - THREAD CREATION TIMING ISSUE!
 **DATE**: 2025-10-18
 **✅ FPS COUNTER BUG COMPLETELY FIXED!** FPS display now updates continuously forever
-  - **Problem #1**: `g_presentProfiler.Reset()` was overwriting the value set by `Set()`
-  - **Problem #2**: Profiler was updated AFTER `DrawFPS()` was called, so it always read stale data
-  - **Problem #3**: Profiler update in early return path (line 3396) was overwriting the update at line 3240
-  - **Root Cause**: Two profiler updates - one at START (line 3240) and one in early return (line 3396)
-  - **Solution**:
-    1. Update profiler at START of `Video::Present()` (line 3240) using previous frame's timestamp
-    2. Remove duplicate profiler update in early return path (line 3396)
-    3. Remove unused variables `s_last` and `now` from early return block
-  - **Files**: `Mw05Recomp/gpu/video.cpp` lines 3230-3240, 3320-3329, 3388-3399
-  - **Result**: FPS counter now updates continuously without EVER going stale!
+**✅ PHYSICAL HEAP STATS FIXED!** Display now shows correct allocated bytes (361 MB)
+**🔍 ROOT CAUSE IDENTIFIED**: Game creates ONLY 2 threads instead of 9!
+  - **Our Implementation**: Creates 2 threads immediately (Thread #1 entry=0x828508A8, Thread #2 entry=0x82812ED0)
+  - **Xenia (Working)**: Creates 9 threads total over time
+  - **Thread Creation Sequence in Xenia**:
+    1. Line 1295: Thread F800000C (tid=7, entry=0x828508A8) created
+    2. Lines 1302-9534: Thread F800000C sleeps ~8200 times
+    3. Line 9535: Thread F800000C creates Thread F8000018 (tid=8, entry=0x82812ED0)
+    4. Lines 9535-19105: More sleeping
+    5. Line 19106: Thread F800000C creates Thread F8000020 (tid=9, entry=0x828508A8)
+    6. Line 25239: Thread F800000C creates Thread F8000044 (tid=10, entry=0x828508A8)
+    7. Line 34736: Thread F800000C creates Thread F8000048 (tid=11, entry=0x828508A8)
+    8. Line 35318: Thread F800000C creates Thread F8000054 (tid=12, entry=0x828508A8)
+    9. Line 35633: Thread F800000C creates Thread F800005C (tid=13, entry=0x825AA970)
+    10. Line 36183: Thread F800000C creates Thread F8000064 (tid=14, entry=0x828508A8)
+    11. And more threads continue to be created...
+  - **The Problem**: In our implementation, Thread #1 creates Thread #2 IMMEDIATELY, but then STOPS creating more threads
+  - **Expected Behavior**: Thread #1 should sleep for a while, then create Thread #2, then sleep more, then create Thread #3, etc.
+  - **Actual Behavior**: Thread #1 creates Thread #2 immediately, then gets stuck in a sleep loop and never creates more threads
+  - **Impact**: Without the additional threads, the game cannot progress to file loading and rendering
+  - **Next Step**: Investigate why Thread #1 stops creating threads after Thread #2
 **✅ PHYSICAL HEAP STATS FIXED!** Display now shows correct allocated bytes
   - **Problem**: Code was calling `o1heapGetDiagnostics()` on physical heap, but we use bump allocator
   - **Solution**: Added `physicalAllocated` field to track bump allocator usage

@@ -317,7 +317,8 @@ GUEST_FUNCTION_STUB(sub_82BD9250); // HeapDestroy
 // Game-specific allocator used by video subsystem
 // This allocator is called 51 times throughout the game, including by sub_82849DE8 (video singleton creator)
 // Shimming it to use the host allocator fixes the video singleton allocation failure
-void MW05Shim_sub_82539870(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_82539870);
+PPC_FUNC(sub_82539870)
 {
     uint32_t size = ctx.r3.u32;
     void* ptr = g_userHeap.Alloc(size);
@@ -329,21 +330,16 @@ void MW05Shim_sub_82539870(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = guestAddr;
 }
 
-GUEST_FUNCTION_HOOK(__imp__sub_82539870, MW05Shim_sub_82539870);
-
 // CRITICAL FIX: sub_8284A698 is supposed to initialize the object but doesn't set the vtable
 // We need to stub it to properly initialize the object with a vtable
 // Looking at the IDA code, this function allocates 432 bytes and initializes the object
 // But the vtable is not being set, causing NULL vtable pointer issues
-extern "C" void __imp__sub_8284A698(PPCContext& ctx, uint8_t* base);
-
-void MW05Shim_sub_8284A698(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_8284A698);
+PPC_FUNC(sub_8284A698)
 {
     // Call the original function
     __imp__sub_8284A698(ctx, base);
 }
-
-GUEST_FUNCTION_HOOK(sub_8284A698, MW05Shim_sub_8284A698);
 
 // Static variable to hold the vtable guest address (allocated once)
 static uint32_t s_vtable_guest_addr = 0;
@@ -356,7 +352,9 @@ uint32_t GetVideoVtableGuestAddr() {
 // CRITICAL FIX: This is the constructor for the video object
 // It must initialize the object including writing the vtable pointer at object+0
 // Called by sub_82849DE8 after sub_8284A698 succeeds
-void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
+
+PPC_FUNC_IMPL(__imp__sub_82881020);
+PPC_FUNC(sub_82881020)
 {
     // r3 = object pointer
     uint32_t obj = ctx.r3.u32;
@@ -440,9 +438,6 @@ void MW05Shim_sub_82881020(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-GUEST_FUNCTION_HOOK(__imp__sub_82881020, MW05Shim_sub_82881020);
-GUEST_FUNCTION_HOOK(sub_82881020, MW05Shim_sub_82881020);  // Also hook the non-import version
-
 // CRITICAL FIX: Stub for NULL vtable entry at offset 0x34
 // This vtable entry is called by sub_82849BF8 in a loop 4 times
 // The result is shifted and ORed together
@@ -474,7 +469,8 @@ GUEST_FUNCTION_HOOK(sub_82849000, MW05Stub_sub_82849000);
 // 5. Checks if a specific bit is set and sets a flag at offset 0x2C
 // The vtable calls are failing because the vtable is NULL
 // For now, just stub the entire function to allow the video thread to progress
-void MW05Shim_sub_82849BF8(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_82849BF8);
+PPC_FUNC(sub_82849BF8)
 {
     uint32_t r3_in = ctx.r3.u32;  // Object pointer
 
@@ -489,11 +485,9 @@ void MW05Shim_sub_82849BF8(PPCContext& ctx, uint8_t* base)
     // The important thing is to not call the NULL vtable entries
 }
 
-GUEST_FUNCTION_HOOK(__imp__sub_82849BF8, MW05Shim_sub_82849BF8);
-GUEST_FUNCTION_HOOK(sub_82849BF8, MW05Shim_sub_82849BF8);  // Also hook direct calls
-
 // Stub sub_82441C70 - NULL pointer dereference at dword_82A2D1AC
-void MW05Shim_sub_82441C70(PPCContext& ctx, uint8_t* base)
+PPC_FUNC_IMPL(__imp__sub_82441C70);
+PPC_FUNC(sub_82441C70)
 {
     static int call_count = 0;
     if (call_count++ < 3) {
@@ -504,10 +498,12 @@ void MW05Shim_sub_82441C70(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-GUEST_FUNCTION_HOOK(sub_82441C70, MW05Shim_sub_82441C70);
+GUEST_FUNCTION_HOOK(__imp__sub_82441C70, sub_82441C70);
 
 // Stub sub_82596900 - Invalid address calculation
-void MW05Shim_sub_82596900(PPCContext& ctx, uint8_t* base)
+
+PPC_FUNC_IMPL(__imp__sub_82596900);
+PPC_FUNC(sub_82596900)
 {
     static int call_count = 0;
     if (call_count++ < 3) {
@@ -518,20 +514,10 @@ void MW05Shim_sub_82596900(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-GUEST_FUNCTION_HOOK(sub_82596900, MW05Shim_sub_82596900);
+GUEST_FUNCTION_HOOK(__imp__sub_82596900, sub_82596900);
 
-#if MW05_ENABLE_UNLEASHED
-GUEST_FUNCTION_HOOK(sub_82BD7D30, RtlAllocateHeap);
-GUEST_FUNCTION_HOOK(sub_82BD8600, RtlFreeHeap);
-GUEST_FUNCTION_HOOK(sub_82BD88F0, RtlReAllocateHeap);
-GUEST_FUNCTION_HOOK(sub_82BD6FD0, RtlSizeHeap);
-
-GUEST_FUNCTION_HOOK(sub_831CC9C8, XAllocMem);
-GUEST_FUNCTION_HOOK(sub_831CCA60, XFreeMem);
-#else
 GUEST_FUNCTION_HOOK(__imp__ExAllocatePool, ExAllocatePool);
 GUEST_FUNCTION_HOOK(__imp__ExAllocatePoolWithTag, ExAllocatePoolWithTag);
 GUEST_FUNCTION_HOOK(__imp__ExFreePool, ExFreePool);
 GUEST_FUNCTION_HOOK(__imp__XamAlloc, XamAlloc);
 GUEST_FUNCTION_HOOK(__imp__XamFree, XamFree);
-#endif

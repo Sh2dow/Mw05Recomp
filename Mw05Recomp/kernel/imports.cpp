@@ -34,13 +34,13 @@ extern "C" void __imp__sub_825A85E0(PPCContext& ctx, uint8_t* base);
 extern "C" void __imp__sub_82216088(PPCContext& ctx, uint8_t* base);  // Entry point for graphics init
 
 // Forward decl: MW05 functions called by sub_821BB4D0 (for debugging the hang)
-extern "C" void __imp__sub_8215CB08(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_8215C790(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_8215C838(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_821B2C28(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_821B71E0(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_821B7C28(PPCContext& ctx, uint8_t* base);
-extern "C" void __imp__sub_821BB4D0(PPCContext& ctx, uint8_t* base);
+PPC_FUNC_IMPL(__imp__sub_8215CB08);
+PPC_FUNC_IMPL(__imp__sub_8215C790);
+PPC_FUNC_IMPL(__imp__sub_8215C838);
+PPC_FUNC_IMPL(__imp__sub_821B2C28);
+PPC_FUNC_IMPL(__imp__sub_821B71E0);
+PPC_FUNC_IMPL(__imp__sub_821B7C28);
+PPC_FUNC_IMPL(__imp__sub_821BB4D0);
 
 // Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
 extern "C" uint32_t Mw05Trace_LastSchedR3();
@@ -156,9 +156,8 @@ uint32_t g_vd_init_callback_arg3 = 0;
     bool Mw05AnyPresentSeen();
 
 }
-    // Forward decl: MW05 PM4 builder shim entry (defined in mw05_trace_shims.cpp)
-    void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
 
+// Forward decl: MW05 PM4 builder shim entry (defined in mw05_trace_shims.cpp) - removed
 
 
 // Forward declarations for VD bridge helpers used across this file
@@ -862,7 +861,6 @@ extern "C" {
                     if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
                     uint8_t* base = g_memory.base;
                     KernelTraceHostOpF("HOST.ISR.pm4_forward r3=%08X r4=%08X call=%u", ctx.r3.u32, ctx.r4.u32, s_builder_calls);
-                    MW05Shim_sub_825972B0(ctx, base);
                     ++s_builder_calls;
                 }
             }
@@ -4343,10 +4341,21 @@ uint32_t NtCreateFile(
 
     std::string guestPath = ExtractGuestPath(Attributes);
     guestPath = NormalizeGuestPath(std::move(guestPath));
+
+    // DEBUG: Log first 20 file open attempts to see what's being requested
+    static int file_open_count = 0;
+    if (++file_open_count <= 20) {
+        fprintf(stderr, "[FILE-OPEN #%d] Guest path: '%s'\n", file_open_count, guestPath.c_str());
+        fflush(stderr);
+    }
+
     KernelTraceHostOpF("HOST.File.NtCreateFile.open path=%s", guestPath.c_str());
 
     if (guestPath.empty()) {
-
+        if (file_open_count <= 20) {
+            fprintf(stderr, "[FILE-OPEN #%d] FAILED: Empty path\n", file_open_count);
+            fflush(stderr);
+        }
         *FileHandle = GUEST_INVALID_HANDLE_VALUE;
         IoStatusBlock->Status = STATUS_OBJECT_NAME_INVALID;
         IoStatusBlock->Information = 0;
@@ -4367,10 +4376,19 @@ uint32_t NtCreateFile(
         const uint32_t status = (CreateDisposition == FILE_OPEN || CreateDisposition == FILE_OPEN_IF)
                                     ? STATUS_OBJECT_NAME_NOT_FOUND
                                     : STATUS_OBJECT_PATH_NOT_FOUND;
+        if (file_open_count <= 20) {
+            fprintf(stderr, "[FILE-OPEN #%d] FAILED: File not found, status=0x%08X\n", file_open_count, status);
+            fflush(stderr);
+        }
         *FileHandle = GUEST_INVALID_HANDLE_VALUE;
         IoStatusBlock->Status = status;
         IoStatusBlock->Information = 0;
         return status;
+    }
+
+    if (file_open_count <= 20) {
+        fprintf(stderr, "[FILE-OPEN #%d] SUCCESS: File opened\n", file_open_count);
+        fflush(stderr);
     }
 
     const uint32_t guestHandle = GetKernelHandle(static_cast<void*>(handle));
@@ -4403,8 +4421,13 @@ uint32_t NtOpenFile(
 uint32_t NtClose(uint32_t handle)
 {
     // Guard obvious invalid sentinel
-    if (handle == GUEST_INVALID_HANDLE_VALUE)
+    if (handle == GUEST_INVALID_HANDLE_VALUE) {
+        static int invalid_close_count = 0;
+        if (++invalid_close_count <= 5) {
+            KernelTraceHostOpF("HOST.File.NtClose.invalid_handle handle=0xFFFFFFFF count=%d", invalid_close_count);
+        }
         return STATUS_INVALID_HANDLE; // 0xC0000008
+    }
 
     // Only attempt to destroy kernel objects if the handle is sane and maps
     // to memory we control. Some call sites erroneously pass NTSTATUS values
@@ -4477,10 +4500,48 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
 {
     static std::atomic<int> s_waitCount{0};
     int count = s_waitCount.fetch_add(1);
+
+    // CRITICAL DEBUG: Log Thread #2 (entry=0x82812ED0) wait calls
+    static std::atomic<int> s_thread2WaitCount{0};
+    DWORD currentTid = GetCurrentThreadId();
+    static DWORD s_thread2Tid = 0;
+    static uint32_t s_thread2Handle = 0;
+
+    // Detect Thread #2 by checking if it's calling from worker function (handle stored in dword_828F1F90)
+    // The handle value is dynamic, so we detect it by the calling pattern
+    if (s_thread2Handle == 0 || Handle == s_thread2Handle) {
+        if (s_thread2Handle == 0) {
+            s_thread2Handle = Handle;
+            s_thread2Tid = currentTid;
+            fprintf(stderr, "[THREAD2_WAIT] Thread #2 detected: tid=0x%08X handle=0x%08X\n", currentTid, Handle);
+            fflush(stderr);
+        }
+        int t2count = s_thread2WaitCount.fetch_add(1);
+        if (t2count < 20) {  // Log first 20 calls
+            fprintf(stderr, "[THREAD2_WAIT] Call #%d: tid=0x%08X handle=0x%08X WaitMode=%u Alertable=%u\n",
+                    t2count + 1, currentTid, Handle, WaitMode, Alertable);
+            fflush(stderr);
+        }
+    }
+
     if (count < 10) {  // Log first 10 waits
         fprintf(stderr, "[NtWaitForSingleObjectEx] Call #%d: Handle=0x%08X WaitMode=%u Alertable=%u\n",
                 count + 1, Handle, WaitMode, Alertable);
         fflush(stderr);
+    }
+
+    // CRITICAL FIX: Handle NULL handle - return error instead of success
+    // The game should NOT wait on a NULL handle
+    // Returning SUCCESS causes the worker loop to continue instead of blocking
+    // Returning INVALID_HANDLE will cause the loop to exit (as it should)
+    if (Handle == 0) {
+        static std::atomic<int> s_nullHandleCount{0};
+        int null_count = s_nullHandleCount.fetch_add(1);
+        if (null_count < 5) {
+            fprintf(stderr, "[NtWaitForSingleObjectEx] NULL handle detected (call #%d), returning INVALID_HANDLE\n", null_count + 1);
+            fflush(stderr);
+        }
+        return STATUS_INVALID_HANDLE;  // Return error for NULL handle
     }
 
     const bool fastBoot  = Mw05FastBootEnabled();
@@ -4541,6 +4602,22 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
         if (!IsKernelObjectAlive(kernel)) {
             return STATUS_INVALID_HANDLE;
         }
+
+        // CRITICAL DEBUG: Log Thread #2 wait details
+        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
+            fprintf(stderr, "[THREAD2_WAIT] Kernel object found for handle 0x%08X\n", Handle);
+            if (auto* ev = dynamic_cast<Event*>(kernel)) {
+                fprintf(stderr, "[THREAD2_WAIT] Object is Event: manualReset=%d guestHeaderEA=0x%08X\n",
+                        ev->manualReset, ev->guestHeaderEA);
+            } else if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
+                fprintf(stderr, "[THREAD2_WAIT] Object is Semaphore: guestHeaderEA=0x%08X\n",
+                        sem->guestHeaderEA);
+            } else {
+                fprintf(stderr, "[THREAD2_WAIT] Object is unknown type\n");
+            }
+            fflush(stderr);
+        }
+
         if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
             if (!(tlw[0]=='0' && tlw[1]==0)) {
                 KernelTraceHostOpF("HOST.Wait.path.NtWaitForSingleObjectEx.kernel_handle handle=%08X", Handle);
@@ -4577,8 +4654,26 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             }
         }
 
+        // CRITICAL DEBUG: Log Thread #2 wait call
+        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
+            fprintf(stderr, "[THREAD2_WAIT] About to call kernel->Wait(timeout=%u ms)\n", timeout);
+            fflush(stderr);
+        }
 
-        return kernel->Wait(timeout);
+        NTSTATUS result = kernel->Wait(timeout);
+
+        // CRITICAL DEBUG: Log Thread #2 wait result
+        if (s_thread2Handle != 0 && Handle == s_thread2Handle && s_thread2WaitCount.load() <= 20) {
+            fprintf(stderr, "[THREAD2_WAIT] kernel->Wait() returned: 0x%08X", result);
+            if (result == STATUS_SUCCESS) fprintf(stderr, " (SUCCESS)");
+            else if (result == STATUS_TIMEOUT) fprintf(stderr, " (TIMEOUT)");
+            else if (result == STATUS_ALERTED) fprintf(stderr, " (ALERTED)");
+            else if (result == STATUS_USER_APC) fprintf(stderr, " (USER_APC)");
+            fprintf(stderr, "\n");
+            fflush(stderr);
+        }
+
+        return result;
     }
 
     // Thread-id path
@@ -5037,6 +5132,15 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
     g_lastWaitEventType.store(0xFFu, std::memory_order_release);
     KernelTraceHostOp("HOST.Wait.observe.KeDelayExecutionThread");
 
+    // CRITICAL DEBUG: Log sleep calls to detect stuck threads
+    static std::atomic<uint64_t> s_sleep_count{0};
+    uint64_t sleep_num = ++s_sleep_count;
+    if (sleep_num % 1000 == 0) {
+        fprintf(stderr, "[SLEEP_DEBUG] KeDelayExecutionThread called %llu times, tid=%lx\n",
+                sleep_num, GetCurrentThreadId());
+        fflush(stderr);
+    }
+
     // CRITICAL FIX: Check for pending APCs BEFORE sleeping
     // If the thread is alertable and there are pending APCs, process them and return STATUS_USER_APC
     if (Alertable && ApcPendingForCurrentThread()) {
@@ -5097,6 +5201,12 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
 
     // Read SIGNED 64-bit ticks from guest (100ns units; negative = relative)
     const int64_t ticks = read_guest_i64(IntervalGuest);
+
+    // CRITICAL FIX: Add memory fence to ensure visibility of writes from other threads
+    // This is necessary because the game uses busy-wait loops that check shared memory
+    // without explicit synchronization primitives. Without this fence, Thread #1 might
+    // not see the state flag write from Thread #2, causing an infinite wait loop.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     if (ticks == 0) {
         host_sleep(0);                       // yield only
@@ -6188,10 +6298,11 @@ void Mw05LogIsrIfRegisteredOnce() {
 
 
 // Force ring + writeback + engines, even earlier than the small auto-init.
-extern "C" uint32_t Mw05Trace_LastSchedR3();
-extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
-
-extern void MW05Shim_sub_825972B0(PPCContext& ctx, uint8_t* base);
+extern "C" 
+{
+    uint32_t Mw05Trace_LastSchedR3();
+    void Mw05TryBuilderKickNoForward(uint32_t schedEA);
+}
 
 void Mw05ForceVdInitOnce() {
     if (!Mw05ForceVdInitEnabled()) {
@@ -8467,18 +8578,20 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
     const uint32_t qword_addr = 0x828F1F98;
     void* qword_ptr = g_memory.Translate(qword_addr);
     if (qword_ptr) {
-        // Calculate: divw r9, 0xFF676980, 0x64 (100 decimal)
-        const int32_t dividend = (int32_t)0xFF676980;
-        const int32_t divisor = 100;
-        const int64_t result = (int64_t)dividend / (int64_t)divisor;
+        // Calculate: divwu r9, 0xFF676980, 0x64 (100 decimal)
+        // CRITICAL FIX: Use UNSIGNED division, not signed!
+        // 0xFF676980 = 4284967296 (unsigned) / 100 = 42849672 (0x028E0A78)
+        const uint32_t dividend = 0xFF676980;
+        const uint32_t divisor = 100;
+        const uint64_t result = (uint64_t)dividend / (uint64_t)divisor;
 
         uint64_t* qword = (uint64_t*)qword_ptr;
         uint64_t old_value = __builtin_bswap64(*qword);
-        uint64_t value_be = __builtin_bswap64((uint64_t)result);
+        uint64_t value_be = __builtin_bswap64(result);
         *qword = value_be;
 
         fprintf(stderr, "[MW05_FIX] NtResumeThread: Set qword_828F1F98 to 0x%016llX (was 0x%016llX) tid=%08X\n",
-                (uint64_t)result, old_value, hThread->GetThreadId());
+                result, old_value, hThread->GetThreadId());
         fflush(stderr);
     }
 

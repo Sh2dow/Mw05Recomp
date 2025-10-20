@@ -23,6 +23,9 @@ struct Heap
     // Flag to disable heap operations during shutdown to prevent o1heap assertions
     std::atomic<bool> shutdownInProgress{false};
 
+    // Store initial diagnostics to detect heap corruption
+    O1HeapDiagnostics initialDiagnostics{};
+
     void Init();
 
     void* Alloc(size_t size);

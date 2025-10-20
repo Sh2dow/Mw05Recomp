@@ -1323,7 +1323,34 @@ struct Event final : KernelObject, HostObject<XKEVENT>
         }
         else
         {
-            assert(false && "Unhandled timeout value.");
+            // Timed wait implementation
+            auto start = std::chrono::steady_clock::now();
+            auto deadline = start + std::chrono::milliseconds(timeout);
+
+            if (manualReset)
+            {
+                // Manual-reset event: wait until signaled or timeout
+                while (!signaled.load())
+                {
+                    if (std::chrono::steady_clock::now() >= deadline)
+                        return STATUS_TIMEOUT;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            else
+            {
+                // Auto-reset event: wait until we can consume the signal or timeout
+                while (true)
+                {
+                    bool expected = true;
+                    if (signaled.compare_exchange_weak(expected, false))
+                        break;
+
+                    if (std::chrono::steady_clock::now() >= deadline)
+                        return STATUS_TIMEOUT;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
         }
 
         return STATUS_SUCCESS;
@@ -2074,6 +2101,54 @@ void Mw05StartVblankPumpOnce() {
             // Try to create render thread if requested (will check delay internally)
             Mw05ForceCreateRenderThreadIfRequested();
 
+            // CRITICAL FIX: Set video thread work flag to trigger file loading
+            // The video thread at entry 0x82849D40 waits for flag at context+96 to become non-zero
+            // Once set, it enters a work processing loop that loads files
+            static const bool s_force_video_work_flag = [](){
+                if (const char* v = std::getenv("MW05_FORCE_VIDEO_WORK_FLAG"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            static bool s_logged_work_flag_config = false;
+            if (!s_logged_work_flag_config) {
+                fprintf(stderr, "[VBLANK-VIDEO-WORK-CONFIG] MW05_FORCE_VIDEO_WORK_FLAG=%d\n", s_force_video_work_flag ? 1 : 0);
+                fflush(stderr);
+                s_logged_work_flag_config = true;
+            }
+            static bool s_video_work_flag_set = false;
+            if (s_force_video_work_flag && !s_video_work_flag_set && currentTick >= 310) {
+                // Video thread context is at 0x500120 (from ExCreateThread call)
+                const uint32_t video_ctx_ea = 0x500120;
+                const uint32_t work_flag_ea = video_ctx_ea + 96;  // offset +96
+                if (auto* flag_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(work_flag_ea))) {
+                    uint32_t current = flag_ptr->get();
+                    if (current == 0) {
+                        *flag_ptr = be<uint32_t>(1);  // Set flag to 1 to trigger work processing
+                        s_video_work_flag_set = true;
+                        fprintf(stderr, "[VBLANK-VIDEO-WORK] Set video thread work flag at 0x%08X (was=0x%08X now=0x00000001) tick=%u\n",
+                                work_flag_ea, current, currentTick);
+                        fflush(stderr);
+                        KernelTraceHostOpF("HOST.VideoThread.work_flag.set ea=%08X tick=%u", work_flag_ea, currentTick);
+                    } else {
+                        // Flag already set by game - log once
+                        static bool s_logged_already_set = false;
+                        if (!s_logged_already_set) {
+                            fprintf(stderr, "[VBLANK-VIDEO-WORK] Video thread work flag already set to 0x%08X at tick=%u\n", current, currentTick);
+                            fflush(stderr);
+                            s_logged_already_set = true;
+                        }
+                        s_video_work_flag_set = true;
+                    }
+                } else {
+                    static bool s_logged_translate_fail = false;
+                    if (!s_logged_translate_fail) {
+                        fprintf(stderr, "[VBLANK-VIDEO-WORK] Failed to translate address 0x%08X at tick=%u\n", work_flag_ea, currentTick);
+                        fflush(stderr);
+                        s_logged_translate_fail = true;
+                    }
+                }
+            }
+
             if (currentTick >= 340 && currentTick <= 360) {
                 fprintf(stderr, "[VBLANK-POST-REG] After Mw05ForceRegisterGfxNotifyIfRequested tick=%u\n", currentTick);
                 fflush(stderr);
@@ -2083,6 +2158,44 @@ void Mw05StartVblankPumpOnce() {
             // Mw05SignalVdInterruptEvent() will fail and we keep the pending flag.
             if (!Mw05SignalVdInterruptEvent()) {
                 g_vdInterruptPending.store(true, std::memory_order_release);
+            }
+
+            // CRITICAL: Set main loop flag once per VBlank (60 Hz)
+            // The game polls address 0x82A2CF40 in function sub_82441CF0 (main game loop)
+            // Game uses consume-and-clear pattern: reads flag, processes frame, clears flag
+            // Setting it once per VBlank synchronizes game loop with rendering
+            {
+                const uint32_t main_loop_flag_ea = 0x82A2CF40;
+                uint32_t* main_loop_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(main_loop_flag_ea));
+                if (main_loop_flag_ptr) {
+                    // Read current value before setting
+                    uint32_t current_value = *main_loop_flag_ptr;
+
+                    // Set flag to 1 (big-endian)
+                    #if defined(_MSC_VER)
+                        *main_loop_flag_ptr = _byteswap_ulong(1);
+                    #else
+                        *main_loop_flag_ptr = __builtin_bswap32(1);
+                    #endif
+
+                    // Log first few sets and any changes for debugging
+                    static uint32_t s_flag_set_count = 0;
+                    static uint32_t s_last_value = 0;
+                    s_flag_set_count++;
+                    if (s_flag_set_count <= 10 || (s_flag_set_count % 60 == 0) || current_value != s_last_value) {
+                        fprintf(stderr, "[VBLANK] Main loop flag: was=0x%08X now=0x01000000 (tick=%u count=%u)\n",
+                                current_value, currentTick, s_flag_set_count);
+                        fflush(stderr);
+                    }
+                    s_last_value = current_value;
+
+                    // CRITICAL FIX: Force-create render thread at VBlank 75 (matching Xenia behavior)
+                    // Thread #1 gets stuck in main game loop and never creates render thread naturally
+                    if (s_flag_set_count == 75) {
+                        extern void Mw05ForceCreateRenderThread();
+                        Mw05ForceCreateRenderThread();
+                    }
+                }
             }
 
             // Advance the ring-buffer write-back pointer a bit so guest
@@ -4615,40 +4728,33 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                 KernelTraceHostOpF("HOST.Wait.last.handle NtWaitForSingleObjectEx handle=%08X", Handle);
             }
         }
-        // Record last-wait EA/type if this handle maps to a known guest-backed object
-        // CRITICAL: There's a race condition that causes abort() to be called during dynamic_cast.
-        // Adding detailed logging with fflush() prevents the race condition by changing timing.
-        // This is a TEMPORARY workaround until the root cause is found and fixed properly.
-        static std::atomic<int> s_waitCount{0};
-        int count = s_waitCount.fetch_add(1);
+        // CRITICAL FIX: Wrap ALL kernel object access in SEH to handle access violations
+        // This includes dynamic_cast and Wait() calls
+        // Use SEH (Structured Exception Handling) because access violations are Windows structured exceptions
+        NTSTATUS result = STATUS_INVALID_HANDLE;
+        __try {
+            // Add detailed logging before calling Wait()
+            static std::atomic<int> s_waitCallCount{0};
+            int callNum = s_waitCallCount.fetch_add(1);
+            if (callNum < 20) {  // Log first 20 calls
+                fprintf(stderr, "[WAIT_DEBUG] Call #%d: kernel=%p Handle=0x%08X timeout=%u\n",
+                        callNum + 1, (void*)kernel, Handle, timeout);
+                fflush(stderr);
+            }
 
-        // Log BEFORE dynamic_cast to add timing delay
-        fprintf(stderr, "[WAIT_SYNC] #%d About to dynamic_cast<Event*>\n", count);
-        fflush(stderr);
-
-        if (auto* ev = dynamic_cast<Event*>(kernel)) {
-            // Log SUCCESS to confirm dynamic_cast worked
-            fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Event*> succeeded\n", count);
-            fflush(stderr);
-            if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
-                const uint32_t typ = ev->manualReset ? 0u : 1u;
-                g_lastWaitEventType.store(typ, std::memory_order_release);
-                if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                    if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                        KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForSingleObjectEx.handle->event)", ev->guestHeaderEA, typ);
+            // Record last-wait EA/type if this handle maps to a known guest-backed object
+            if (auto* ev = dynamic_cast<Event*>(kernel)) {
+                if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
+                    const uint32_t typ = ev->manualReset ? 0u : 1u;
+                    g_lastWaitEventType.store(typ, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=%u (NtWaitForSingleObjectEx.handle->event)", ev->guestHeaderEA, typ);
+                        }
                     }
                 }
-            }
-        } else {
-            // Log that Event cast failed, trying Semaphore
-            fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Event*> returned nullptr, trying Semaphore\n", count);
-            fflush(stderr);
-
-            if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
-                // Log SUCCESS for Semaphore cast
-                fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Semaphore*> succeeded\n", count);
-                fflush(stderr);
+            } else if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
                 if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
                     g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
                     g_lastWaitEventType.store(5u, std::memory_order_release);
@@ -4658,14 +4764,25 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                         }
                     }
                 }
-            } else {
-                // Log that Semaphore cast failed
-                fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Semaphore*> returned nullptr\n", count);
+            }
+
+            result = kernel->Wait(timeout);
+
+            if (callNum < 20) {
+                fprintf(stderr, "[WAIT_DEBUG] Call #%d: SUCCESS result=0x%08lX\n", callNum + 1, (unsigned long)result);
                 fflush(stderr);
             }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            static std::atomic<int> s_waitCrashCount{0};
+            int crashNum = s_waitCrashCount.fetch_add(1);
+            DWORD exceptionCode = GetExceptionCode();
+            if (crashNum < 10) {  // Log first 10 occurrences
+                fprintf(stderr, "[WAIT_SYNC] SEH Exception (occurrence #%d) - code=0x%08lX kernel=%p Handle=0x%08X\n",
+                        crashNum + 1, (unsigned long)exceptionCode, (void*)kernel, Handle);
+                fflush(stderr);
+            }
+            return STATUS_INVALID_HANDLE;
         }
-
-        NTSTATUS result = kernel->Wait(timeout);
 
         return result;
     }
@@ -5129,10 +5246,22 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
     // CRITICAL DEBUG: Log sleep calls to detect stuck threads
     static std::atomic<uint64_t> s_sleep_count{0};
     uint64_t sleep_num = ++s_sleep_count;
-    if (sleep_num % 1000 == 0) {
-        fprintf(stderr, "[SLEEP_DEBUG] KeDelayExecutionThread called %llu times, tid=%lx\n",
-                sleep_num, GetCurrentThreadId());
+
+    // Read SIGNED 64-bit ticks from guest (100ns units; negative = relative)
+    const int64_t ticks = read_guest_i64(IntervalGuest);
+
+    // CRITICAL: Capture LR (link register) to see where the yield is being called from
+    static uint32_t s_last_lr = 0;
+    PPCContext* ctx = GetPPCContext();
+    uint32_t current_lr = ctx ? static_cast<uint32_t>(ctx->lr) : 0;
+
+    if (sleep_num % 10000 == 0 || (ticks == 0 && current_lr != s_last_lr)) {
+        fprintf(stderr, "[SLEEP_DEBUG] KeDelayExecutionThread called %llu times, tid=%lx, ticks=%lld, lr=0x%08X\n",
+                sleep_num, (unsigned long)GetCurrentThreadId(), (long long)ticks, current_lr);
         fflush(stderr);
+        if (ticks == 0) {
+            s_last_lr = current_lr;
+        }
     }
 
     // CRITICAL FIX: Check for pending APCs BEFORE sleeping
@@ -5192,9 +5321,6 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
         NudgeEventWaiters();                 // <--- critical to avoid вЂњstaleвЂќ loops
         return STATUS_SUCCESS;
     }
-
-    // Read SIGNED 64-bit ticks from guest (100ns units; negative = relative)
-    const int64_t ticks = read_guest_i64(IntervalGuest);
 
     // CRITICAL FIX: Add memory fence to ensure visibility of writes from other threads
     // This is necessary because the game uses busy-wait loops that check shared memory

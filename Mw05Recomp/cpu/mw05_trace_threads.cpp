@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <unordered_set>
+#include <mutex>
 #include <kernel/trace.h>
 
 extern std::atomic<uint32_t> g_watchEA;
@@ -550,6 +552,105 @@ PPC_FUNC(sub_828508A8)
     fprintf(stderr, "[THREAD_828508A8] EXIT tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
     fflush(stderr);
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.exit");
+}
+
+// CRITICAL FIX: Force-create render thread at VBlank 75 (matching Xenia behavior)
+// Thread #1 gets stuck in the main game loop and never creates the render thread naturally
+// So we create it manually from the VBlank callback
+static std::atomic<bool> s_renderThreadCreated{false};
+
+void Mw05ForceCreateRenderThread() {
+    if (s_renderThreadCreated.exchange(true)) {
+        return;  // Already created
+    }
+
+    fprintf(stderr, "[RENDER_THREAD_FIX] Force-creating render thread at entry 0x825AA970\n");
+    fflush(stderr);
+
+    // Create render thread (matching Xenia's behavior at line 35632)
+    // Entry: 0x825AA970
+    // Context: allocated on heap (Xenia uses 0x40009D2C, we'll allocate our own)
+    // Flags: 0x04000080
+
+    // Allocate context on heap (16 bytes should be enough)
+    void* ctx_host = g_userHeap.Alloc(256);
+    std::memset(ctx_host, 0, 256);
+    uint32_t ctx_addr = g_memory.MapVirtual(ctx_host);
+
+    fprintf(stderr, "[RENDER_THREAD_FIX] Allocated context at 0x%08X (host=%p)\n", ctx_addr, ctx_host);
+    fflush(stderr);
+
+    // DEBUG: Log what's in the context structure
+    uint32_t* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_host);
+    fprintf(stderr, "[RENDER_THREAD_FIX] Context contents: [0]=0x%08X [1]=0x%08X [2]=0x%08X [3]=0x%08X\n",
+            _byteswap_ulong(ctx_u32[0]), _byteswap_ulong(ctx_u32[1]),
+            _byteswap_ulong(ctx_u32[2]), _byteswap_ulong(ctx_u32[3]));
+    fflush(stderr);
+
+    // Create the render thread
+    be<uint32_t> thread_handle = 0;
+    be<uint32_t> thread_id = 0;
+    uint32_t result = ExCreateThread(
+        &thread_handle,      // pHandle
+        0,                   // stack_size (0 = default)
+        &thread_id,          // pThreadId
+        0x82850080,          // xapi_thread_startup (standard thread startup)
+        0x825AA970,          // start_address (render thread entry point)
+        ctx_addr,            // start_context
+        0x04000080           // creation_flags
+    );
+
+    if (result == 0) {
+        fprintf(stderr, "[RENDER_THREAD_FIX] Render thread created successfully: handle=0x%08X id=0x%08X\n",
+                (uint32_t)thread_handle, (uint32_t)thread_id);
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[RENDER_THREAD_FIX] ERROR: Failed to create render thread: result=0x%08X\n", result);
+        fflush(stderr);
+    }
+}
+
+// Wrapper for sub_82850820 - Thread #1 main worker loop
+// This is the function that should eventually call ExCreateThread to create the render thread
+PPC_FUNC_IMPL(__imp__sub_82850820);
+PPC_FUNC(sub_82850820) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[THREAD1_LOOP] sub_82850820 ENTER: count=%llu r3=%08X tid=%lx\n",
+            count, ctx.r3.u32, GetCurrentThreadId());
+    fflush(stderr);
+
+    // Call the original
+    __imp__sub_82850820(ctx, base);
+
+    fprintf(stderr, "[THREAD1_LOOP] sub_82850820 RETURN: count=%llu r3=%08X\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_823B9E00 - work queue processor
+// This function is called by Thread #1 to process work items from the queue at 0x829091C8
+PPC_FUNC_IMPL(__imp__sub_823B9E00);
+PPC_FUNC(sub_823B9E00) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    // Log first few calls and periodically
+    if (count < 10 || count % 1000 == 0) {
+        fprintf(stderr, "[WORK_QUEUE] sub_823B9E00 called: count=%llu r3=%08X tid=%lx\n",
+                count, ctx.r3.u32, GetCurrentThreadId());
+        fflush(stderr);
+    }
+
+    // Call the original
+    __imp__sub_823B9E00(ctx, base);
+
+    if (count < 10 || count % 1000 == 0) {
+        fprintf(stderr, "[WORK_QUEUE] sub_823B9E00 returned: count=%llu r3=%08X\n",
+                count, ctx.r3.u32);
+        fflush(stderr);
+    }
 }
 
 PPC_FUNC_IMPL(__imp__sub_82812ED0);

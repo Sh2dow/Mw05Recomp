@@ -2,6 +2,18 @@ $env:MW05_XEX_PATH = "D:/Games/Xbox360/NFS Most Wanted/default.xex"
 $exePath = "D:/Repos/Games/Mw05Recomp/out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe"
 $logPath = "D:/Repos/Games/Mw05Recomp/traces/auto_dismiss.txt"
 
+# Enable file I/O and streaming bridge logging
+$env:MW05_FILE_LOG = "1"
+$env:MW05_STREAM_BRIDGE = "1"
+$env:MW05_STREAM_FALLBACK_BOOT = "1"
+$env:MW05_HOST_TRACE_HOSTOPS = "1"
+
+# Disable video thread creation to test if crash is related
+# The crash is happening at second 5, before tick 300
+$env:MW05_FORCE_VIDEO_THREAD = "0"
+$env:MW05_FORCE_VIDEO_THREAD_TICK = "300"
+$env:MW05_FORCE_VIDEO_WORK_FLAG = "1"
+
 # Kill any existing instances
 Get-Process -Name "Mw05Recomp" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
@@ -9,8 +21,8 @@ Start-Sleep -Milliseconds 500
 Write-Host "Starting game..." -ForegroundColor Cyan
 $proc = Start-Process -FilePath $exePath -PassThru -NoNewWindow -RedirectStandardError $logPath
 
-# Auto-dismiss messageboxes for 180 seconds (3 minutes)
-for ($i = 0; $i -lt 180; $i++) {
+# Auto-dismiss messageboxes for 120 seconds (2 minutes) to see if game progresses
+for ($i = 0; $i -lt 120; $i++) {
     Start-Sleep -Seconds 1
     
     # Check if process is still running

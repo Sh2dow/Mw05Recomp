@@ -113,6 +113,11 @@ static void AudioWorkerThreadEntry()
     KernelTraceHostOp("HOST.SystemThread.AudioWorker.exit");
 }
 
+// REMOVED: Main Loop Flag Setter thread
+// The flag should be set by VBlank pump, not continuously by a background thread
+// The game uses a consume-and-clear pattern: reads flag, processes frame, clears flag
+// Setting it continuously creates a race condition
+
 // Kernel Dispatch thread - dispatches kernel events
 static void KernelDispatchThreadEntry()
 {
@@ -168,10 +173,10 @@ void Mw05CreateSystemThreads()
     kernelDispatchThread.detach();
     fprintf(stderr, "[SYSTEM-THREADS] Kernel Dispatch thread created\n");
     fflush(stderr);
-    
+
     // Give threads time to start
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+
     KernelTraceHostOp("HOST.SystemThreads.create.complete");
     fprintf(stderr, "[SYSTEM-THREADS] All system threads created and running\n");
     fflush(stderr);

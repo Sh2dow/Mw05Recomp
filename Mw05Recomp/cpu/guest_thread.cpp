@@ -143,15 +143,35 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
     fprintf(stderr, "[GUEST_THREAD_WRAPPER] Entry point reached, hThread=%p\n", (void*)hThread);
     fflush(stderr);
 #endif
+    // CRITICAL FIX: Validate hThread pointer before accessing it
+    // The hThread object might be deleted or corrupted by another thread
+    if (!hThread) {
+        fprintf(stderr, "[GUEST_THREAD_WRAPPER] ERROR: hThread is NULL!\n");
+        fflush(stderr);
+        return;
+    }
+
+    // CRITICAL DEBUG: Log hThread address and params BEFORE copying
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER] hThread=%p, about to read params...\n", (void*)hThread);
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER]   params.function=%08X (at offset +%zu from hThread)\n",
+            hThread->params.function, offsetof(GuestThreadHandle, params));
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER]   params.value=%08X\n", hThread->params.value);
+    fprintf(stderr, "[GUEST_THREAD_WRAPPER]   params.flags=%08X\n", hThread->params.flags);
+    fflush(stderr);
+
+    // CRITICAL FIX: Make a local copy of params IMMEDIATELY to avoid race conditions
+    // The hThread object might be deleted or corrupted by another thread at any time
+    const GuestThreadParams localParams = hThread->params;
     const bool was_suspended = hThread->suspended.load();
+    const uint32_t tid = hThread->GetThreadId();
 
     fprintf(stderr, "[GUEST_THREAD_WRAPPER] suspended=%d, tid=%08X, entry=%08X\n",
-            was_suspended, hThread->GetThreadId(), hThread->params.function);
+            was_suspended, tid, localParams.function);
     fflush(stderr);
 
     if (was_suspended) {
         fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X WAITING for resume...\n",
-            hThread->GetThreadId(), hThread->params.function);
+            tid, localParams.function);
         fflush(stderr);
     }
 
@@ -159,18 +179,18 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
 
     if (was_suspended) {
         fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X RESUMED, starting execution\n",
-            hThread->GetThreadId(), hThread->params.function);
+            tid, localParams.function);
         fflush(stderr);
     }
 
     fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X ABOUT TO CALL GuestThread::Start\n",
-        hThread->GetThreadId(), hThread->params.function);
+        tid, localParams.function);
     fflush(stderr);
 
-    GuestThread::Start(hThread->params);
+    GuestThread::Start(localParams);
 
     fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X COMPLETED\n",
-        hThread->GetThreadId(), hThread->params.function);
+        tid, localParams.function);
     fflush(stderr);
 
 #ifdef USE_PTHREAD

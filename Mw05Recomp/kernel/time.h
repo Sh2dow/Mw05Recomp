@@ -16,6 +16,15 @@ static inline uint32_t GuestTimeoutToMilliseconds(const be<int64_t>* t)
 {
     if (!t) return INFINITE;            // wait forever
     const int64_t ticks = *t;           // 100-ns units
+
+    // DEBUG: Log timeout values to understand what's being passed
+    static std::atomic<int> s_logCount{0};
+    if (s_logCount.fetch_add(1) < 20) {
+        fprintf(stderr, "[TIMEOUT_DEBUG] ticks=%lld (0x%016llX) ptr=%p\n",
+                (long long)ticks, (unsigned long long)ticks, (void*)t);
+        fflush(stderr);
+    }
+
     if (ticks == 0) return 0;           // yield/poll
     const bool is_relative = ticks < 0; // negative = relative delay
     uint64_t abs_ticks = is_relative ? (uint64_t)(-ticks) : (uint64_t)ticks;

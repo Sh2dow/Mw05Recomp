@@ -84,6 +84,12 @@ void Heap::Init()
         abort();
     }
 
+    // CRITICAL: Store initial heap diagnostics to detect corruption
+    initialDiagnostics = o1heapGetDiagnostics(heap);
+    fprintf(stderr, "[HEAP-INIT] Initial diagnostics: capacity=%zu allocated=%zu\n",
+            initialDiagnostics.capacity, initialDiagnostics.allocated);
+    fflush(stderr);
+
     // Register shutdown handler to prevent heap operations during process exit
     std::atexit(HeapShutdownHandler);
 
@@ -96,6 +102,15 @@ void* Heap::Alloc(size_t size)
     std::lock_guard lock(*mutex);
 
     size_t actual_size = std::max<size_t>(1, size);
+
+    // CRITICAL DEBUG: Check heap pointer BEFORE allocation
+    if (!heap) {
+        fprintf(stderr, "[HEAP-ALLOC-ERROR] heap pointer is NULL! size=%zu\n", actual_size);
+        fprintf(stderr, "[HEAP-ALLOC-ERROR] heapBase=%p heapSize=%zu\n", heapBase, heapSize);
+        fflush(stderr);
+        return nullptr;
+    }
+
     void* ptr = o1heapAllocate(heap, actual_size);
 
     // Diagnostic logging for allocation failures
@@ -103,6 +118,7 @@ void* Heap::Alloc(size_t size)
         // Get heap diagnostics
         O1HeapDiagnostics diag = o1heapGetDiagnostics(heap);
         fprintf(stderr, "[HEAP-ALLOC-FAIL] Failed to allocate %zu bytes from user heap\n", actual_size);
+        fprintf(stderr, "[HEAP-DIAG] heap=%p heapBase=%p heapSize=%zu\n", heap, heapBase, heapSize);
         fprintf(stderr, "[HEAP-DIAG] capacity=%zu allocated=%zu peak_allocated=%zu oom_count=%zu\n",
                 diag.capacity, diag.allocated, diag.peak_allocated, diag.oom_count);
         fprintf(stderr, "[HEAP-DIAG] free_space=%zu fragmentation=%.2f%%\n",
@@ -209,6 +225,23 @@ void Heap::Free(void* ptr)
     }
 
     std::lock_guard lock(*mutex);
+
+    // CRITICAL: Validate heap integrity BEFORE calling o1heapFree
+    // This catches heap corruption early before o1heap's internal assertions
+    O1HeapDiagnostics current = o1heapGetDiagnostics(heap);
+    if (current.capacity != initialDiagnostics.capacity) {
+        fprintf(stderr, "[HEAP-CORRUPTION] Heap capacity changed! initial=%zu current=%zu\n",
+                initialDiagnostics.capacity, current.capacity);
+        fprintf(stderr, "[HEAP-CORRUPTION] Attempting to free ptr=%p\n", ptr);
+        fprintf(stderr, "[HEAP-CORRUPTION] heapBase=%p heapSize=%zu heap=%p\n",
+                heapBase, heapSize, heap);
+        fflush(stderr);
+        // Don't call o1heapFree - heap is corrupted
+        fprintf(stderr, "[ABORT] heap.cpp line 238: Heap corruption detected!\n");
+        fflush(stderr);
+        abort();
+    }
+
     o1heapFree(heap, ptr);
 }
 
@@ -519,31 +552,12 @@ void MW05Stub_sub_82849000(PPCContext& ctx, uint8_t* base)
 // Register the stub at address 0x82849000 (unused area near sub_82849BF8)
 GUEST_FUNCTION_HOOK(sub_82849000, MW05Stub_sub_82849000);
 
-// CRITICAL FIX: sub_82849BF8 is stuck in a loop calling NULL vtable entries
-// Instead of trying to patch the vtable, just stub the entire function
-// Looking at the IDA code, this function:
-// 1. Calls XNotifyGetNext to check for system notifications
-// 2. Calls sub_82849678 and sub_82849718 (helper functions)
-// 3. Calls a vtable function 4 times in a loop (r30 = 0..3)
-// 4. Shifts the result left by r30 and ORs them together
-// 5. Checks if a specific bit is set and sets a flag at offset 0x2C
-// The vtable calls are failing because the vtable is NULL
-// For now, just stub the entire function to allow the video thread to progress
-PPC_FUNC_IMPL(__imp__sub_82849BF8);
-PPC_FUNC(sub_82849BF8)
-{
-    uint32_t r3_in = ctx.r3.u32;  // Object pointer
-
-    static int call_count = 0;
-    if (call_count++ < 3) {
-        fprintf(stderr, "[heap] sub_82849BF8 STUBBED (skipping NULL vtable calls) r3=%08X\n", r3_in);
-        fflush(stderr);
-    }
-
-    // Just return success without calling the original function
-    // The function doesn't return a value, so we don't need to set r3
-    // The important thing is to not call the NULL vtable entries
-}
+// REMOVED STUB: sub_82849BF8 was being stubbed, preventing video thread from working
+// The function needs to run to call XNotifyGetNext and trigger file loading
+// Instead of stubbing the entire function, we'll let it run and handle NULL vtables properly
+// The NULL vtable calls will be caught by the vtable method stubs registered in ppc_hook_overrides_manual.cpp
+// NOTE: Cannot add a wrapper here because it conflicts with the generated PPC code
+// If we need to debug this function, add logging directly to the generated code or use a different approach
 
 // Stub sub_82441C70 - NULL pointer dereference at dword_82A2D1AC
 PPC_FUNC_IMPL(__imp__sub_82441C70);

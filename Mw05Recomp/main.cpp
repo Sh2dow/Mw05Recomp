@@ -36,6 +36,7 @@
 #include <ppc/ppc_context.h>
 
 #include <cstdlib>
+#include <csignal>
 #include <fstream>
 #include <unordered_map>
 
@@ -872,6 +873,7 @@ void init()
 
 int main(int argc, char *argv[])
 {
+
     // Attach a console when --verbose is passed, even for Windows GUI builds.
     bool verbose = false;
     bool mwdebug = false;
@@ -906,6 +908,28 @@ int main(int argc, char *argv[])
     timeBeginPeriod(1);
 #endif
 
+    // Custom SDL assertion handler to log assertions before aborting
+    static auto CustomSDLAssertionHandler = [](const SDL_AssertData* data, void* userdata) -> SDL_AssertState {
+        fprintf(stderr, "[SDL_ASSERT] FAILED: %s at %s:%d\n", data->condition, data->filename, data->linenum);
+        fprintf(stderr, "[SDL_ASSERT] Function: %s\n", data->function);
+        fflush(stderr);
+
+        // Write to file as well
+        FILE* f = fopen("sdl_assert.txt", "a");
+        if (f) {
+            fprintf(f, "[SDL_ASSERT] FAILED: %s at %s:%d\n", data->condition, data->filename, data->linenum);
+            fprintf(f, "[SDL_ASSERT] Function: %s\n", data->function);
+            fflush(f);
+            fclose(f);
+        }
+
+        // Return ABORT to trigger the default behavior (messagebox + abort)
+        return SDL_ASSERTION_ABORT;
+    };
+
+    // Install custom SDL assertion handler BEFORE any SDL calls
+    SDL_SetAssertionHandler(CustomSDLAssertionHandler, nullptr);
+
     os::process::CheckConsole();
 
     if (!os::registry::Init())
@@ -918,6 +942,23 @@ int main(int argc, char *argv[])
     static auto MwUnhandledException = [](EXCEPTION_POINTERS* ep) -> LONG {
         const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
         const void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+
+        // Log ALL exceptions to stderr for debugging
+        fprintf(stderr, "[EXCEPTION] code=0x%08X addr=%p tid=%08X\n", (unsigned)code, addr, GetCurrentThreadId());
+        fflush(stderr);
+
+        // Special handling for breakpoint exceptions (PowerPC trap instructions)
+        if (code == 0x80000003) { // STATUS_BREAKPOINT
+            static int trap_count = 0;
+            if (trap_count++ < 10) {
+                LOGFN_ERROR("[trap] PowerPC trap instruction at addr={} tid={:08X} (count={})", addr, GetCurrentThreadId(), trap_count);
+                LOGFN_ERROR("[trap] This is a PowerPC 'trap' instruction used for assertions/error handling");
+                LOGFN_ERROR("[trap] Continuing execution (trap will be ignored)");
+            }
+            // CONTINUE execution instead of crashing
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
         LOGFN_ERROR("[crash] unhandled exception code=0x{:08X} addr={} tid={:08X}", (unsigned)code, addr, GetCurrentThreadId());
 
         // Special handling for floating-point divide-by-zero

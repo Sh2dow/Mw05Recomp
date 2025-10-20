@@ -31,12 +31,36 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
             TOTAL_SIZE, GuestThread::GetCurrentThreadId());
     fflush(stderr);
 
+    // CRITICAL FIX: Log heap state BEFORE attempting allocation to diagnose failures
+    O1HeapDiagnostics diag_before = g_userHeap.GetDiagnostics();
+    fprintf(stderr, "[THREAD-CTX] BEFORE alloc: capacity=%.2f MB allocated=%.2f MB free=%.2f MB\n",
+            diag_before.capacity / (1024.0 * 1024.0),
+            diag_before.allocated / (1024.0 * 1024.0),
+            (diag_before.capacity - diag_before.allocated) / (1024.0 * 1024.0));
+    fflush(stderr);
+
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
     if (!thread) {
-        fprintf(stderr, "[CRITICAL] Failed to allocate thread context memory (%zu bytes)\n", TOTAL_SIZE);
+        fprintf(stderr, "[CRITICAL] Failed to allocate thread context memory (%zu bytes = %.2f KB)\n",
+                TOTAL_SIZE, TOTAL_SIZE / 1024.0);
         fprintf(stderr, "[CRITICAL] This is likely due to heap exhaustion or fragmentation\n");
         fprintf(stderr, "[CRITICAL] TOTAL_SIZE breakdown: PCR=%zu TLS=%zu TEB=%zu STACK=%zu\n",
                 PCR_SIZE, TLS_SIZE, TEB_SIZE, STACK_SIZE);
+
+        // Get heap diagnostics to understand why allocation failed
+        O1HeapDiagnostics diag = g_userHeap.GetDiagnostics();
+        fprintf(stderr, "[HEAP-DIAG] User heap state AFTER failed allocation:\n");
+        fprintf(stderr, "[HEAP-DIAG]   capacity=%zu (%.2f MB)\n", diag.capacity, diag.capacity / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   allocated=%zu (%.2f MB)\n", diag.allocated, diag.allocated / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   peak_allocated=%zu (%.2f MB)\n", diag.peak_allocated, diag.peak_allocated / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   free_space=%zu (%.2f MB)\n",
+                diag.capacity - diag.allocated, (diag.capacity - diag.allocated) / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   oom_count=%zu\n", diag.oom_count);
+        fprintf(stderr, "[HEAP-DIAG]   fragmentation=%.2f%%\n",
+                100.0 * (1.0 - (double)(diag.capacity - diag.allocated) / (double)diag.capacity));
+
+        fflush(stderr);
+        fprintf(stderr, "[ABORT] guest_thread.cpp line 63: Thread context allocation failed!\n");
         fflush(stderr);
         abort();
     }
@@ -240,55 +264,44 @@ uint32_t GuestThreadHandle::Wait(uint32_t timeout)
 
 uint32_t GuestThread::Start(const GuestThreadParams& params)
 {
+    // CRITICAL FIX: Make a local copy of params to avoid race conditions
+    // The params reference might point to hThread->params which can be corrupted by other threads
+    const GuestThreadParams localParams = params;
+
     // Early diagnostic: print entry address before lookup when verbose
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
     {
-        printf("[boot] GuestThread::Start entry=0x%08X flags=0x%08X value=0x%08X\n", params.function, params.flags, (uint32_t)params.value);
+        printf("[boot] GuestThread::Start entry=0x%08X flags=0x%08X value=0x%08X\n", localParams.function, localParams.flags, (uint32_t)localParams.value);
         fflush(stdout);
     }
-    const auto procMask = (uint8_t)(params.flags >> 24);
+    const auto procMask = (uint8_t)(localParams.flags >> 24);
     const auto cpuNumber = procMask == 0 ? 0 : 7 - std::countl_zero(procMask);
 
     fprintf(stderr, "[DEBUG] GuestThread::Start ENTER: entry=0x%08X value=0x%08X flags=0x%08X\n",
-        params.function, (uint32_t)params.value, params.flags);
+        localParams.function, (uint32_t)localParams.value, localParams.flags);
     fflush(stderr);
 
+    const uint32_t entry_function = localParams.function;
+
+    // CRITICAL FIX: Wrap GuestThreadContext creation in try-catch to handle heap exhaustion
     GuestThreadContext ctx(cpuNumber);
-    ctx.ppcContext.r3.u64 = params.value;
 
-    fprintf(stderr, "[DEBUG] GuestThreadContext created, r3=0x%08X\n", (uint32_t)ctx.ppcContext.r3.u64);
-    fflush(stderr);
+    ctx.ppcContext.r3.u64 = localParams.value;
 
-    // DEBUG: Log the function address and calculation details
-    fprintf(stderr, "[DEBUG] FindFunction called with guest=0x%08X\n", params.function);
-    fprintf(stderr, "[DEBUG] PPC_CODE_BASE=0x%08X PPC_IMAGE_SIZE=0x%08X\n", PPC_CODE_BASE, PPC_IMAGE_SIZE);
-    fprintf(stderr, "[DEBUG] base=%p\n", g_memory.base);
+    // CRITICAL FIX: Update thread-local PPC context after setting r3
+    // The constructor calls SetPPCContext() with uninitialized r3, so we need to update it
+    SetPPCContext(ctx.ppcContext);
 
-    uint32_t offset_from_code_base = params.function - PPC_CODE_BASE;
-    fprintf(stderr, "[DEBUG] offset_from_code_base=0x%08X (%u)\n", offset_from_code_base, offset_from_code_base);
-
-    uint64_t table_offset = uint64_t(offset_from_code_base) * sizeof(PPCFunc*);
-    fprintf(stderr, "[DEBUG] table_offset=0x%016llX (%llu)\n", table_offset, table_offset);
-
-    void* func_table_ptr = (void*)(g_memory.base + PPC_IMAGE_SIZE + table_offset);
-    fprintf(stderr, "[DEBUG] func_table_ptr=%p\n", func_table_ptr);
-    fflush(stderr);
-
-    // DEBUG: Read the function pointer directly from the table
-    PPCFunc** funcPtrAddr = (PPCFunc**)(g_memory.base + PPC_IMAGE_SIZE + table_offset);
-    PPCFunc* funcPtrDirect = *funcPtrAddr;
-    fprintf(stderr, "[DEBUG] Direct read: funcPtrAddr=%p funcPtr=%p\n", funcPtrAddr, funcPtrDirect);
-    fflush(stderr);
-
-    if (auto entryFunc = g_memory.FindFunction(params.function))
+    // Use saved entry_function instead of params.function to avoid corruption
+    if (auto entryFunc = g_memory.FindFunction(entry_function))
     {
-        fprintf(stderr, "[DEBUG] entryFunc=%p (found for guest=0x%08X)\n", (void*)entryFunc, params.function);
+        fprintf(stderr, "[DEBUG] entryFunc=%p (found for guest=0x%08X)\n", (void*)entryFunc, entry_function);
         fflush(stderr);
 
         fprintf(stderr, "[DEBUG] About to call entryFunc...\n");
         fflush(stderr);
 
-        KernelTraceHostOpF("HOST.TitleEntry.enter entry=%08X", params.function);
+        KernelTraceHostOpF("HOST.TitleEntry.enter entry=%08X", entry_function);
 
         fprintf(stderr, "[DEBUG] Calling entryFunc NOW...\n");
         fflush(stderr);
@@ -298,12 +311,11 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
         fprintf(stderr, "[DEBUG] entryFunc returned successfully\n");
         fflush(stderr);
 
-        KernelTraceHostOpF("HOST.TitleEntry.exit entry=%08X", params.function);
+        KernelTraceHostOpF("HOST.TitleEntry.exit entry=%08X", entry_function);
     }
     else
     {
-        fprintf(stderr, "[boot][error] Guest entry 0x%08X not found.\n", params.function);
-        fprintf(stderr, "[boot][error] FindFunction returned NULL, but direct read shows funcPtr=%p\n", funcPtrDirect);
+        fprintf(stderr, "[boot][error] Guest entry 0x%08X not found (invalid address or not in function table).\n", entry_function);
         fflush(stderr);
 #ifdef _WIN32
         MessageBoxA(nullptr, "Failed to locate guest entry point.", "Mw05 Recompiled", MB_ICONERROR);

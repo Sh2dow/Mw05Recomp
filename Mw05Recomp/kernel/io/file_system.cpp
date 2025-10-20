@@ -330,6 +330,24 @@ uint32_t XReadFile
         return FALSE;
     }
 
+    // CRITICAL FIX: Test if buffer is writable before attempting to read
+    // This prevents crashes when buffer points to read-only or invalid memory
+    __try {
+        volatile uint8_t* testPtr = static_cast<volatile uint8_t*>(lpBuffer);
+        uint8_t originalValue = *testPtr;
+        *testPtr = originalValue; // Write back the same value to test writability
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        uint32_t bufferAddr = g_memory.MapVirtual(lpBuffer);
+        fprintf(stderr, "[XReadFile] ERROR: Buffer is not writable! lpBuffer=%p addr=%08X size=%u\n",
+                lpBuffer, bufferAddr, nNumberOfBytesToRead);
+        fflush(stderr);
+        if (lpNumberOfBytesRead != nullptr)
+        {
+            *lpNumberOfBytesRead = 0;
+        }
+        return FALSE;
+    }
+
     if (!EnsureLiveFileHandle(hFile))
     {
         if (lpNumberOfBytesRead != nullptr)
@@ -352,12 +370,42 @@ uint32_t XReadFile
         }
     }
 
-    uint32_t numberOfBytesRead;
-    hFile->stream.read((char *)(lpBuffer), nNumberOfBytesToRead);
-    if (!hFile->stream.bad())
-    {
-        numberOfBytesRead = uint32_t(hFile->stream.gcount());
-        result = TRUE;
+    uint32_t numberOfBytesRead = 0;
+
+    // CRITICAL FIX: Read in chunks to avoid stack overflow when reading large files
+    // Reading 4+ MB in one go can cause stack overflow (exception 0xC00000FD)
+    // Break large reads into 256 KB chunks to stay within stack limits
+    constexpr uint32_t CHUNK_SIZE = 256 * 1024; // 256 KB chunks
+
+    __try {
+        uint32_t remaining = nNumberOfBytesToRead;
+        uint32_t offset = 0;
+
+        while (remaining > 0 && !hFile->stream.bad()) {
+            uint32_t toRead = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+
+            hFile->stream.read((char*)(lpBuffer) + offset, toRead);
+
+            if (hFile->stream.bad()) {
+                break;
+            }
+
+            uint32_t chunkRead = uint32_t(hFile->stream.gcount());
+            numberOfBytesRead += chunkRead;
+            offset += chunkRead;
+            remaining -= chunkRead;
+
+            // If we read less than requested, we've hit EOF
+            if (chunkRead < toRead) {
+                break;
+            }
+        }
+
+        result = !hFile->stream.bad();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Exception during read - buffer might be too small or invalid
+        // Return what we successfully read so far
+        result = (numberOfBytesRead > 0) ? TRUE : FALSE;
     }
 
     if (result)

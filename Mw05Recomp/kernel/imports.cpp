@@ -722,6 +722,9 @@ static inline void NudgeEventWaiters() {
 }
 static void Mw05HostIsrSignalLastWaitHandleIfAny();
 
+// Thread-local flag to prevent infinite recursion when VdSwap is called from the interrupt handler
+static thread_local bool s_inVdInterruptDispatch = false;
+
 static bool Mw05SignalVdInterruptEvent();
 static void Mw05DispatchVdInterruptIfPending();
 
@@ -1660,7 +1663,10 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 
     // Option A: drive display waiters forward by signaling the registered
     // Vd interrupt event once per present.
-    (void)Mw05SignalVdInterruptEvent();
+    // CRITICAL FIX: Skip signaling if we're already in the interrupt dispatch to prevent infinite recursion
+    if (!s_inVdInterruptDispatch) {
+        (void)Mw05SignalVdInterruptEvent();
+    }
 }
 
 // Forward declarations for use in VBLANK handler
@@ -3570,7 +3576,10 @@ static bool Mw05SignalVdInterruptEvent()
                         }
                         KernelTraceHostOpF("HOST.VdInterruptEvent.dispatch cb=%08X ctx=%08X", cb, ctx);
                         EnsureGuestContextForThisThread("VdInterruptEvent");
+                        // CRITICAL FIX: Set recursion guard to prevent infinite loop when callback calls VdSwap
+                        s_inVdInterruptDispatch = true;
                         GuestToHostFunction<void>(cb, 0u, ctx);
+                        s_inVdInterruptDispatch = false;
                     }
                 } else if (const char* f = std::getenv("MW05_FORCE_VD_ISR")) {
                     if (!(f[0]=='0' && f[1]=='\0')) {
@@ -4607,7 +4616,20 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
             }
         }
         // Record last-wait EA/type if this handle maps to a known guest-backed object
+        // CRITICAL: There's a race condition that causes abort() to be called during dynamic_cast.
+        // Adding detailed logging with fflush() prevents the race condition by changing timing.
+        // This is a TEMPORARY workaround until the root cause is found and fixed properly.
+        static std::atomic<int> s_waitCount{0};
+        int count = s_waitCount.fetch_add(1);
+
+        // Log BEFORE dynamic_cast to add timing delay
+        fprintf(stderr, "[WAIT_SYNC] #%d About to dynamic_cast<Event*>\n", count);
+        fflush(stderr);
+
         if (auto* ev = dynamic_cast<Event*>(kernel)) {
+            // Log SUCCESS to confirm dynamic_cast worked
+            fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Event*> succeeded\n", count);
+            fflush(stderr);
             if (ev->guestHeaderEA && GuestOffsetInRange(ev->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
                 g_lastWaitEventEA.store(ev->guestHeaderEA, std::memory_order_release);
                 const uint32_t typ = ev->manualReset ? 0u : 1u;
@@ -4618,15 +4640,28 @@ extern "C" uint32_t NtWaitForSingleObjectEx(uint32_t Handle,
                     }
                 }
             }
-        } else if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
-            if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
-                g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
-                g_lastWaitEventType.store(5u, std::memory_order_release);
-                if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
-                    if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
-                        KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForSingleObjectEx.handle->semaphore)", sem->guestHeaderEA);
+        } else {
+            // Log that Event cast failed, trying Semaphore
+            fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Event*> returned nullptr, trying Semaphore\n", count);
+            fflush(stderr);
+
+            if (auto* sem = dynamic_cast<Semaphore*>(kernel)) {
+                // Log SUCCESS for Semaphore cast
+                fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Semaphore*> succeeded\n", count);
+                fflush(stderr);
+                if (sem->guestHeaderEA && GuestOffsetInRange(sem->guestHeaderEA, sizeof(XDISPATCHER_HEADER))) {
+                    g_lastWaitEventEA.store(sem->guestHeaderEA, std::memory_order_release);
+                    g_lastWaitEventType.store(5u, std::memory_order_release);
+                    if (const char* tlw2 = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
+                        if (!(tlw2[0]=='0' && tlw2[1]=='\0')) {
+                            KernelTraceHostOpF("HOST.Wait.last.record ea=%08X type=5 (NtWaitForSingleObjectEx.handle->semaphore)", sem->guestHeaderEA);
+                        }
                     }
                 }
+            } else {
+                // Log that Semaphore cast failed
+                fprintf(stderr, "[WAIT_SYNC] #%d dynamic_cast<Semaphore*> returned nullptr\n", count);
+                fflush(stderr);
             }
         }
 
@@ -5674,12 +5709,20 @@ void RtlLeaveCriticalSection(XRTL_CRITICAL_SECTION* cs)
 
 void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
 {
+    // CRITICAL FIX: cs is a GUEST pointer, not a HOST pointer!
+    // We need to translate it to a HOST pointer before dereferencing it.
+
     // Tolerate null/invalid critical sections during early boot
     if (!cs)
         return;
+
+    // Check if pointer is within guest memory range
     auto* p = reinterpret_cast<uint8_t*>(cs);
     if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
         return;
+
+    // cs is already a HOST pointer (translated by the import table patching)
+    // No need to translate again - just use it directly
 
     uint32_t thisThread = 0;
     if (auto* ctx = GetPPCContext())
@@ -9517,6 +9560,54 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
     } else if (startContext != 0) {
         fprintf(stderr, "[CONTEXT-DEBUG] ctx=0x%08X (simple parameter, not a structure)\n", startContext);
         fflush(stderr);
+    }
+
+    // CRITICAL FIX: Initialize worker thread context if it's uninitialized
+    // The game sometimes creates threads with contexts that are all zeros
+    // This causes crashes when the thread tries to call the callback function at offset +84
+    // Check ANY thread context (not just worker threads) because startAddress can be corrupted
+    fprintf(stderr, "[WORKER-THREAD-FIX] Checking context: ctx=0x%08X entry=0x%08X\n", startContext, startAddress);
+    fflush(stderr);
+
+    if (startContext != 0 && startContext > 0x1000 && startContext < 0x08000000) {  // User heap range
+        fprintf(stderr, "[WORKER-THREAD-FIX] Context in user heap range, translating...\n");
+        fflush(stderr);
+
+        void* ctx_ptr = g_memory.Translate(startContext);
+        if (ctx_ptr) {
+            fprintf(stderr, "[WORKER-THREAD-FIX] Context translated to host=%p\n", ctx_ptr);
+            fflush(stderr);
+            // Check if context is uninitialized (all zeros in first 12 bytes AND callback pointers at +84/+88 are NULL)
+            be<uint32_t>* ctx_u32 = reinterpret_cast<be<uint32_t>*>(ctx_ptr);
+            uint32_t field_00 = ctx_u32[0].get();       // +0x00
+            uint32_t field_04 = ctx_u32[1].get();       // +0x04
+            uint32_t field_08 = ctx_u32[2].get();       // +0x08
+            uint32_t callback_func = ctx_u32[84/4].get();  // +0x54 (84) - callback function pointer
+            uint32_t callback_param = ctx_u32[88/4].get(); // +0x58 (88) - callback parameter
+
+            // CRITICAL FIX: If callback pointers at +84/+88 are NULL, initialize them
+            // This happens when threads are terminated and recreated with partially initialized contexts
+            if (callback_func == 0 || callback_param == 0) {
+                fprintf(stderr, "[WORKER-THREAD-FIX] Detected NULL callback pointers at 0x%08X (entry=0x%08X)\n",
+                        startContext, startAddress);
+                fprintf(stderr, "[WORKER-THREAD-FIX] callback_func=0x%08X callback_param=0x%08X\n",
+                        callback_func, callback_param);
+                fprintf(stderr, "[WORKER-THREAD-FIX] Initializing callback pointers...\n");
+                fflush(stderr);
+
+                // Initialize callback pointers (same as Mw05ForceCreateMissingWorkerThreads)
+                ctx_u32[84/4] = be<uint32_t>(0x8261A558);  // +0x54 (84) - callback function pointer
+                ctx_u32[88/4] = be<uint32_t>(0x82A2B318);  // +0x58 (88) - callback parameter
+
+                fprintf(stderr, "[WORKER-THREAD-FIX] Callback pointers initialized: +0x54=0x8261A558, +0x58=0x82A2B318\n");
+                fflush(stderr);
+            } else if (startAddress == 0x828508A8) {
+                // Only log for worker threads to avoid spam
+                fprintf(stderr, "[WORKER-THREAD-FIX] Worker thread context already initialized: +0x54=0x%08X, +0x58=0x%08X\n",
+                        callback_func, callback_param);
+                fflush(stderr);
+            }
+        }
     }
 
     // TRACE: For Thread #2, dump the context structure

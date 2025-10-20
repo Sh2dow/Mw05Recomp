@@ -88,10 +88,9 @@ Memory::Memory()
 
     // NOTE: UnleashedRecomp protects the first 4KB to catch NULL pointer dereferences:
     //   VirtualProtect(base, 4096, PAGE_NOACCESS, &oldProtect);
-    // However, MW05 legitimately accesses low memory addresses (e.g., when scanning
-    // for paths in loader shims), so we DON'T protect the first 4KB.
-    // This means NULL pointer dereferences won't be caught by the OS, but the game
-    // will run correctly.
+    // However, MW05 DOES access low memory addresses (confirmed by crash when protection enabled),
+    // so we DON'T protect the first 4KB. This means NULL pointer dereferences won't be caught
+    // by the OS, but the game will run correctly.
 #else
     base = (uint8_t*)mmap((void*)0x100000000ull, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
 

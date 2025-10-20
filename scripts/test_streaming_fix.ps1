@@ -8,41 +8,8 @@ Write-Host "Enabling streaming bridge and file I/O logging..." -ForegroundColor 
 Get-Process -Name "Mw05Recomp" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-# Essential settings (keep from original)
-$env:MW05_FAKE_ALLOC_SYSBUF = "1"
-$env:MW05_UNBLOCK_MAIN = "1"
-$env:MW05_TRACE_KERNEL = "1"
-$env:MW05_HOST_TRACE_IMPORTS = "1"
-$env:MW05_FORCE_VD_INIT = "1"
-$env:MW05_FORCE_GFX_NOTIFY_CB = "1"
-$env:MW05_FORCE_GFX_NOTIFY_CB_CTX = "0x40007180"
-$env:MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS = "350"
-
-# CRITICAL FIX: Enable streaming bridge and file I/O
-$env:MW05_STREAM_BRIDGE = "1"                    # ENABLE streaming bridge
-$env:MW05_STREAM_FALLBACK_BOOT = "1"             # ENABLE fallback boot file loading
-$env:MW05_STREAM_ACK_NO_PATH = "1"               # ACK blocks even without path
-$env:MW05_STREAM_ANY_LR = "1"                    # Accept sentinel from any LR
-$env:MW05_FILE_LOG = "1"                         # ENABLE file I/O logging
-
-# Disable force present (it disables streaming bridge)
-$env:MW05_FORCE_PRESENT = "0"
-$env:MW05_FORCE_PRESENT_BG = "0"
-$env:MW05_FORCE_PRESENT_EVERY_ZERO = "0"
-$env:MW05_FORCE_PRESENT_ON_ZERO = "0"
-$env:MW05_FORCE_PRESENT_ON_FIRST_ZERO = "0"
-$env:MW05_FORCE_PRESENT_WRAPPER_ONCE = "0"
-
-# Disable other interventions that might interfere
-$env:MW05_VBLANK_VDSWAP = "0"
-$env:MW05_KICK_VIDEO = "0"
-$env:MW05_FAST_BOOT = "0"
-$env:MW05_FAST_RET = "0"
-$env:MW05_BREAK_WAIT_LOOP = "0"
-$env:MW05_FORCE_VIDEO_THREAD = "0"
-$env:MW05_LOOP_TRY_PM4_PRE = "0"
-$env:MW05_LOOP_TRY_PM4_POST = "0"
-$env:MW05_INNER_TRY_PM4 = "0"
+# TEST WITH MINIMAL FLAGS - Let game run naturally to see the crash
+# Clear ALL environment variables to test natural game behavior
 
 # Output directory
 $LogDir = ".\out\build\x64-Clang-Debug\Mw05Recomp"

@@ -2688,11 +2688,11 @@ static void DrawProfiler()
             O1HeapDiagnostics diagnostics;
             size_t physicalAllocated;
             {
-                std::lock_guard lock(g_userHeap.mutex);
+                std::lock_guard lock(*g_userHeap.mutex);
                 diagnostics = o1heapGetDiagnostics(g_userHeap.heap);
             }
             {
-                std::lock_guard lock(g_userHeap.physicalMutex);
+                std::lock_guard lock(*g_userHeap.physicalMutex);
                 physicalAllocated = g_userHeap.physicalAllocated;
             }
 

@@ -413,10 +413,12 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
             g_pm4DrawCount.fetch_add(1, std::memory_order_relaxed);
 
             // Read draw parameters (already byteswapped to host LE)
+            // CRITICAL FIX: Check count bounds before accessing params array
+            // count is unsigned, so we need to check if it's reasonable (not 0xFFFFFFFF)
             uint32_t* params = ptr + 1;
-            uint32_t p0 = (count >= 0 && params[0]) ? __builtin_bswap32(params[0]) : 0;
-            uint32_t p1 = (count >= 1 && params[1]) ? __builtin_bswap32(params[1]) : 0;
-            uint32_t p2 = (count >= 2 && params[2]) ? __builtin_bswap32(params[2]) : 0;
+            uint32_t p0 = (count > 0 && count < 0x10000) ? __builtin_bswap32(params[0]) : 0;
+            uint32_t p1 = (count > 1 && count < 0x10000) ? __builtin_bswap32(params[1]) : 0;
+            uint32_t p2 = (count > 2 && count < 0x10000) ? __builtin_bswap32(params[2]) : 0;
 
             // DEBUG: Log PM4 draw commands
             static int s_pm4DrawLogCount = 0;

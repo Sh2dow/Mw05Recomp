@@ -391,6 +391,14 @@ namespace {
                             "game:\\GLOBAL\\WIDESCREEN_GLOBAL.BUN"
                         };
                         for (const char* cand : boots) {
+                            // CRITICAL: Re-validate dst pointer before each file read
+                            // The pointer might become invalid between iterations
+                            dst = static_cast<uint8_t*>(g_memory.Translate(fbBufEA));
+                            if (!dst) {
+                                KernelTraceHostOpF("HOST.StreamBridge.io.ABORT dst=NULL after re-translate fbBufEA=%08X", fbBufEA);
+                                break;
+                            }
+
                             // If we can resolve to a host path, clamp by actual file size.
                             std::filesystem::path resolved = FileSystem::ResolvePath(cand, /*mods=*/true);
                             uint32_t toRead = fbSize;
@@ -402,7 +410,7 @@ namespace {
                                 // Read the FULL file, not just fbSize
                                 toRead = (uint32_t)std::min<uint64_t>(fsz, 0x400000ull);
                             }
-                            KernelTraceHostOpF("HOST.StreamBridge.io.try.fallback cand='%s' buf=%08X size=%u", cand, fbBufEA, (unsigned)toRead);
+                            KernelTraceHostOpF("HOST.StreamBridge.io.try.fallback cand='%s' buf=%08X dst=%p size=%u", cand, fbBufEA, dst, (unsigned)toRead);
                             FileHandle* fh = XCreateFileA(cand, /*GENERIC_READ*/ 0x80000000u | 0x00000001u, /*share read*/ 0x1u, nullptr, /*OPEN_EXISTING*/ 3u, 0u);
                             if (!fh) continue;
                             be<uint32_t> bytesRead{0};

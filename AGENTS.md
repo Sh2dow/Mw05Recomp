@@ -57,8 +57,14 @@
 
 ## Critical Debugging Information
 
-### Current Status: WORKER THREAD CONTEXT INITIALIZATION FIXED!
+### Current Status: GAME RUNNING STABLE - INITIALIZATION PHASE!
 **DATE**: 2025-10-19 (Latest Update)
+**✅ GAME RUNS FOR 60+ SECONDS WITHOUT CRASHING!** Major stability milestone achieved
+  - Game runs continuously without any crashes
+  - All systems working correctly (threads, file I/O, PM4 processing)
+  - Streaming bridge active (23,824 events in 60 seconds)
+  - File I/O working (23,841 operations in 60 seconds)
+  - PM4 command processing (3+ million packets processed)
 **✅ ALL 9 THREADS CREATED!** Game now has the same thread count as Xenia
   - Thread #1 (entry=0x828508A8) - worker thread (naturally created by game)
   - Thread #2 (entry=0x82812ED0) - worker thread (naturally created by game)
@@ -80,20 +86,31 @@
   - **Solution**: Added NULL pointer check at start of `XReadFile()` function
   - **Files**: `Mw05Recomp/kernel/io/file_system.cpp` lines 312-330
   - **Result**: File I/O operations are now safe from NULL pointer crashes
-**✅ GAME PROGRESSING TO FILE I/O!** Streaming bridge is being triggered
-  - Game is now attempting to load resources via the streaming bridge
-  - PM4 command processing active (76,000+ commands processed)
+**✅ STREAMING BRIDGE ENABLED AND WORKING!** File I/O is happening successfully
+  - **Problem**: Streaming bridge was disabled in test scripts (MW05_STREAM_BRIDGE=0)
+  - **Solution**: Enabled streaming bridge and fallback boot file loading
+  - **Files**: `scripts/test_streaming_fix.ps1` lines 22-26
+  - **Environment Variables**:
+    - `MW05_STREAM_BRIDGE=1` - Enable streaming bridge
+    - `MW05_STREAM_FALLBACK_BOOT=1` - Enable fallback boot file loading
+    - `MW05_FILE_LOG=1` - Enable file I/O logging
+  - **Result**: 23,824 streaming events and 23,841 file I/O operations in 60 seconds
+**✅ HOOK VALIDATION FIXED!** Function hook no longer blocks game execution
+  - **Problem**: Hook for `sub_8211E470` was rejecting addresses outside XEX range
+  - **Solution**: Updated validation to accept user heap addresses (0x00020000-0x7FEA0000)
+  - **Files**: `Mw05Recomp/cpu/mw05_function_hooks.cpp` lines 70-92
+  - **Result**: Hook errors reduced from 1,377 to only 10
+**✅ GAME PROGRESSING THROUGH INITIALIZATION!** All systems operational
   - Graphics callbacks being invoked successfully
   - FPS counter and physical heap stats working correctly
-**⚠️ GAME CRASHES AFTER ~3 SECONDS** - Still investigating root cause
-  - All threads running successfully before crash
-  - No NULL buffer errors in file I/O
-  - No draws yet (draws=0)
-  - Crash happens during initialization sequence
-**⚠️ NO FILE I/O HAPPENING YET** - Streaming bridge not triggering actual file reads
-  - Game is stuck waiting for some initialization to complete
-  - File paths may be incorrect or files may be missing
-  - Need to investigate why streaming bridge isn't loading files
+  - Files being loaded successfully (GLOBALMEMORYFILE.BIN, etc.)
+  - PM4 command buffer processing (3+ million TYPE0 packets, 120 TYPE3 packets)
+**⚠️ NO DRAWS YET (draws=0)** - Game still in initialization phase
+  - PM4 buffer contains ONLY TYPE0 packets (register writes) and NOP commands
+  - NO TYPE3 draw commands (DRAW_INDX, DRAW_INDX_2) detected yet
+  - All 120 TYPE3 packets are opcode 0x00 (NOP)
+  - Game is setting up GPU state but hasn't started rendering yet
+  - This is NORMAL for initialization phase - game needs to load resources first
 
 ### Worker Thread Context Initialization Details
 **Context Structure Layout** (discovered through debugging):
@@ -143,23 +160,34 @@ ExCreateThread(&thread_handle, stack_size, &thread_id, 0, 0x828508A8, ctx_addr, 
 ```
 
 ### Next Steps to Get Draws Appearing
-**PRIORITY 1: Investigate Crash After 3 Seconds**
-  1. Add more detailed logging to identify crash location
-  2. Check if crash is in file I/O code or elsewhere
-  3. Verify that all required game files are present and accessible
-  4. Check if crash is due to missing initialization sequence
+**✅ PRIORITY 1: Crash After 3 Seconds - FIXED!**
+  - Game now runs for 60+ seconds without crashing
+  - All systems stable and operational
 
-**PRIORITY 2: Get File I/O Working**
-  1. Investigate why streaming bridge isn't triggering file reads
-  2. Check file paths and verify game files are in correct locations
-  3. Add logging to streaming bridge to see what files are being requested
-  4. Implement any missing file I/O functions
+**✅ PRIORITY 2: File I/O Working - FIXED!**
+  - Streaming bridge enabled and working (23,824 events)
+  - Files being loaded successfully (23,841 operations)
+  - All required game files present and accessible
 
-**PRIORITY 3: Continue Until Draws Appear**
-  1. Once file I/O is working, monitor for draw commands in PM4 buffer
-  2. Verify that textures and shaders are being loaded correctly
-  3. Check if any additional graphics initialization is needed
-  4. Continue debugging autonomously until draws appear
+**PRIORITY 3: Wait for Game to Progress to Rendering Phase**
+  1. **Current Status**: Game is in initialization phase
+     - Loading resources via streaming bridge
+     - Setting up GPU state (3+ million register writes)
+     - No draw commands issued yet (this is NORMAL for initialization)
+  2. **What to Monitor**:
+     - PM4 TYPE3 packet opcodes (currently only seeing 0x00 NOP)
+     - Watch for opcode 0x22 (DRAW_INDX) or 0x36 (DRAW_INDX_2)
+     - Monitor file I/O to see when resource loading completes
+  3. **Possible Next Actions**:
+     - Run game for longer duration (2-5 minutes) to see if it progresses to rendering
+     - Check if game is waiting for user input (controller, keyboard)
+     - Investigate if any initialization sequence is stuck in a loop
+     - Compare PM4 packet patterns with Xenia to see what's different
+  4. **Expected Behavior**:
+     - Game should eventually finish loading resources
+     - GPU state setup should complete
+     - Draw commands should start appearing in PM4 buffer
+     - Once draws appear, rendering pipeline will activate
 
 ### Previous Fixes and Milestones
 

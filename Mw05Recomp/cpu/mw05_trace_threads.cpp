@@ -350,26 +350,12 @@ static void Mw05ForceCreateMissingWorkerThreads() {
         }
     }
 
-    // Create the special thread (entry=0x825AA970)
-    {
-        be<uint32_t> thread_handle = 0;
-        be<uint32_t> thread_id = 0;
-        uint32_t stack_size = 0x40000;
-        uint32_t ctx_addr = 0x40009D2C;  // From Xenia log
-
-        fprintf(stderr, "[FORCE_WORKERS] Creating special thread: entry=0x825AA970 ctx=0x%08X\n", ctx_addr);
-        fflush(stderr);
-
-        uint32_t result = ExCreateThread(&thread_handle, stack_size, &thread_id, 0, 0x825AA970, ctx_addr, 0x00000000);  // NOT SUSPENDED
-
-        if (result == 0) {
-            fprintf(stderr, "[FORCE_WORKERS] Special thread created: handle=0x%08X tid=0x%08X\n", (uint32_t)thread_handle, (uint32_t)thread_id);
-            fflush(stderr);
-        } else {
-            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to create special thread: status=0x%08X\n", result);
-            fflush(stderr);
-        }
-    }
+    // CRITICAL FIX: DO NOT force-create the special thread (entry=0x825AA970)!
+    // The game code will create it naturally when the context at 0x40009D2C is initialized.
+    // Force-creating it too early causes NULL-CALL errors because the context is not ready yet.
+    // In Xenia, Thread #8 (tid=13) is created by caller_tid=7 (the game code), not at startup.
+    fprintf(stderr, "[FORCE_WORKERS] Skipping special thread (entry=0x825AA970) - will be created by game code\n");
+    fflush(stderr);
 
     fprintf(stderr, "[FORCE_WORKERS] All missing worker threads created!\n");
     fflush(stderr);
@@ -401,12 +387,27 @@ PPC_FUNC(sub_828508A8)
         uint32_t callback_ptr = __builtin_bswap32(ctx_u32[84/4]);
         uint32_t callback_param = __builtin_bswap32(ctx_u32[88/4]);
 
-        if (callback_ptr == 0) {
+        if (callback_ptr == 0 || callback_param == 0) {
             fprintf(stderr, "[THREAD_828508A8] ERROR: Callback pointer at +84 is NULL!\n");
             fprintf(stderr, "[THREAD_828508A8] This is why sub_82850820 doesn't call sub_82441E80!\n");
-            fprintf(stderr, "[THREAD_828508A8] The callback should be 0x823B0190 or similar.\n");
+            fprintf(stderr, "[THREAD_828508A8] The callback should be 0x8261A558 or similar.\n");
+            fprintf(stderr, "[THREAD_828508A8] FIXING: Initializing callback pointers now...\n");
             fflush(stderr);
-        } else if (callback_ptr >= 0x82000000 && callback_ptr < 0x83000000) {
+
+            // CRITICAL FIX: Initialize callback pointers if they're NULL
+            // This happens when threads are created with uninitialized contexts
+            ctx_u32[84/4] = __builtin_bswap32(0x8261A558);  // +0x54 (84) - callback function pointer
+            ctx_u32[88/4] = __builtin_bswap32(0x82A2B318);  // +0x58 (88) - callback parameter
+
+            fprintf(stderr, "[THREAD_828508A8] FIXED: Callback pointers initialized: +0x54=0x8261A558, +0x58=0x82A2B318\n");
+            fflush(stderr);
+
+            // Re-read the values to verify
+            callback_ptr = __builtin_bswap32(ctx_u32[84/4]);
+            callback_param = __builtin_bswap32(ctx_u32[88/4]);
+        }
+
+        if (callback_ptr >= 0x82000000 && callback_ptr < 0x83000000) {
             fprintf(stderr, "[THREAD_828508A8] Callback pointer looks valid: 0x%08X\n", callback_ptr);
             fflush(stderr);
 

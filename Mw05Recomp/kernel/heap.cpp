@@ -3,6 +3,7 @@
 #include "memory.h"
 #include "function.h"
 #include <os/logger.h>
+#include <cstdlib>
 
 
 
@@ -11,11 +12,22 @@ constexpr uint32_t kStatusInvalidParameter = 0xC000000D;
 constexpr uint32_t kStatusNoMemory = 0xC0000017;
 
 // Heap memory layout (EXACT COPY from UnleashedRecomp):
-// - User heap: 0x20000 (128 KB) to 0x7FEA0000 (~2 GB)
-// - Physical heap: 0xA0000000 (2.5 GB) to 0x100000000 (4 GB)
-// NOTE: PPC_MEMORY_SIZE = 0x100000000 (4 GB) - this is the GUEST address space, not physical RAM
-constexpr size_t RESERVED_BEGIN = 0x7FEA0000;
-constexpr size_t RESERVED_END = 0xA0000000;
+// PPC_MEMORY_SIZE = 0x100000000 (4 GB) is the GUEST address space, not physical RAM
+// The recompilation can use as much host RAM as needed to map the full 4 GB guest address space
+// - User heap: 0x00020000 (128 KB) to 0x7FEA0000 (2046 MB) = 2046.50 MB
+// - Physical heap: 0xA0000000 (2.5 GB) to 0x100000000 (4 GB) = 1536.00 MB
+// Total: ~3582 MB (this is CORRECT for recompilation, NOT limited to Xbox 360's 512 MB RAM)
+constexpr size_t RESERVED_BEGIN = 0x7FEA0000;  // 2046 MB (end of user heap)
+constexpr size_t RESERVED_END = 0xA0000000;    // 2.5 GB (start of physical heap)
+
+// Called by atexit() when process is shutting down
+static void HeapShutdownHandler()
+{
+    extern Heap g_userHeap;
+    fprintf(stderr, "[HEAP-SHUTDOWN] Shutdown handler called, disabling heap operations\n");
+    fflush(stderr);
+    g_userHeap.shutdownInProgress.store(true, std::memory_order_relaxed);
+}
 
 void Heap::Init()
 {
@@ -27,32 +39,53 @@ void Heap::Init()
         return;
     }
 
-    // EXACT COPY from UnleashedRecomp (with base/size stored for diagnostics)
+    // CRITICAL FIX: Initialize mutexes FIRST before any heap operations
+    // This ensures InitializeCriticalSection is called at the right time (during Init(), not during global construction)
+    if (!mutex) {
+        mutex = new Mutex();
+        fprintf(stderr, "[HEAP-INIT] User mutex initialized at %p\n", (void*)mutex);
+        fflush(stderr);
+    }
+    if (!physicalMutex) {
+        physicalMutex = new Mutex();
+        fprintf(stderr, "[HEAP-INIT] Physical mutex initialized at %p\n", (void*)physicalMutex);
+        fflush(stderr);
+    }
+
+    // User heap uses o1heap allocator
     heapBase = g_memory.Translate(0x20000);
     heapSize = RESERVED_BEGIN - 0x20000;
     heap = o1heapInit(heapBase, heapSize);
 
+    // Physical heap uses BUMP ALLOCATOR (no o1heap)
     physicalBase = g_memory.Translate(RESERVED_END);
-    physicalSize = 0x100000000ULL - RESERVED_END;  // FIX: Use ULL to prevent 32-bit overflow!
-    physicalHeap = o1heapInit(physicalBase, physicalSize);
+    physicalSize = 0x60000000ULL;  // 1536 MB (0x100000000 - 0xA0000000 = 1.5 GB)
+    physicalHeap = nullptr;  // NOT USED - physical heap uses bump allocator
+    nextPhysicalAddr = (size_t)physicalBase;  // Initialize bump allocator pointer
+    physicalAllocated = 0;
 
     fprintf(stderr, "[HEAP-INIT] User heap: base=%p size=%zu (%.2f MB) heap=%p\n",
             heapBase, heapSize, heapSize / (1024.0 * 1024.0), heap);
-    fprintf(stderr, "[HEAP-INIT] Physical heap: base=%p size=%zu (%.2f MB) heap=%p\n",
-            physicalBase, physicalSize, physicalSize / (1024.0 * 1024.0), physicalHeap);
+    fprintf(stderr, "[HEAP-INIT] Physical heap: base=%p size=%zu (%.2f MB) BUMP_ALLOCATOR\n",
+            physicalBase, physicalSize, physicalSize / (1024.0 * 1024.0));
 
     if (!heap) {
         fprintf(stderr, "[HEAP-INIT] ERROR: User heap initialization FAILED!\n");
+        fprintf(stderr, "[ABORT] heap.cpp line 75: User heap initialization failed!\n");
         fflush(stderr);
         abort();
     }
-    if (!physicalHeap) {
-        fprintf(stderr, "[HEAP-INIT] ERROR: Physical heap initialization FAILED!\n");
+    if (!physicalBase) {
+        fprintf(stderr, "[HEAP-INIT] ERROR: Physical heap base is NULL!\n");
         fprintf(stderr, "[HEAP-INIT] physicalBase=%p physicalSize=%zu (0x%zX)\n",
                 physicalBase, physicalSize, physicalSize);
+        fprintf(stderr, "[ABORT] heap.cpp line 83: Physical heap base is NULL!\n");
         fflush(stderr);
         abort();
     }
+
+    // Register shutdown handler to prevent heap operations during process exit
+    std::atexit(HeapShutdownHandler);
 
     s_initialized = true;
     fflush(stderr);
@@ -60,7 +93,7 @@ void Heap::Init()
 
 void* Heap::Alloc(size_t size)
 {
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(*mutex);
 
     size_t actual_size = std::max<size_t>(1, size);
     void* ptr = o1heapAllocate(heap, actual_size);
@@ -87,7 +120,7 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
     size = std::max<size_t>(1, size);
     alignment = alignment == 0 ? 0x1000 : std::max<size_t>(16, alignment);
 
-    std::lock_guard lock(physicalMutex);
+    std::lock_guard lock(*physicalMutex);
 
     // CRITICAL: Physical memory allocations are used by the game as POOLS for sub-allocations.
     // The game allocates large blocks (e.g., 345 MB) and then allocates smaller blocks INSIDE them.
@@ -135,26 +168,47 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
 void Heap::Free(void* ptr)
 {
     if (!ptr) {
-        fprintf(stderr, "[Free] WARNING: Attempt to free NULL pointer\n");
-        fflush(stderr);
+        return;  // NULL pointer, nothing to free
+    }
+
+    // Skip heap operations during shutdown to prevent o1heap assertions
+    // The OS will clean up all memory when the process exits anyway
+    if (shutdownInProgress.load(std::memory_order_relaxed)) {
+        static int skip_count = 0;
+        if (skip_count++ < 5) {
+            fprintf(stderr, "[HEAP-SHUTDOWN] Skipping Free(%p) during shutdown (count=%d)\n", ptr, skip_count);
+            fflush(stderr);
+        }
         return;
     }
 
+    // CRITICAL FIX: Physical heap uses BUMP ALLOCATOR (no free support)
     // Check if pointer is in physical heap range
-    // Physical heap uses a bump allocator, so we don't actually free memory
     if (ptr >= physicalBase && ptr < (void*)((char*)physicalBase + physicalSize))
     {
-        fprintf(stderr, "[Free] Physical heap: ptr=%p (NO-OP - bump allocator)\n", ptr);
-        fflush(stderr);
-        // Physical memory is managed by a bump allocator, so we don't free it
+        // Physical heap uses bump allocator - FREE IS A NO-OP
+        // The game expects MmFreePhysicalMemory to succeed but do nothing
+        // (Xbox 360 physical memory is never actually freed during gameplay)
+        static int free_count = 0;
+        if (free_count++ < 10) {
+            fprintf(stderr, "[HEAP-PHYSICAL-FREE] Ignoring Free(%p) - physical heap uses bump allocator (count=%d)\n", ptr, free_count);
+            fflush(stderr);
+        }
         return;
     }
 
-    // User heap - use o1heap to free
-    fprintf(stderr, "[Free] User heap: ptr=%p\n", ptr);
-    fflush(stderr);
+    // User heap uses o1heap - can be freed normally
+    // Add validation to catch invalid pointers BEFORE calling o1heapFree
+    if (ptr < heapBase || ptr >= (void*)((char*)heapBase + heapSize))
+    {
+        fprintf(stderr, "[HEAP-FREE-ERROR] Invalid pointer %p - outside user heap range [%p, %p)\n",
+                ptr, heapBase, (void*)((char*)heapBase + heapSize));
+        fflush(stderr);
+        // Don't call o1heapFree on invalid pointer - this would cause assertion
+        return;
+    }
 
-    std::lock_guard lock(mutex);
+    std::lock_guard lock(*mutex);
     o1heapFree(heap, ptr);
 }
 
@@ -164,6 +218,12 @@ size_t Heap::Size(void* ptr)
         return *((size_t*)ptr - 2) - O1HEAP_ALIGNMENT; // relies on fragment header in o1heap.c
 
     return 0;
+}
+
+O1HeapDiagnostics Heap::GetDiagnostics()
+{
+    std::lock_guard lock(*mutex);
+    return o1heapGetDiagnostics(heap);
 }
 
 uint32_t RtlAllocateHeap(uint32_t heapHandle, uint32_t flags, uint32_t size)

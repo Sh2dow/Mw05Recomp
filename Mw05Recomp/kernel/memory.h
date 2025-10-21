@@ -49,7 +49,31 @@ struct Memory
 
     void InsertFunction(uint32_t guest, PPCFunc* host)
     {
+        // CRITICAL DEBUG: Log the function table write operation
+        uint64_t code_offset = uint64_t(uint32_t(guest) - uint32_t(PPC_CODE_BASE));
+        uint64_t table_offset = PPC_IMAGE_SIZE + (code_offset * sizeof(PPCFunc*));
+        PPCFunc** funcPtrAddr = reinterpret_cast<PPCFunc**>(base + table_offset);
+
+        // Log BEFORE write
+        PPCFunc* old_value = *funcPtrAddr;
+
+        // Write the function pointer
         PPC_LOOKUP_FUNC(base, guest) = host;
+
+        // Log AFTER write
+        PPCFunc* new_value = *funcPtrAddr;
+
+        // Only log for the graphics callback to reduce spam
+        if (guest == 0x825979A8) {
+            fprintf(stderr, "[INSERT-FUNC] guest=0x%08X host=%p\n", guest, (void*)host);
+            fprintf(stderr, "[INSERT-FUNC]   code_offset=0x%llX table_offset=0x%llX\n",
+                    (unsigned long long)code_offset, (unsigned long long)table_offset);
+            fprintf(stderr, "[INSERT-FUNC]   funcPtrAddr=%p old=%p new=%p\n",
+                    (void*)funcPtrAddr, (void*)old_value, (void*)new_value);
+            fprintf(stderr, "[INSERT-FUNC]   Verification: read back = %p\n",
+                    (void*)PPC_LOOKUP_FUNC(base, guest));
+            fflush(stderr);
+        }
     }
 };
 

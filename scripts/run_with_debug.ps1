@@ -48,6 +48,10 @@ $env:MW05_INNER_TRY_PM4 = "0"
 $env:MW05_FORCE_GFX_NOTIFY_CB = "1"
 $env:MW05_FORCE_GFX_NOTIFY_CB_CTX = "0x40007180"
 $env:MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS = "350"
+$env:MW05_PM4_FAKE_SWAP_TAIL = "1"                       # Enable PM4 fake swap tail (required for auto VdSwap heuristic)
+$env:MW05_AUTO_VDSWAP_HEUR = "1"                         # Enable auto VdSwap heuristic
+$env:MW05_AUTO_VDSWAP_HEUR_DELAY = "8"                   # Trigger after 8 frames of ready state
+$env:MW05_AUTO_VDSWAP_HEUR_ONCE = "0"                    # Keep triggering (not just once)
 $env:MW05_SET_PRESENT_CB = "1"
 $env:MW05_VD_ISR_SWAP_PARAMS = "0"   # ORIGINAL order: r3=source, r4=context
 $env:MW05_FORCE_PRESENT_WRAPPER_ONCE = "1"

@@ -1700,6 +1700,7 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
 // Forward declarations for use in VBLANK handler
 static void Mw05ForceRegisterGfxNotifyIfRequested();
 static void Mw05ForceCreateRenderThreadIfRequested();
+extern void Mw05ForceCreateMissingWorkerThreads();  // From mw05_trace_threads.cpp
 
 void Mw05StartVblankPumpOnce() {
     if (!Mw05VblankPumpEnabled()) return;
@@ -1772,6 +1773,9 @@ void Mw05StartVblankPumpOnce() {
             // DISABLED: Event signaling workaround - g_memory.Translate doesn't exist
             // The real issue is that threads are stuck in sleep loops instead of waiting on events
             // Need to find what sets r31 to 0 in the sleep function to allow threads to exit
+
+            // MW05 FIX: Check if worker threads need to be created (every second)
+            Mw05ForceCreateMissingWorkerThreads();
 
             // MW05 FIX: Call VdCallGraphicsNotificationRoutines periodically to invoke registered callbacks
             // Only do this if a real callback is registered (not the host magic value)
@@ -3065,15 +3069,105 @@ void Mw05StartVblankPumpOnce() {
                 s_prev_e68 = e68;
             }
 
+            // Auto VdSwap heuristic (opt-in): when conditions look ready for N frames, seed a swap once
+            // MOVED OUTSIDE nested if blocks so it can execute independently
+            static const bool s_auto_vdswap_heur = [](){
+                if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR")) {
+                    bool enabled = !(v[0]=='0' && v[1]=='\0');
+                    fprintf(stderr, "[AUTO-VDSWAP-HEUR-INIT] MW05_AUTO_VDSWAP_HEUR=%s enabled=%d\n", v, enabled);
+                    fflush(stderr);
+                    return enabled;
+                }
+                fprintf(stderr, "[AUTO-VDSWAP-HEUR-INIT] MW05_AUTO_VDSWAP_HEUR not set, disabled\n");
+                fflush(stderr);
+                return false;
+            }();
+            static const bool s_auto_vdswap_once = [](){
+                if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_ONCE"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return true;
+            }();
+            static int s_auto_vdswap_delay = [](){
+                if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_DELAY"))
+                    return std::max(1, (int)std::strtoul(v, nullptr, 0));
+                return 8; // default: ~8 frames of ready state
+            }();
+            static const uint64_t s_auto_e58_mask = [](){
+                if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E58_MASK"))
+                    return std::strtoull(v, nullptr, 0);
+                // CRITICAL FIX: e58 is always 0, so disable this check by setting mask to 0
+                // This allows the heuristic to fire based on e68 alone
+                return 0x0ull;  // Was: 0x700ull
+            }();
+            static const uint64_t s_auto_e68_mask = [](){
+                if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E68_MASK"))
+                    return std::strtoull(v, nullptr, 0);
+                return 0x2ull; // require ack bit
+            }();
+            static int s_auto_ok_frames = 0;
+            static bool s_auto_done = false;
 
+            // DEBUG: Log condition values every 60 frames
+            static int s_cond_log_counter = 0;
+            if (++s_cond_log_counter >= 60) {
+                s_cond_log_counter = 0;
+                bool sawVdSwap = g_sawRealVdSwap.load(std::memory_order_acquire);
+                fprintf(stderr, "[AUTO-VDSWAP-HEUR-COND] heur=%d done=%d sawVdSwap=%d (IGNORING sawVdSwap)\n",
+                        s_auto_vdswap_heur, s_auto_done, sawVdSwap);
+                fflush(stderr);
+            }
 
-                // Late PM4 enforcement pass (optional): re-OR after reads to win races with title writes
-                static const bool s_pm4_fake_swap_tail = [](){
-                    if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TAIL"))
-                        return !(v[0]=='0' && v[1]=='\0');
-                    return false;
-                }();
-                if (s_pm4_fake_swap_tail) {
+            // CRITICAL FIX: Remove !g_sawRealVdSwap check because game calls VdSwap during init then stops
+            // The heuristic should run even if game called VdSwap before, to detect when it stops calling
+            if (s_auto_vdswap_heur && !s_auto_done) {
+                auto rd64 = [](uint32_t ea)->uint64_t {
+                    if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
+                    if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
+                        uint64_t v = *p;
+                    #if defined(_MSC_VER)
+                        return _byteswap_uint64(v);
+                    #else
+                        return __builtin_bswap64(v);
+                    #endif
+                    }
+                    return 0ull;
+                };
+                const uint64_t e58 = rd64(0x00060E58u);
+                const uint64_t e68 = rd64(0x00060E68u);
+                const bool e58_ok = (e58 & s_auto_e58_mask) == s_auto_e58_mask;
+                const bool e68_ok = (e68 & s_auto_e68_mask) == s_auto_e68_mask;
+
+                // DEBUG: Log e58/e68 values every 60 frames (once per second at 60 Hz)
+                static int s_debug_log_counter = 0;
+                if (++s_debug_log_counter >= 60) {
+                    s_debug_log_counter = 0;
+                    fprintf(stderr, "[AUTO-VDSWAP-HEUR] e58=0x%016llX e68=0x%016llX e58_ok=%d e68_ok=%d frames=%d/%d\n",
+                            (unsigned long long)e58, (unsigned long long)e68, e58_ok, e68_ok, s_auto_ok_frames, s_auto_vdswap_delay);
+                    fflush(stderr);
+                }
+
+                if (e58_ok && e68_ok) {
+                    if (++s_auto_ok_frames >= s_auto_vdswap_delay) {
+                        fprintf(stderr, "[AUTO-VDSWAP-HEUR] FIRING! e58=0x%016llX e68=0x%016llX frames=%d\n",
+                                (unsigned long long)e58, (unsigned long long)e68, s_auto_ok_frames);
+                        fflush(stderr);
+                        KernelTraceHostOp("HOST.AutoVdSwapHeur.fire");
+                        Mw05MarkGuestSwappedOnce();
+                        Video::RequestPresentFromBackground();
+                        if (s_auto_vdswap_once) s_auto_done = true;
+                    }
+                } else {
+                    s_auto_ok_frames = 0;
+                }
+            }
+
+            // Late PM4 enforcement pass (optional): re-OR after reads to win races with title writes
+            static const bool s_pm4_fake_swap_tail = [](){
+                if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_TAIL"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return false;
+            }();
+            if (s_pm4_fake_swap_tail) {
                     static const uint32_t s_pm4_fb_addr_tail = [](){
                         if (const char* v = std::getenv("MW05_PM4_FAKE_SWAP_ADDR"))
                             return (uint32_t)std::strtoul(v, nullptr, 0);
@@ -3085,64 +3179,6 @@ void Mw05StartVblankPumpOnce() {
                         return 0x2ull;
                     }();
                     if (s_pm4_fb_addr_tail && s_pm4_fb_or_tail && GuestOffsetInRange(s_pm4_fb_addr_tail, sizeof(uint64_t))) {
-
-                // Auto VdSwap heuristic (opt-in): when conditions look ready for N frames, seed a swap once
-                static const bool s_auto_vdswap_heur = [](){
-                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR"))
-                        return !(v[0]=='0' && v[1]=='\0');
-                    return false;
-                }();
-                static const bool s_auto_vdswap_once = [](){
-                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_ONCE"))
-                        return !(v[0]=='0' && v[1]=='\0');
-                    return true;
-                }();
-                static int s_auto_vdswap_delay = [](){
-                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_DELAY"))
-                        return std::max(1, (int)std::strtoul(v, nullptr, 0));
-                    return 8; // default: ~8 frames of ready state
-                }();
-                static const uint64_t s_auto_e58_mask = [](){
-                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E58_MASK"))
-                        return std::strtoull(v, nullptr, 0);
-                    return 0x700ull;
-                }();
-                static const uint64_t s_auto_e68_mask = [](){
-                    if (const char* v = std::getenv("MW05_AUTO_VDSWAP_HEUR_E68_MASK"))
-                        return std::strtoull(v, nullptr, 0);
-                    return 0x2ull; // require ack bit
-                }();
-                static int s_auto_ok_frames = 0;
-                static bool s_auto_done = false;
-                if (s_auto_vdswap_heur && !s_auto_done && !g_sawRealVdSwap.load(std::memory_order_acquire)) {
-                    auto rd64 = [](uint32_t ea)->uint64_t {
-                        if (!GuestOffsetInRange(ea, sizeof(uint64_t))) return 0ull;
-                        if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(ea))) {
-                            uint64_t v = *p;
-                        #if defined(_MSC_VER)
-                            return _byteswap_uint64(v);
-                        #else
-                            return __builtin_bswap64(v);
-                        #endif
-                        }
-                        return 0ull;
-                    };
-                    const uint64_t e58 = rd64(0x00060E58u);
-                    const uint64_t e68 = rd64(0x00060E68u);
-                    const bool e58_ok = (e58 & s_auto_e58_mask) == s_auto_e58_mask;
-                    const bool e68_ok = (e68 & s_auto_e68_mask) == s_auto_e68_mask;
-                    if (e58_ok && e68_ok) {
-                        if (++s_auto_ok_frames >= s_auto_vdswap_delay) {
-                            KernelTraceHostOp("HOST.AutoVdSwapHeur.fire");
-                            Mw05MarkGuestSwappedOnce();
-                            Video::RequestPresentFromBackground();
-                            if (s_auto_vdswap_once) s_auto_done = true;
-                        }
-                    } else {
-                        s_auto_ok_frames = 0;
-                    }
-                }
-
                         if (auto* p = reinterpret_cast<uint64_t*>(g_memory.Translate(s_pm4_fb_addr_tail))) {
                             uint64_t v = *p;
                         #if defined(_MSC_VER)

@@ -187,23 +187,36 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
         tid, localParams.function);
     fflush(stderr);
 
-    // DISABLED: Force-creation of worker threads causes NULL-CALL errors
-    // The callback parameter structure at 0x82A2B318 is not initialized yet when we force-create threads
-    // This causes worker threads to call NULL function pointers and trigger KeBugCheckEx
-    // Let the game create worker threads naturally instead
-    #if 0
+    // CRITICAL FIX: Force-create worker threads ONLY if callback parameter structure is initialized
+    // The callback parameter structure at 0x82A2B318 needs a valid work function pointer at offset +16
+    // If it's NULL, Mw05ForceCreateMissingWorkerThreads() will skip creation and let game create them naturally
     if (localParams.function == 0x8262E9A8) {
-        fprintf(stderr, "[GUEST_THREAD] Main thread detected (entry=0x8262E9A8), force-creating worker threads...\n");
+        fprintf(stderr, "[GUEST_THREAD] Main thread detected (entry=0x8262E9A8), attempting to force-create worker threads...\n");
         fflush(stderr);
 
         // Forward declare the function from mw05_trace_threads.cpp
         extern void Mw05ForceCreateMissingWorkerThreads();
         Mw05ForceCreateMissingWorkerThreads();
 
-        fprintf(stderr, "[GUEST_THREAD] Worker threads created, continuing with main thread...\n");
+        fprintf(stderr, "[GUEST_THREAD] Force-creation attempt complete, continuing with main thread...\n");
         fflush(stderr);
+
+        // DIAGNOSTIC: Add periodic heartbeat logging to see if main thread is running
+        // This will help us determine if the thread is stuck in a loop or actually progressing
+        static std::atomic<bool> s_heartbeat_enabled{true};
+        if (s_heartbeat_enabled.exchange(false)) {  // Only start heartbeat once
+            std::thread heartbeat_thread([tid]() {
+                for (int i = 0; i < 60; ++i) {  // Log for 60 seconds
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                    fprintf(stderr, "[MAIN-THREAD-HEARTBEAT] tid=%08X alive for %d seconds\n", tid, i+1);
+                    fflush(stderr);
+                }
+                fprintf(stderr, "[MAIN-THREAD-HEARTBEAT] tid=%08X heartbeat logging stopped after 60 seconds\n", tid);
+                fflush(stderr);
+            });
+            heartbeat_thread.detach();
+        }
     }
-    #endif
 
     GuestThread::Start(localParams);
 

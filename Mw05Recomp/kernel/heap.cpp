@@ -113,8 +113,8 @@ void* Heap::Alloc(size_t size)
 
     void* ptr = o1heapAllocate(heap, actual_size);
 
-    // Diagnostic logging for allocation failures
-    if (!ptr && actual_size > 1024) {
+    // Diagnostic logging for allocation failures (ALWAYS log, not just for large allocations)
+    if (!ptr) {
         // Get heap diagnostics
         O1HeapDiagnostics diag = o1heapGetDiagnostics(heap);
         fprintf(stderr, "[HEAP-ALLOC-FAIL] Failed to allocate %zu bytes from user heap\n", actual_size);

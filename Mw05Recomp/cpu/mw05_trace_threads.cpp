@@ -290,10 +290,89 @@ extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCoun
 // NOTE: This function is called from guest_thread.cpp, so it cannot be static
 void Mw05ForceCreateMissingWorkerThreads() {
     static std::atomic<bool> s_created{false};
-    if (s_created.exchange(true)) return;  // Only create once
+    static std::atomic<int> s_check_count{0};
 
+    // Allow multiple checks (every 60 ticks = 1 second at 60 Hz)
+    int check_count = s_check_count.fetch_add(1);
+    if (s_created.load()) return;  // Already created, don't check again
+
+    // Only check every 60 ticks (1 second)
+    if (check_count % 60 != 0) return;
+
+    fprintf(stderr, "[FORCE_WORKERS] Check #%d: Checking if callback parameter structure is initialized...\n", check_count / 60);
+    fflush(stderr);
+
+    // CRITICAL: Check if the callback parameter structure at 0x82A2B318 is initialized
+    // This structure needs a valid work function pointer at offset +16
+    // If it's NULL, we can't create worker threads yet
+    extern Memory g_memory;
+    extern Heap g_userHeap;
+
+    uint32_t callback_param_addr = 0x82A2B318;
+    void* callback_param_host = g_memory.Translate(callback_param_addr);
+    if (!callback_param_host) {
+        fprintf(stderr, "[FORCE_WORKERS] ERROR: Callback parameter structure at 0x%08X not mapped!\n", callback_param_addr);
+        fflush(stderr);
+        return;
+    }
+
+    // DEBUG: Log the host address to check if it's corrupting the heap
+    fprintf(stderr, "[FORCE_WORKERS] Callback parameter: guest=0x%08X host=%p\n", callback_param_addr, callback_param_host);
+    fflush(stderr);
+
+    // Read the work function pointer at offset +16
+    be<uint32_t>* callback_param_u32 = reinterpret_cast<be<uint32_t>*>(callback_param_host);
+    uint32_t work_func_ptr = callback_param_u32[16/4];  // +0x10 (16) - work function pointer
+
+    if (work_func_ptr == 0 || work_func_ptr == 0xFFFFFFFF) {
+        fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure NOT initialized yet (work_func=0x%08X)\n", work_func_ptr);
+
+        // FORCE INITIALIZATION: Try to initialize the callback parameter structure
+        // Environment variable MW05_FORCE_INIT_CALLBACK_PARAM enables this
+        static bool s_force_init_enabled = (std::getenv("MW05_FORCE_INIT_CALLBACK_PARAM") != nullptr);
+
+        if (s_force_init_enabled && check_count / 60 >= 5) {  // Wait 5 seconds before force-init
+            fprintf(stderr, "[FORCE_WORKERS] FORCE-INITIALIZING callback parameter structure...\n");
+            fflush(stderr);
+
+            // Initialize the callback parameter structure with known values from working session
+            // +0x00 (0): field_00 = 0xB5901790 (varies)
+            // +0x04 (4): field_04 = varies
+            // +0x08 (8): state = 0x00000001
+            // +0x0C (12): result = 0x00000000
+            // +0x10 (16): work_func = 0x82441E58 (CRITICAL!)
+            // +0x14 (20): work_param = 0x00000000
+            // +0x18 (24): field_18 = 0xB5901790
+            // +0x1C (28): flag = 0 (0 = 1 param, non-zero = 2 params)
+
+            callback_param_u32[0] = 0xB5901790u;  // +0x00
+            callback_param_u32[1] = 0x00000000u;  // +0x04
+            callback_param_u32[2] = 0x00000001u;  // +0x08 - state
+            callback_param_u32[3] = 0x00000000u;  // +0x0C - result
+            callback_param_u32[4] = 0x82441E58u;  // +0x10 - work_func (CRITICAL!)
+            callback_param_u32[5] = 0x00000000u;  // +0x14 - work_param
+            callback_param_u32[6] = 0xB5901790u;  // +0x18
+            callback_param_u32[7] = 0x00000000u;  // +0x1C - flag
+
+            fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure initialized! work_func=0x82441E58\n");
+            fflush(stderr);
+
+            // Don't return - fall through to create worker threads
+            work_func_ptr = 0x82441E58u;
+        } else {
+            fprintf(stderr, "[FORCE_WORKERS] Will check again in 1 second (force-initialization %s)...\n",
+                    s_force_init_enabled ? "ENABLED (waiting)" : "DISABLED");
+            fflush(stderr);
+            return;
+        }
+    }
+
+    fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure IS initialized (work_func=0x%08X)\n", work_func_ptr);
     fprintf(stderr, "[FORCE_WORKERS] Creating missing worker threads...\n");
     fflush(stderr);
+
+    // Mark as created so we don't create again
+    s_created.store(true);
 
     // From Xenia log, Thread #1 creates these threads:
     // tid=9-12: entry=0x828508A8 (4 worker threads)
@@ -312,27 +391,41 @@ void Mw05ForceCreateMissingWorkerThreads() {
     //   +0x58 (88): 0x82A2B318  <-- CALLBACK PARAMETER!
     // We need to initialize the manually-created worker thread contexts with the same values.
 
-    extern Memory g_memory;
-    extern Heap g_userHeap;
+    // CRITICAL FIX: Use STATIC addresses in XEX data section instead of heap allocation
+    // The heap is full and g_userHeap.Alloc() returns NULL.
+    // Instead, use fixed addresses in the XEX data section (near the callback parameter at 0x82A2B318).
+    // Each context is 256 bytes (0x100), so we can place them at:
+    //   Thread #3: 0x82A2B400 (0x82A2B318 + 0xE8 = 232 bytes after callback param)
+    //   Thread #4: 0x82A2B500
+    //   Thread #5: 0x82A2B600
+    //   Thread #6: 0x82A2B700
+    //   Thread #7: 0x82A2B800
+
+    static const uint32_t ctx_addrs[5] = {
+        0x82A2B400,  // Thread #3
+        0x82A2B500,  // Thread #4
+        0x82A2B600,  // Thread #5
+        0x82A2B700,  // Thread #6
+        0x82A2B800   // Thread #7
+    };
 
     for (int i = 0; i < 5; ++i) {  // Create 5 worker threads with entry=0x828508A8
         be<uint32_t> thread_handle = 0;
         be<uint32_t> thread_id = 0;
         uint32_t stack_size = 0x40000;  // 256KB stack (same as other game threads)
 
-        // Allocate a context structure on the heap (256 bytes to be safe)
-        void* ctx_host = g_userHeap.Alloc(256);
+        // Use static address in XEX data section
+        uint32_t ctx_addr = ctx_addrs[i];
+        void* ctx_host = g_memory.Translate(ctx_addr);
+
         if (!ctx_host) {
-            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to allocate context for worker thread #%d\n", i + 3);
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to translate context address 0x%08X for worker thread #%d\n", ctx_addr, i + 3);
             fflush(stderr);
             continue;
         }
 
         // Zero out the context
         std::memset(ctx_host, 0, 256);
-
-        // Map to guest address
-        uint32_t ctx_addr = g_memory.MapVirtual(ctx_host);
 
         // Initialize the context structure (in big-endian format)
         be<uint32_t>* ctx_u32 = reinterpret_cast<be<uint32_t>*>(ctx_host);
@@ -342,7 +435,7 @@ void Mw05ForceCreateMissingWorkerThreads() {
         ctx_u32[84/4] = be<uint32_t>(0x8261A558);  // +0x54 (84) - callback function pointer
         ctx_u32[88/4] = be<uint32_t>(0x82A2B318);  // +0x58 (88) - callback parameter
 
-        fprintf(stderr, "[FORCE_WORKERS] Creating worker thread #%d: entry=0x828508A8 ctx=0x%08X\n", i + 3, ctx_addr);
+        fprintf(stderr, "[FORCE_WORKERS] Creating worker thread #%d: entry=0x828508A8 ctx=0x%08X (STATIC XEX address)\n", i + 3, ctx_addr);
         fprintf(stderr, "[FORCE_WORKERS]   Context initialized: +0x54=0x8261A558, +0x58=0x82A2B318\n");
         fflush(stderr);
 
@@ -370,7 +463,137 @@ void Mw05ForceCreateMissingWorkerThreads() {
 
 
 // Trace sub_82441E80 - main game initialization function
-// Called from start() (0x8262E9A8)
+// Trace initialization functions called by _xstart before sub_82441E80
+// These are called in sequence and one of them is hanging
+
+// sub_82630068 - First initialization function
+PPC_FUNC_IMPL(__imp__sub_82630068);
+PPC_FUNC(sub_82630068) {
+    fprintf(stderr, "[XSTART_INIT] sub_82630068 ENTER\n");
+    fflush(stderr);
+    __imp__sub_82630068(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_82630068 EXIT\n");
+    fflush(stderr);
+}
+
+// sub_8262FDA8 - Second initialization function
+PPC_FUNC_IMPL(__imp__sub_8262FDA8);
+PPC_FUNC(sub_8262FDA8) {
+    fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 ENTER r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+    __imp__sub_8262FDA8(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 EXIT r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_826BE558 - Third initialization function
+PPC_FUNC_IMPL(__imp__sub_826BE558);
+PPC_FUNC(sub_826BE558) {
+    fprintf(stderr, "[XSTART_INIT] sub_826BE558 ENTER r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+    __imp__sub_826BE558(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_826BE558 EXIT r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_8262FD30 - Fourth initialization function
+PPC_FUNC_IMPL(__imp__sub_8262FD30);
+PPC_FUNC(sub_8262FD30) {
+    fprintf(stderr, "[XSTART_INIT] sub_8262FD30 ENTER r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+    __imp__sub_8262FD30(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_8262FD30 EXIT\n");
+    fflush(stderr);
+}
+
+// sub_8262FC50 - Fifth initialization function
+// This function iterates through function pointer tables (0x828DF0FC-0x828DF108 and 0x828D0010-0x828DF0F8)
+// and calls static constructors. One of these constructors causes an infinite loop.
+// STRATEGY: Call each constructor manually with logging to identify which one hangs.
+PPC_FUNC_IMPL(__imp__sub_8262FC50);
+PPC_FUNC(sub_8262FC50) {
+    fprintf(stderr, "[STATIC_INIT] sub_8262FC50 ENTER r3=%08X - calling constructors manually\n", ctx.r3.u32);
+    fflush(stderr);
+
+    // Table 1: 0x828DF0FC-0x828DF108 (3 constructors)
+    // Discovered via IDA Pro: 0x826BC0F0, 0x826CE048, 0x826CBB18
+    uint32_t table1[] = {0x826BC0F0, 0x826CE048, 0x826CBB18};
+    for (int i = 0; i < 3; i++) {
+        fprintf(stderr, "[STATIC_INIT] Table1[%d]: Calling constructor at 0x%08X\n", i, table1[i]);
+        fflush(stderr);
+
+        auto* func = PPC_LOOKUP_FUNC(base, table1[i]);
+        if (func) {
+            func(ctx, base);
+            fprintf(stderr, "[STATIC_INIT] Table1[%d]: Constructor 0x%08X completed\n", i, table1[i]);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[STATIC_INIT] Table1[%d]: Constructor 0x%08X NOT FOUND in function table\n", i, table1[i]);
+            fflush(stderr);
+        }
+    }
+
+    // Table 2: 0x828D0010-0x828DF0F8 (first 7 non-null constructors)
+    // Discovered via IDA Pro: 0x826CDE30 (appears twice), 0x828A7AE8, 0x828A7B20, 0x828A7BC0, 0x828A7BF8, 0x828A7C20
+    uint32_t table2[] = {0x826CDE30, 0x828A7AE8, 0x828A7B20, 0x828A7BC0, 0x828A7BF8, 0x828A7C20};
+    for (int i = 0; i < 6; i++) {
+        fprintf(stderr, "[STATIC_INIT] Table2[%d]: Calling constructor at 0x%08X\n", i, table2[i]);
+        fflush(stderr);
+
+        auto* func = PPC_LOOKUP_FUNC(base, table2[i]);
+        if (func) {
+            func(ctx, base);
+            fprintf(stderr, "[STATIC_INIT] Table2[%d]: Constructor 0x%08X completed\n", i, table2[i]);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[STATIC_INIT] Table2[%d]: Constructor 0x%08X NOT FOUND in function table\n", i, table2[i]);
+            fflush(stderr);
+        }
+    }
+
+    // Return 0 (success) to allow _xstart to continue
+    ctx.r3.u32 = 0;
+
+    fprintf(stderr, "[STATIC_INIT] sub_8262FC50 EXIT r3=%08X - all constructors called successfully\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_8262E7F8 - Conditional check function
+PPC_FUNC_IMPL(__imp__sub_8262E7F8);
+PPC_FUNC(sub_8262E7F8) {
+    fprintf(stderr, "[XSTART_INIT] sub_8262E7F8 ENTER r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+    __imp__sub_8262E7F8(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_8262E7F8 EXIT r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_826BDA60 - Called conditionally if sub_8262E7F8 returns true
+PPC_FUNC_IMPL(__imp__sub_826BDA60);
+PPC_FUNC(sub_826BDA60) {
+    fprintf(stderr, "[XSTART_INIT] sub_826BDA60 ENTER\n");
+    fflush(stderr);
+    __imp__sub_826BDA60(ctx, base);
+    fprintf(stderr, "[XSTART_INIT] sub_826BDA60 EXIT\n");
+    fflush(stderr);
+}
+
+// Trace _xstart (0x8262E9A8) - C runtime startup function
+// This is the main thread entry point that parses command line and calls sub_82441E80
+PPC_FUNC_IMPL(__imp___xstart);
+PPC_FUNC(_xstart) {
+    fprintf(stderr, "[XSTART] ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp___xstart(ctx, base);
+
+    fprintf(stderr, "[XSTART] EXIT (should never return)\n");
+    fflush(stderr);
+}
+
+// Called from _xstart() (0x8262E9A8)
 PPC_FUNC_IMPL(__imp__sub_82441E80);
 PPC_FUNC(sub_82441E80) {
     fprintf(stderr, "[THREAD_82441E80] ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
@@ -447,8 +670,12 @@ PPC_FUNC(sub_8284F548) {
 PPC_FUNC_IMPL(__imp__sub_828508A8);
 PPC_FUNC(sub_828508A8)
 {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
-    fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
+    fprintf(stderr, "[THREAD_828508A8] ENTER count=%llu tid=%lx r3=%08X r4=%08X r5=%08X lr=%08X\n",
+            count, GetCurrentThreadId(), ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.lr);
     fflush(stderr);
 
     // CRITICAL DEBUG: Check what's in the context structure at offset +84
@@ -618,7 +845,7 @@ PPC_FUNC(sub_828508A8)
     // Call the original thread entry point
     __imp__sub_828508A8(ctx, base);
 
-    fprintf(stderr, "[THREAD_828508A8] EXIT tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
+    fprintf(stderr, "[THREAD_828508A8] EXIT count=%llu tid=%lx r3=%08X\n", count, GetCurrentThreadId(), ctx.r3.u32);
     fflush(stderr);
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.exit");
 }

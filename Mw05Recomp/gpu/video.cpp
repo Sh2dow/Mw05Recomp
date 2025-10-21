@@ -2698,8 +2698,28 @@ static void DrawProfiler()
                 physicalAllocated = g_userHeap.physicalAllocated;
             }
 
-            ImGui::Text("Heap Allocated: %d MB", int32_t(diagnostics.allocated / (1024 * 1024)));
+            ImGui::Text("Heap Allocated: %d MB (capacity: %d MB)",
+                        int32_t(diagnostics.allocated / (1024 * 1024)),
+                        int32_t(diagnostics.capacity / (1024 * 1024)));
             ImGui::Text("Physical Heap Allocated: %d MB", int32_t(physicalAllocated / (1024 * 1024)));
+
+            // Debug: Log heap stats once per second (every 60 frames at 60 FPS)
+            static int s_heapLogFrameCount = 0;
+            if (++s_heapLogFrameCount >= 60) {
+                fprintf(stderr, "[HEAP_DEBUG] User heap: allocated=%zu MB, capacity=%zu MB, peak=%zu MB\n",
+                        diagnostics.allocated / (1024 * 1024),
+                        diagnostics.capacity / (1024 * 1024),
+                        diagnostics.peak_allocated / (1024 * 1024));
+                fprintf(stderr, "[HEAP_DEBUG] Physical heap: allocated=%zu MB\n",
+                        physicalAllocated / (1024 * 1024));
+                fflush(stderr);
+                s_heapLogFrameCount = 0;
+            }
+        }
+        else
+        {
+            ImGui::Text("Heap Allocated: N/A (heap not initialized)");
+            ImGui::Text("Physical Heap Allocated: N/A (heap not initialized)");
         }
 
         ImGui::Text("GPU Waits: %d", int32_t(g_waitForGPUCount));

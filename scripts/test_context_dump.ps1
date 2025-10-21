@@ -1,4 +1,3 @@
-$env:MW05_XEX_PATH = "D:/Games/Xbox360/NFS Most Wanted/default.xex"
 $env:MW05_DUMP_CONTEXT_40009D2C = "1"
 
 # Kill any existing instances

@@ -1,6 +1,5 @@
 # Test script to run the game for 30 seconds to see if draws eventually appear
 
-$env:MW05_FAST_BOOT = "1"
 $env:MW05_UNBLOCK_MAIN = "1"
 $env:MW05_BREAK_82813514 = "1"
 $env:MW05_BREAK_WAIT_LOOP = "1"

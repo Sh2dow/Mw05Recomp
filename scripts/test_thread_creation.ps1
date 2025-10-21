@@ -5,7 +5,6 @@
 taskkill /F /IM Mw05Recomp.exe 2>&1 | Out-Null
 
 # Set environment variables
-$env:MW05_XEX = "D:/Repos/Games/Mw05Recomp/NfsMWEurope.xex"
 $env:MW05_TRACE_KERNEL = "1"
 $env:MW05_HOST_TRACE_HOSTOPS = "1"
 

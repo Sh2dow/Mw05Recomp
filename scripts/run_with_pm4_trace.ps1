@@ -2,7 +2,6 @@
 # Run game with PM4 tracing enabled
 
 $env:MW05_PM4_TRACE = "1"
-$env:MW05_FAST_BOOT = "1"
 
 $exePath = "out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe"
 

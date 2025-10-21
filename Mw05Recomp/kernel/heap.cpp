@@ -226,9 +226,25 @@ void Heap::Free(void* ptr)
 
     std::lock_guard lock(*mutex);
 
+    // CRITICAL FIX: Check if heap is still valid before calling o1heapGetDiagnostics
+    // During shutdown, the heap may be destroyed before atexit() handlers run
+    // This happens when static destructors run before atexit() handlers
+    if (!heap) {
+        fprintf(stderr, "[HEAP-SHUTDOWN] Heap is NULL during Free(%p), skipping (shutdown in progress)\n", ptr);
+        fflush(stderr);
+        return;
+    }
+
     // CRITICAL: Validate heap integrity BEFORE calling o1heapFree
     // This catches heap corruption early before o1heap's internal assertions
     O1HeapDiagnostics current = o1heapGetDiagnostics(heap);
+    if (current.capacity == 0) {
+        // Heap has been destroyed (capacity is 0) - this happens during shutdown
+        // Skip the free operation to avoid crashes
+        fprintf(stderr, "[HEAP-SHUTDOWN] Heap destroyed (capacity=0) during Free(%p), skipping\n", ptr);
+        fflush(stderr);
+        return;
+    }
     if (current.capacity != initialDiagnostics.capacity) {
         fprintf(stderr, "[HEAP-CORRUPTION] Heap capacity changed! initial=%zu current=%zu\n",
                 initialDiagnostics.capacity, current.capacity);

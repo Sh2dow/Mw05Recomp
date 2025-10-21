@@ -1,5 +1,5 @@
 # Test script with all necessary environment variables
-$env:MW05_FAST_BOOT = "1"
+$env:MW05_FAST_BOOT = "0"
 $env:MW05_FORCE_GFX_NOTIFY_CB = "1"
 $env:MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS = "500"  # Increased delay to let game initialize
 

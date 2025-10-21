@@ -1,4 +1,3 @@
-$env:MW05_XEX_PATH = "D:/Games/Xbox360/NFS Most Wanted/default.xex"
 $logPath = "D:/Repos/Games/Mw05Recomp/traces/test_60s.txt"
 $exePath = "D:/Repos/Games/Mw05Recomp/out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe"
 

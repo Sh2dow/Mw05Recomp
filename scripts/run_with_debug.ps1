@@ -6,11 +6,14 @@ $env:MW05_BREAK_82813514 = "0"                           # DISABLED: Let worker 
 $env:MW05_FAKE_ALLOC_SYSBUF = "1"                        # ESSENTIAL: Fake system buffer allocation
 $env:MW05_UNBLOCK_MAIN = "1"                             # Try unblocking main thread
 $env:MW05_TRACE_KERNEL = "1"                             # Enable kernel tracing
+$env:MW05_HOST_TRACE_FILE = "mw05_host_trace.log"       # Set trace file path
 $env:MW05_HOST_TRACE_IMPORTS = "1"                       # Enable import tracing to file
+$env:MW05_HOST_TRACE_HOSTOPS = "1"                       # Enable host operations tracing (StreamBridge, etc.)
 $env:MW05_TRACE_HEAP = "1"                               # Enable heap tracing
 $env:MW05_BREAK_SLEEP_LOOP = "1"                    # Break sleep loop in sub_8262F2A0 after a few iterations
 $env:MW05_BREAK_SLEEP_AFTER = "5"
 $env:MW05_FORCE_RENDER_THREADS = "1"                # CRITICAL: Force creation of render threads
+$env:MW05_SET_PRESENT_CB = "1"                      # CRITICAL: Enable present callback pointer workaround
 
 
 # Disable all other interventions
@@ -36,8 +39,8 @@ $env:MW05_DEFAULT_VD_ISR = "0"
 $env:MW05_REGISTER_DEFAULT_VD_ISR = "0"
 $env:MW05_PULSE_VD_ON_SLEEP = "0"
 $env:MW05_PRESENT_HEARTBEAT_MS = "0"
-$env:MW05_STREAM_BRIDGE = "0"
-$env:MW05_STREAM_FALLBACK_BOOT = "0"
+$env:MW05_STREAM_BRIDGE = "1"                        # ENABLED: Allow file I/O via streaming bridge
+$env:MW05_STREAM_FALLBACK_BOOT = "1"                 # ENABLED: Try boot files when path is unknown
 $env:MW05_STREAM_ACK_NO_PATH = "0"
 $env:MW05_LOOP_TRY_PM4_PRE = "0"
 $env:MW05_LOOP_TRY_PM4_POST = "0"
@@ -94,11 +97,21 @@ if (Test-Path $stderrPath) {
     Remove-Item $stderrPath -Force
 }
 
-# Run via cmd.exe which inherits environment variables
-$process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c run_with_env.cmd" -PassThru -WindowStyle Hidden
+# Run the executable directly (environment variables are inherited)
+Write-Host "Starting game..."
 
-Write-Host "Game started with PID $($process.Id). Waiting 60 seconds..."
+# Change to the directory and run the executable directly
+Push-Location $LogDir
+Start-Process -FilePath ".\Mw05Recomp.exe" -NoNewWindow
+Start-Sleep -Seconds 2  # Give it time to start
+Pop-Location
+
+Write-Host "Game started. Waiting 60 seconds..."
 Start-Sleep -Seconds 60
+
+# Kill the process
+Get-Process -Name "Mw05Recomp" -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
 
 # Kill the process and any child processes
 Get-Process -Name "Mw05Recomp" -ErrorAction SilentlyContinue | Stop-Process -Force

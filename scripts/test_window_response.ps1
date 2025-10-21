@@ -1,6 +1,6 @@
 # Test if the window is responding and updating
 
-$env:MW05_FAST_BOOT = "1"
+$env:MW05_FAST_BOOT = "0"
 $env:MW05_UNBLOCK_MAIN = "1"
 $env:MW05_BREAK_82813514 = "1"
 $env:MW05_BREAK_WAIT_LOOP = "1"

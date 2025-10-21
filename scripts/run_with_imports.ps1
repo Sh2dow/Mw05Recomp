@@ -1,7 +1,6 @@
 # Test script to run the game with import table patching enabled
 # Runs for 15 seconds to see if the game progresses past the black screen
 
-$env:MW05_FAST_BOOT = "1"
 $env:MW05_UNBLOCK_MAIN = "1"
 $env:MW05_BREAK_82813514 = "1"
 $env:MW05_BREAK_WAIT_LOOP = "1"

@@ -6,7 +6,6 @@ Start-Sleep -Milliseconds 500
 $env:MW05_PM4_TRACE = "1"
 $env:MW05_PM4_TRACE_REGS = "1"
 $env:MW05_PM4_TRACE_REG_BUDGET = "200"
-$env:MW05_FAST_BOOT = "1"
 
 # Run for 5 seconds and capture output
 $job = Start-Job -ScriptBlock {

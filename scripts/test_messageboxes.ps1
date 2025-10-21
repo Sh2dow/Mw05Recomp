@@ -1,5 +1,4 @@
 # Test script to capture ALL messageboxes
-$env:MW05_XEX_PATH = "D:/Games/Xbox360/NFS Most Wanted/default.xex"
 
 Write-Host "Starting game WITHOUT stderr redirection to see messageboxes..." -ForegroundColor Cyan
 

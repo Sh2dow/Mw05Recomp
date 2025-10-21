@@ -1,5 +1,3 @@
-$env:MW05_FAST_BOOT = "1"
-
 Write-Host "Starting game for 90 seconds..." -ForegroundColor Green
 
 $proc = Start-Process -FilePath "out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe" -PassThru -RedirectStandardError "test_run.log" -NoNewWindow

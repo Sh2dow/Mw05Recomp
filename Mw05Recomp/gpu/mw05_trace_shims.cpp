@@ -693,12 +693,18 @@ PPC_FUNC(sub_825979A8) {
     // Record scheduler/context sighting so host gates can proceed
     Mw05Trace_ConsiderSchedR3(ctx.r4.u32);
 
-    DumpEAWindow("825979A8.r3", ctx.r3.u32);
-    DumpEAWindow("825979A8.r4", ctx.r4.u32);
-    DumpSchedState("825979A8", ctx.r4.u32);
+    // PERFORMANCE FIX: Disable expensive debug dumps (called 36,000+ times per 5 minutes!)
+    // Only dump on first few calls for debugging
+    static std::atomic<int> s_dump_count{0};
+    if (s_dump_count.fetch_add(1, std::memory_order_relaxed) < 5) {
+        DumpEAWindow("825979A8.r3", ctx.r3.u32);
+        DumpEAWindow("825979A8.r4", ctx.r4.u32);
+        DumpSchedState("825979A8", ctx.r4.u32);
+    }
 
     // Optional: host-side workaround to set present callback pointer if the game left it null
-    static const bool s_set_present_cb = [](){ if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
+    // CHANGED DEFAULT TO TRUE - this is required for draws to appear!
+    static const bool s_set_present_cb = [](){ if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0'); return true; }();
     if (s_set_present_cb) {
         // Context (r4) + 0x3CEC holds the function pointer the ISR calls to present/do work
         const uint32_t ctx_ea = ctx.r4.u32;
@@ -1149,7 +1155,17 @@ extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
 // Convert MW05Shim_sub_82598A20 to PPC_FUNC_IMPL pattern
 PPC_FUNC_IMPL(__imp__sub_82598A20);
 PPC_FUNC(sub_82598A20) {
+    // Call count tracking
+    static std::atomic<uint64_t> s_call_count{0};
+    const uint64_t count = s_call_count.fetch_add(1);
+
     // Lightweight entry trace. Keep stderr + trace consistent with other shims.
+    if (count < 20 || (count % 100) == 0) {
+        fprintf(stderr, "[PRESENT-CB] sub_82598A20 called! count=%llu r3=%08X r4=%08X lr=%08X\n",
+                count, ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr);
+        fflush(stderr);
+    }
+
     KernelTraceHostOpF("sub_82598A20.PRESENT enter lr=%08llX r3=%08X r4=%08X r5=%08X r31=%08X",
                        (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r31.u32);
 

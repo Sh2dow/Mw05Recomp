@@ -28,7 +28,6 @@ $env:MW05_FORCE_PRESENT_BG = "1"
 $env:MW05_VDSWAP_NOTIFY = "1"
 
 # Fast boot to skip delays
-$env:MW05_FAST_BOOT = "1"
 $env:MW05_FAST_RET = "0"
 $env:MW05_BREAK_82813514 = "1"  # CRITICAL: Break the rendering thread wait loop
 $env:MW05_TRACE_INDIRECT = "1"  # Trace indirect function calls

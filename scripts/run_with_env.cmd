@@ -2,12 +2,17 @@
 REM This batch file runs Mw05Recomp.exe with all environment variables set
 REM It's called from run_with_debug.ps1 to ensure environment variables are inherited
 
+REM Enable debug profile to apply default environment variables
+set MW05_DEBUG_PROFILE=1
+
 REM Set all environment variables from run_with_debug.ps1
+set MW05_HOST_TRACE_FILE=mw05_host_trace.log
 set MW05_BREAK_82813514=0
 set MW05_FAKE_ALLOC_SYSBUF=1
 set MW05_UNBLOCK_MAIN=1
 set MW05_TRACE_KERNEL=1
 set MW05_HOST_TRACE_IMPORTS=1
+set MW05_HOST_TRACE_HOSTOPS=1
 set MW05_TRACE_HEAP=1
 set MW05_BREAK_SLEEP_LOOP=1
 set MW05_BREAK_SLEEP_AFTER=5
@@ -31,8 +36,8 @@ set MW05_DEFAULT_VD_ISR=0
 set MW05_REGISTER_DEFAULT_VD_ISR=0
 set MW05_PULSE_VD_ON_SLEEP=0
 set MW05_PRESENT_HEARTBEAT_MS=0
-set MW05_STREAM_BRIDGE=0
-set MW05_STREAM_FALLBACK_BOOT=0
+set MW05_STREAM_BRIDGE=1
+set MW05_STREAM_FALLBACK_BOOT=1
 set MW05_STREAM_ACK_NO_PATH=0
 set MW05_LOOP_TRY_PM4_PRE=0
 set MW05_LOOP_TRY_PM4_POST=0
@@ -63,6 +68,15 @@ set MW05_PM4_APPLY_STATE=1
 REM Force the flag at r31+10434 that gates present calls
 set MW05_FORCE_PRESENT_FLAG=1
 
-cd /d "%~dp0out\build\x64-Clang-Debug\Mw05Recomp"
+REM CRITICAL: Enable present callback pointer workaround
+set MW05_SET_PRESENT_CB=1
+
+REM Debug: Verify environment variables are set
+echo [CMD-DEBUG] MW05_UNBLOCK_MAIN=%MW05_UNBLOCK_MAIN%
+echo [CMD-DEBUG] MW05_STREAM_BRIDGE=%MW05_STREAM_BRIDGE%
+echo [CMD-DEBUG] MW05_HOST_TRACE_FILE=%MW05_HOST_TRACE_FILE%
+echo [CMD-DEBUG] MW05_SET_PRESENT_CB=%MW05_SET_PRESENT_CB%
+
+cd /d "%~dp0..\out\build\x64-Clang-Debug\Mw05Recomp"
 Mw05Recomp.exe 2> debug_stderr.txt
 

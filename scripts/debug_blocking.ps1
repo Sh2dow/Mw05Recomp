@@ -1,6 +1,5 @@
 # Debug script to find what's blocking the game from issuing draws
 
-$env:MW05_FAST_BOOT = "1"
 $env:MW05_UNBLOCK_MAIN = "1"
 $env:MW05_BREAK_82813514 = "1"
 $env:MW05_BREAK_WAIT_LOOP = "1"

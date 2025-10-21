@@ -90,10 +90,9 @@ static bool HostTraceHostOpsEnabled()
     int s = g_hostTraceHostOps.load(std::memory_order_relaxed);
     if (s < 0)
     {
-        // Default ON: host ops are low volume and useful during bring-up.
+        // PERFORMANCE FIX: Default OFF to avoid massive log files (was causing 5-minute startup!)
+        // Enable with MW05_HOST_TRACE_HOSTOPS=1 if needed for debugging
         s = ReadEnvBool("MW05_HOST_TRACE_HOSTOPS") ? 1 : 0;
-        // If not explicitly set, leave enabled by default
-        if (!std::getenv("MW05_HOST_TRACE_HOSTOPS")) s = 1;
         g_hostTraceHostOps.store(s, std::memory_order_relaxed);
     }
     return s != 0;

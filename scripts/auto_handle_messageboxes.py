@@ -86,22 +86,35 @@ def find_and_click_messagebox():
 
 def main():
     """Run game and auto-handle messageboxes."""
-    
+
+    # Parse command-line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description="Run game and auto-handle messageboxes")
+    parser.add_argument("--duration", type=int, default=60, help="Duration to run game in seconds (default: 60)")
+    args = parser.parse_args()
+
     # Kill any existing Mw05Recomp processes
     print("[KILL] Killing existing Mw05Recomp.exe processes...")
-    subprocess.run(["taskkill", "/F", "/IM", "Mw05Recomp.exe"], 
+    subprocess.run(["taskkill", "/F", "/IM", "Mw05Recomp.exe"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
-    
+
     # Start the game
     exe_path = Path("out/build/x64-Clang-Debug/Mw05Recomp/Mw05Recomp.exe")
     if not exe_path.exists():
         print(f"[ERROR] Game executable not found: {exe_path}")
         sys.exit(1)
-    
+
     print(f"[START] Starting game: {exe_path}")
-    print("[START] Will run for 60 seconds and auto-handle any messageboxes...")
-    
+    print(f"[START] Will run for {args.duration} seconds and auto-handle any messageboxes...")
+
+    # MINIMAL ENVIRONMENT - Only enable streaming bridge to see if sentinel writes happen
+    env = os.environ.copy()
+    env["MW05_STREAM_BRIDGE"] = "1"
+    env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
+
+    print(f"[ENV] Running with MW05_STREAM_BRIDGE=1 only (minimal environment)")
+
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")
     stdout_file = Path("traces/auto_test_stdout.txt")
@@ -113,11 +126,12 @@ def main():
             stdout=stdout_f,
             stderr=stderr_f,
             text=True,
-            bufsize=1
+            bufsize=1,
+            env=env  # Pass environment variables to subprocess
         )
-    
+
         start_time = time.time()
-        duration = 60  # Run for 60 seconds
+        duration = args.duration  # Run for specified duration
         check_interval = 0.5  # Check for messageboxes every 0.5 seconds
 
         print(f"[MONITOR] Monitoring for messageboxes (PID={process.pid})...")

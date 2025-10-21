@@ -14,7 +14,6 @@ Write-Host "=== TESTING CURRENT STATE ===" -ForegroundColor Cyan
 Write-Host "Running game for $Seconds seconds..." -ForegroundColor Green
 
 # Minimal settings - let game run naturally
-$env:MW05_FAST_BOOT = "1"
 $env:MW05_TRACE_KERNEL = "1"
 $env:MW05_HOST_TRACE_IMPORTS = "1"
 

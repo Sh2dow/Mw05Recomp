@@ -9,6 +9,7 @@
 #include "xbox.h"
 #include "heap.h"
 #include "memory.h"
+#include "debug_verbosity.h"
 // REMOVED: #include "vm_arena.h" - not using VmArena anymore (like UnleashedRecomp)
 #include <memory>
 #include <map>
@@ -7601,31 +7602,30 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                             }
                         }
 
-                        fprintf(stderr, "[GFX-MONITOR] BEFORE callback #%u:\n", s_callback_count);
-                        fprintf(stderr, "  +0x2894 = 0x%08X (structure pointer)\n", ctx_before.offset_2894);
-                        fprintf(stderr, "  +0x2898 = 0x%08X (spinlock)\n", ctx_before.offset_2898);
-                        fprintf(stderr, "  ctx+0x3CEC = 0x%08X (direct present fp)\n", ctx_before.offset_ctx_3CEC);
-                        fprintf(stderr, "  ctx+15596(fp) = 0x%08X\n", ctx_before.ctx_15596_fp);
-                        fprintf(stderr, "  ctx+15600(cnt) = 0x%08X\n", ctx_before.ctx_15600_cnt);
-                        fprintf(stderr, "  ctx+15604(copy) = 0x%08X\n", ctx_before.ctx_15604_copy);
-                        fprintf(stderr, "  ctx+15608(down) = 0x%08X\n", ctx_before.ctx_15608_down);
-                        fprintf(stderr, "  ctx+15612(arg) = 0x%08X\n", ctx_before.ctx_15612_arg);
-                        fprintf(stderr, "  inner+0x3CEC = 0x%08X (pending work)\n", ctx_before.offset_3CEC);
-                        fprintf(stderr, "  inner+0x3CF0 = 0x%08X (invocation counter)\n", ctx_before.offset_3CF0);
-                        fprintf(stderr, "  inner+0x3CF4 = 0x%08X\n", ctx_before.offset_3CF4);
-                        fprintf(stderr, "  inner+0x3CF8 = 0x%08X (decrement counter)\n", ctx_before.offset_3CF8);
-                        fprintf(stderr, "  inner+0x3CFC = 0x%08X\n", ctx_before.offset_3CFC);
-                        fprintf(stderr, "  inner+15596(fp) = 0x%08X\n", ctx_before.offs_15596_fp);
-                        fprintf(stderr, "  inner+15600(cnt) = 0x%08X\n", ctx_before.offs_15600_cnt);
-                        fprintf(stderr, "  inner+15604(copy) = 0x%08X\n", ctx_before.offs_15604_copy);
-                        fprintf(stderr, "  inner+15608(down) = 0x%08X\n", ctx_before.offs_15608_down);
-                        fprintf(stderr, "  inner+15612(arg) = 0x%08X\n", ctx_before.offs_15612_arg);
-                        fflush(stderr);
+                        // Only log BEFORE state if verbosity is VERBOSE
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "[GFX-MONITOR] BEFORE callback #%u:\n", s_callback_count);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  +0x2894 = 0x%08X (structure pointer)\n", ctx_before.offset_2894);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  +0x2898 = 0x%08X (spinlock)\n", ctx_before.offset_2898);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+0x3CEC = 0x%08X (direct present fp)\n", ctx_before.offset_ctx_3CEC);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+15596(fp) = 0x%08X\n", ctx_before.ctx_15596_fp);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+15600(cnt) = 0x%08X\n", ctx_before.ctx_15600_cnt);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+15604(copy) = 0x%08X\n", ctx_before.ctx_15604_copy);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+15608(down) = 0x%08X\n", ctx_before.ctx_15608_down);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  ctx+15612(arg) = 0x%08X\n", ctx_before.ctx_15612_arg);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+0x3CEC = 0x%08X (pending work)\n", ctx_before.offset_3CEC);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+0x3CF0 = 0x%08X (invocation counter)\n", ctx_before.offset_3CF0);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+0x3CF4 = 0x%08X\n", ctx_before.offset_3CF4);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+0x3CF8 = 0x%08X (decrement counter)\n", ctx_before.offset_3CF8);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+0x3CFC = 0x%08X\n", ctx_before.offset_3CFC);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+15596(fp) = 0x%08X\n", ctx_before.offs_15596_fp);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+15600(cnt) = 0x%08X\n", ctx_before.offs_15600_cnt);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+15604(copy) = 0x%08X\n", ctx_before.offs_15604_copy);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+15608(down) = 0x%08X\n", ctx_before.offs_15608_down);
+                        DEBUG_LOG_GRAPHICS(VERBOSE, "  inner+15612(arg) = 0x%08X\n", ctx_before.offs_15612_arg);
                     }
                 }
 
-                fprintf(stderr, "[GFX-CALLBACK] About to call graphics callback cb=0x%08X ctx=0x%08X source=%u (invocation #%u)\n", cb, ctx, source, s_callback_count);
-                fflush(stderr);
+                DEBUG_LOG_GRAPHICS(VERBOSE, "[GFX-CALLBACK] About to call graphics callback cb=0x%08X ctx=0x%08X source=%u (invocation #%u)\n", cb, ctx, source, s_callback_count);
                 EnsureGuestContextForThisThread("VdCallGraphicsNotificationRoutines");
                 // Optional: ensure present callback pointer is set before invoking guest ISR
                 static const bool s_force_present_cb = [](){
@@ -7719,15 +7719,12 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                         if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(ea_flag))) {
                             uint32_t prev = *p;
                             *p = prev | 1u; // set bit0
-                            fprintf(stderr, "[GFX-MONITOR] Set render flag @%08X: %08X -> %08X\n", ea_flag, prev, *p);
-                            fflush(stderr);
+                            DEBUG_LOG_GRAPHICS(VERBOSE, "[GFX-MONITOR] Set render flag @%08X: %08X -> %08X\n", ea_flag, prev, *p);
                         } else {
-                            fprintf(stderr, "[GFX-MONITOR] WARN: render flag @%08X not mapped (translate failed)\n", ea_flag);
-                            fflush(stderr);
+                            DEBUG_LOG_GRAPHICS(MINIMAL, "[GFX-MONITOR] WARN: render flag @%08X not mapped (translate failed)\n", ea_flag);
                         }
                     } else {
-                        fprintf(stderr, "[GFX-MONITOR] WARN: render flag @%08X out of guest range\n", ea_flag);
-                        fflush(stderr);
+                        DEBUG_LOG_GRAPHICS(MINIMAL, "[GFX-MONITOR] WARN: render flag @%08X out of guest range\n", ea_flag);
                     }
                 }
 
@@ -7890,67 +7887,65 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                             }
                         }
 
-                        fprintf(stderr, "[GFX-MONITOR] AFTER callback #%u:\n", s_callback_count - 1);
-
-                        // Show changes
+                        // Show changes (only log if verbosity is NORMAL or higher, or if changes detected)
                         bool any_changed = false;
                         if (ctx_before.offset_2894 != ctx_after.offset_2894) {
-                            fprintf(stderr, "  +0x2894: 0x%08X -> 0x%08X (structure pointer CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x2894: 0x%08X -> 0x%08X (structure pointer CHANGED)\n",
                                     ctx_before.offset_2894, ctx_after.offset_2894);
                             any_changed = true;
                         }
                         if (ctx_before.offset_2898 != ctx_after.offset_2898) {
-                            fprintf(stderr, "  +0x2898: 0x%08X -> 0x%08X (spinlock CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x2898: 0x%08X -> 0x%08X (spinlock CHANGED)\n",
                                     ctx_before.offset_2898, ctx_after.offset_2898);
                             any_changed = true;
                         }
                         if (ctx_before.offset_ctx_3CEC != ctx_after.offset_ctx_3CEC) {
-                            fprintf(stderr, "  ctx+0x3CEC: 0x%08X -> 0x%08X (outer present fp CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+0x3CEC: 0x%08X -> 0x%08X (outer present fp CHANGED)\n",
                                     ctx_before.offset_ctx_3CEC, ctx_after.offset_ctx_3CEC);
                             any_changed = true;
                         }
                         if (ctx_before.ctx_15596_fp != ctx_after.ctx_15596_fp) {
-                            fprintf(stderr, "  ctx+15596(fp): 0x%08X -> 0x%08X\n", ctx_before.ctx_15596_fp, ctx_after.ctx_15596_fp);
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+15596(fp): 0x%08X -> 0x%08X\n", ctx_before.ctx_15596_fp, ctx_after.ctx_15596_fp);
                             any_changed = true;
                         }
                         if (ctx_before.ctx_15600_cnt != ctx_after.ctx_15600_cnt) {
-                            fprintf(stderr, "  ctx+15600(cnt): 0x%08X -> 0x%08X\n", ctx_before.ctx_15600_cnt, ctx_after.ctx_15600_cnt);
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+15600(cnt): 0x%08X -> 0x%08X\n", ctx_before.ctx_15600_cnt, ctx_after.ctx_15600_cnt);
                             any_changed = true;
                         }
                         if (ctx_before.ctx_15604_copy != ctx_after.ctx_15604_copy) {
-                            fprintf(stderr, "  ctx+15604(copy): 0x%08X -> 0x%08X\n", ctx_before.ctx_15604_copy, ctx_after.ctx_15604_copy);
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+15604(copy): 0x%08X -> 0x%08X\n", ctx_before.ctx_15604_copy, ctx_after.ctx_15604_copy);
                             any_changed = true;
                         }
                         if (ctx_before.ctx_15608_down != ctx_after.ctx_15608_down) {
-                            fprintf(stderr, "  ctx+15608(down): 0x%08X -> 0x%08X\n", ctx_before.ctx_15608_down, ctx_after.ctx_15608_down);
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+15608(down): 0x%08X -> 0x%08X\n", ctx_before.ctx_15608_down, ctx_after.ctx_15608_down);
                             any_changed = true;
                         }
                         if (ctx_before.ctx_15612_arg != ctx_after.ctx_15612_arg) {
-                            fprintf(stderr, "  ctx+15612(arg): 0x%08X -> 0x%08X\n", ctx_before.ctx_15612_arg, ctx_after.ctx_15612_arg);
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  ctx+15612(arg): 0x%08X -> 0x%08X\n", ctx_before.ctx_15612_arg, ctx_after.ctx_15612_arg);
                             any_changed = true;
                         }
                         if (ctx_before.offset_3CEC != ctx_after.offset_3CEC) {
-                            fprintf(stderr, "  inner+0x3CEC: 0x%08X -> 0x%08X (pending work CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  inner+0x3CEC: 0x%08X -> 0x%08X (pending work CHANGED)\n",
                                     ctx_before.offset_3CEC, ctx_after.offset_3CEC);
                             any_changed = true;
                         }
                         if (ctx_before.offset_3CF0 != ctx_after.offset_3CF0) {
-                            fprintf(stderr, "  +0x3CF0: 0x%08X -> 0x%08X (invocation counter CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x3CF0: 0x%08X -> 0x%08X (invocation counter CHANGED)\n",
                                     ctx_before.offset_3CF0, ctx_after.offset_3CF0);
                             any_changed = true;
                         }
                         if (ctx_before.offset_3CF4 != ctx_after.offset_3CF4) {
-                            fprintf(stderr, "  +0x3CF4: 0x%08X -> 0x%08X (CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x3CF4: 0x%08X -> 0x%08X (CHANGED)\n",
                                     ctx_before.offset_3CF4, ctx_after.offset_3CF4);
                             any_changed = true;
                         }
                         if (ctx_before.offset_3CF8 != ctx_after.offset_3CF8) {
-                            fprintf(stderr, "  +0x3CF8: 0x%08X -> 0x%08X (decrement counter CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x3CF8: 0x%08X -> 0x%08X (decrement counter CHANGED)\n",
                                     ctx_before.offset_3CF8, ctx_after.offset_3CF8);
                             any_changed = true;
                         }
                         if (ctx_before.offset_3CFC != ctx_after.offset_3CFC) {
-                            fprintf(stderr, "  +0x3CFC: 0x%08X -> 0x%08X (CHANGED)\n",
+                            DEBUG_LOG_GRAPHICS(NORMAL, "  +0x3CFC: 0x%08X -> 0x%08X (CHANGED)\n",
                                     ctx_before.offset_3CFC, ctx_after.offset_3CFC);
                             any_changed = true;
                         }
@@ -7959,25 +7954,25 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
                             ctx_before.offs_15604_copy != ctx_after.offs_15604_copy ||
                             ctx_before.offs_15608_down != ctx_after.offs_15608_down ||
                             ctx_before.offs_15612_arg != ctx_after.offs_15612_arg) {
-                            fprintf(stderr,
+                            DEBUG_LOG_GRAPHICS(NORMAL,
                                     "  inner+{15596,15600,15604,15608,15612}: %08X,%08X,%08X,%08X,%08X -> %08X,%08X,%08X,%08X,%08X\n",
                                     ctx_before.offs_15596_fp, ctx_before.offs_15600_cnt, ctx_before.offs_15604_copy,
                                     ctx_before.offs_15608_down, ctx_before.offs_15612_arg,
                                     ctx_after.offs_15596_fp, ctx_after.offs_15600_cnt, ctx_after.offs_15604_copy,
                                     ctx_after.offs_15608_down, ctx_after.offs_15612_arg);
                             any_changed = true;
-                            any_changed = true;
                         }
 
-                        if (!any_changed) {
-                            fprintf(stderr, "  (No changes detected)\n");
+                        // Only log "AFTER callback" header and "no changes" message if changes detected OR verbosity is VERBOSE
+                        if (any_changed) {
+                            DEBUG_LOG_GRAPHICS(NORMAL, "[GFX-MONITOR] AFTER callback #%u: Changes detected\n", s_callback_count - 1);
+                        } else {
+                            DEBUG_LOG_GRAPHICS(VERBOSE, "[GFX-MONITOR] AFTER callback #%u: No changes detected\n", s_callback_count - 1);
                         }
-                        fflush(stderr);
                     }
                 }
 
-                fprintf(stderr, "[GFX-CALLBACK] Graphics callback returned successfully (invocation #%u)\n", s_callback_count - 1);
-                fflush(stderr);
+                DEBUG_LOG_GRAPHICS(VERBOSE, "[GFX-CALLBACK] Graphics callback returned successfully (invocation #%u)\n", s_callback_count - 1);
 
                 // Fallback: if source==0 path shows no state changes for many calls, try invoking present directly
                 static const bool s_force_present_on_zero = [](){

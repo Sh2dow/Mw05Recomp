@@ -40,6 +40,13 @@
 #include <fstream>
 #include <unordered_map>
 
+// Floating point exception masking
+#ifdef _WIN32
+#include <float.h>
+#else
+#include <fenv.h>
+#endif
+
 // Forward declarations for kernel functions
 extern uint32_t KeTlsAlloc();
 
@@ -782,6 +789,15 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
     fprintf(stderr, "[BOOT] Re-populated %zu functions in function table\n", repopulated);
     fflush(stderr);
 
+    // CRITICAL: Register video manual hooks RIGHT AFTER function table re-population
+    // This ensures the graphics callback at 0x825979A8 is NOT overwritten by the re-population
+    extern void RegisterMw05VideoManualHooks();
+    fprintf(stderr, "[BOOT] Calling RegisterMw05VideoManualHooks() after function table re-population\n");
+    fflush(stderr);
+    RegisterMw05VideoManualHooks();
+    fprintf(stderr, "[BOOT] RegisterMw05VideoManualHooks() completed\n");
+    fflush(stderr);
+
     // Verify that the entry point function is now in the function table
     PPCFunc* entryFunc = g_memory.FindFunction(entry);
     fprintf(stderr, "[BOOT] Entry point 0x%08X -> %p (after re-population)\n", entry, (void*)entryFunc);
@@ -873,6 +889,25 @@ void init()
 
 int main(int argc, char *argv[])
 {
+    // CRITICAL FIX: Mask all floating point exceptions to prevent crashes
+    // The recompiled PPC code can generate invalid FP operations (NaN, infinity, etc.)
+    // that would normally crash with STATUS_FLOAT_INVALID_OPERATION (0xC0000090)
+    // We mask these exceptions so the game can continue running
+#ifdef _WIN32
+    // Windows: Use _controlfp to mask all FP exceptions
+    unsigned int old_fp_control = 0;
+    _controlfp_s(&old_fp_control, _MCW_EM, _MCW_EM);  // Mask all exceptions
+    fprintf(stderr, "[FP-CONTROL] Masked all floating point exceptions (old=0x%08X)\n", old_fp_control);
+    fflush(stderr);
+#else
+    // Linux/macOS: Use fesetenv to mask all FP exceptions
+    fenv_t fenv;
+    fegetenv(&fenv);
+    fenv.__control_word |= 0x3F;  // Mask all exceptions (IM, DM, ZM, OM, UM, PM)
+    fesetenv(&fenv);
+    fprintf(stderr, "[FP-CONTROL] Masked all floating point exceptions\n");
+    fflush(stderr);
+#endif
 
     // Attach a console when --verbose is passed, even for Windows GUI builds.
     bool verbose = false;
@@ -1288,15 +1323,8 @@ int main(int argc, char *argv[])
     Video::StartPipelinePrecompilation();
     KernelTraceHostOp("HOST.main.after_pipeline_precomp");
 
-    // CRITICAL: Register video manual hooks BEFORE any guest threads are created
-    // This ensures the graphics callback at 0x825979A8 is in the function table
-    // before the game tries to call it from a thread
-    extern void RegisterMw05VideoManualHooks();
-    fprintf(stderr, "[MAIN] Calling RegisterMw05VideoManualHooks() EARLY\n");
-    fflush(stderr);
-    RegisterMw05VideoManualHooks();
-    fprintf(stderr, "[MAIN] RegisterMw05VideoManualHooks() completed\n");
-    fflush(stderr);
+    // NOTE: RegisterMw05VideoManualHooks() is now called AFTER function table re-population
+    // (see line ~790) to prevent the manual hook from being overwritten
 
     // CRITICAL: Register file system hooks BEFORE any guest threads are created
     // This ensures X* file functions are hooked before the game tries to call them

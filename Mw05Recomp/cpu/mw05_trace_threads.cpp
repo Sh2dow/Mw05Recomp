@@ -87,8 +87,12 @@ static inline bool ForceVdInitEnabled() {
 }
 
 static inline bool UnblockMainThreadEnabled() {
+	// CRITICAL FIX: Enable by default to allow main loop to run
+	// The main loop needs to run so the game can progress through initialization
+	// and eventually call VdSetGraphicsInterruptCallback naturally
 	const char* env = std::getenv("MW05_UNBLOCK_MAIN");
-	return env && *env && *env != '0';
+	if (env && *env == '0') return false;  // Allow disabling via env var
+	return true;  // Enabled by default
 }
 
 // Background thread that continuously sets the flag to unblock the main thread.
@@ -569,22 +573,13 @@ void Mw05ForceCreateRenderThread() {
 
     // Create render thread (matching Xenia's behavior at line 35632)
     // Entry: 0x825AA970
-    // Context: allocated on heap (Xenia uses 0x40009D2C, we'll allocate our own)
+    // Context: Try NULL context first (like some worker threads use)
     // Flags: 0x04000080
 
-    // Allocate context on heap (16 bytes should be enough)
-    void* ctx_host = g_userHeap.Alloc(256);
-    std::memset(ctx_host, 0, 256);
-    uint32_t ctx_addr = g_memory.MapVirtual(ctx_host);
+    // Try with NULL context (0x00000000) first
+    uint32_t ctx_addr = 0x00000000;
 
-    fprintf(stderr, "[RENDER_THREAD_FIX] Allocated context at 0x%08X (host=%p)\n", ctx_addr, ctx_host);
-    fflush(stderr);
-
-    // DEBUG: Log what's in the context structure
-    uint32_t* ctx_u32 = reinterpret_cast<uint32_t*>(ctx_host);
-    fprintf(stderr, "[RENDER_THREAD_FIX] Context contents: [0]=0x%08X [1]=0x%08X [2]=0x%08X [3]=0x%08X\n",
-            _byteswap_ulong(ctx_u32[0]), _byteswap_ulong(ctx_u32[1]),
-            _byteswap_ulong(ctx_u32[2]), _byteswap_ulong(ctx_u32[3]));
+    fprintf(stderr, "[RENDER_THREAD_FIX] Using NULL context (0x00000000)\n");
     fflush(stderr);
 
     // Create the render thread
@@ -596,7 +591,7 @@ void Mw05ForceCreateRenderThread() {
         &thread_id,          // pThreadId
         0x82850080,          // xapi_thread_startup (standard thread startup)
         0x825AA970,          // start_address (render thread entry point)
-        ctx_addr,            // start_context
+        ctx_addr,            // start_context (NULL)
         0x04000080           // creation_flags
     );
 

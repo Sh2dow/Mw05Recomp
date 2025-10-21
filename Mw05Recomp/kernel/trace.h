@@ -550,10 +550,12 @@ inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
     // Check if this is the flag address that the main thread is waiting on
     const uint32_t FLAG_EA = 0x82A2CF40;
     if (ea == FLAG_EA) {
-        // Check if MW05_UNBLOCK_MAIN is enabled
+        // CRITICAL FIX: Enable by default to allow main loop to run
+        // The main loop needs to run so the game can progress through initialization
         static bool unblock_enabled = []() {
             const char* env = std::getenv("MW05_UNBLOCK_MAIN");
-            return env && *env && *env != '0';
+            if (env && *env == '0') return false;  // Allow disabling via env var
+            return true;  // Enabled by default
         }();
 
         if (unblock_enabled) {

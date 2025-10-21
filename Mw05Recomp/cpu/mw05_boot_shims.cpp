@@ -523,3 +523,4 @@ PPC_FUNC(sub_828134E0)
 // NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
 // It saves/restores qword_828F1F98 to prevent corruption
 // NOTE: sub_82630378 wrapper is also in mw05_trace_threads.cpp - wait function wrapper
+// NOTE: sub_82598A20 wrapper is in mw05_trace_shims.cpp - rendering function that calls VdSwap

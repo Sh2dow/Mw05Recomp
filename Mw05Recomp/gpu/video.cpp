@@ -31,6 +31,7 @@
 #include <ui/game_window.h>
 #include <ui/black_bar.h>
 #include <ui/tv_static.h>
+#include <ui/debug_console.h>
 #include <patches/aspect_ratio_patches.h>
 #include <user/config.h>
 #include <sdl_listener.h>
@@ -1568,6 +1569,7 @@ static void CreateImGuiBackend()
     AchievementMenu::Init();
     AchievementOverlay::Init();
     ButtonGuide::Init();
+    DebugConsole::Init();
     MessageWindow::Init();
     OptionsMenu::Init();
 #if MW05_ENABLE_UNLEASHED
@@ -3016,6 +3018,9 @@ static void DrawImGui()
 
     DrawFPS();
     DrawProfiler();
+
+    // Debug console (toggle with ` or F1)
+    DebugConsole::Render();
 
     ImGui::Render();
 

@@ -287,7 +287,8 @@ extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCoun
 // CRITICAL FIX: Force creation of missing worker threads
 // Thread #1 (entry=0x828508A8) is supposed to create 6 additional worker threads, but it's stuck in a busy loop
 // This function manually creates the missing threads to unblock the game
-static void Mw05ForceCreateMissingWorkerThreads() {
+// NOTE: This function is called from guest_thread.cpp, so it cannot be static
+void Mw05ForceCreateMissingWorkerThreads() {
     static std::atomic<bool> s_created{false};
     if (s_created.exchange(true)) return;  // Only create once
 
@@ -368,8 +369,83 @@ static void Mw05ForceCreateMissingWorkerThreads() {
 }
 
 
+// Trace sub_82441E80 - main game initialization function
+// Called from start() (0x8262E9A8)
+PPC_FUNC_IMPL(__imp__sub_82441E80);
+PPC_FUNC(sub_82441E80) {
+    fprintf(stderr, "[THREAD_82441E80] ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_82441E80(ctx, base);
+
+    fprintf(stderr, "[THREAD_82441E80] EXIT (should never return)\n");
+    fflush(stderr);
+}
+
+// Trace sub_8261A5E8 - this appears to be the function that creates threads
+// Called from sub_82441E80 (main game initialization)
+PPC_FUNC_IMPL(__imp__sub_8261A5E8);
+PPC_FUNC(sub_8261A5E8) {
+    fprintf(stderr, "[THREAD_8261A5E8] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_8261A5E8(ctx, base);
+
+    fprintf(stderr, "[THREAD_8261A5E8] EXIT r3=%08X (return value)\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Trace sub_82850930 - this appears to be a thread creation wrapper
+// Called from sub_8261A5E8 with signature: sub_82850930(0, v25, sub_8261A558, *a1, 4, *a1 + 1)
+PPC_FUNC_IMPL(__imp__sub_82850930);
+PPC_FUNC(sub_82850930) {
+    fprintf(stderr, "[THREAD_82850930] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_82850930(ctx, base);
+
+    fprintf(stderr, "[THREAD_82850930] EXIT r3=%08X (return value)\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Trace sub_8284DF08 - 16-byte wrapper that branches to sub_8284F548
+// This is the missing link in the thread creation call chain
+PPC_FUNC_IMPL(__imp__sub_8284DF08);
+PPC_FUNC(sub_8284DF08) {
+    fprintf(stderr, "[THREAD_8284DF08] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_8284DF08(ctx, base);
+
+    fprintf(stderr, "[THREAD_8284DF08] EXIT r3=%08X (return value)\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Trace sub_8284F548 - the real thread creation function
+// Called from sub_8284DF08
+PPC_FUNC_IMPL(__imp__sub_8284F548);
+PPC_FUNC(sub_8284F548) {
+    fprintf(stderr, "[THREAD_8284F548] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X lr=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, (uint32_t)ctx.lr);
+    fflush(stderr);
+
+    // Call the original function
+    __imp__sub_8284F548(ctx, base);
+
+    fprintf(stderr, "[THREAD_8284F548] EXIT r3=%08X (return value)\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
 PPC_FUNC_IMPL(__imp__sub_828508A8);
-PPC_FUNC(sub_828508A8) 
+PPC_FUNC(sub_828508A8)
 {
     KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
     fprintf(stderr, "[THREAD_828508A8] ENTER tid=%lx r3=%08X\n", GetCurrentThreadId(), ctx.r3.u32);
@@ -522,19 +598,8 @@ PPC_FUNC(sub_828508A8)
     static std::atomic<int> s_call_count{0};
     int call_num = ++s_call_count;
 
-    // CRITICAL FIX: Force creation of missing worker threads after a short delay
-    // Thread #1 is supposed to create these threads, but it's stuck in a busy loop
-    // Create them manually to unblock the game
-    std::thread force_workers([]() {
-        // Wait 2 seconds to let Thread #1 create Thread #2 first
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-
-        fprintf(stderr, "[FORCE_WORKERS] Triggering forced worker thread creation...\n");
-        fflush(stderr);
-
-        Mw05ForceCreateMissingWorkerThreads();
-    });
-    force_workers.detach();
+    // NOTE: Worker threads are now force-created from GuestThreadFunc when the main thread starts
+    // No need to create them here anymore
 
     // Start a monitoring thread to detect if this thread gets stuck
     std::thread monitor([call_num]() {

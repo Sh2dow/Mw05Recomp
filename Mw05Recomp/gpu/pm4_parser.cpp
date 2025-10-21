@@ -1917,10 +1917,16 @@ void PM4_ResetStats() {
 
 void PM4_DumpOpcodeHistogram() {
     // Log non-zero opcode counts once per call
+    static int s_dumpCount = 0;
+    if (++s_dumpCount % 10 != 0) return; // Only dump every 10th call to reduce spam
+
+    fprintf(stderr, "\n[PM4-OPCODE-HISTOGRAM] Dump #%d:\n", s_dumpCount / 10);
     for (int i = 0; i < 128; ++i) {
         uint64_t c = g_opcodeCounts[i].load(std::memory_order_relaxed);
         if (!c) continue;
-        KernelTraceHostOpF("HOST.PM4.OPC[%02X]=%llu", i, (unsigned long long)c);
+        fprintf(stderr, "  [PM4-OPC] 0x%02X = %llu\n", i, (unsigned long long)c);
     }
+    fprintf(stderr, "[PM4-OPCODE-HISTOGRAM] End dump\n\n");
+    fflush(stderr);
 }
 

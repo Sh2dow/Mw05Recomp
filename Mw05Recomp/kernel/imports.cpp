@@ -2167,12 +2167,12 @@ void Mw05StartVblankPumpOnce() {
             // Setting it once per VBlank synchronizes game loop with rendering
             {
                 const uint32_t main_loop_flag_ea = 0x82A2CF40;
-                uint32_t* main_loop_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(main_loop_flag_ea));
+                volatile uint32_t* main_loop_flag_ptr = static_cast<volatile uint32_t*>(g_memory.Translate(main_loop_flag_ea));
                 if (main_loop_flag_ptr) {
-                    // Read current value before setting
+                    // Read current value before setting (volatile read)
                     uint32_t current_value = *main_loop_flag_ptr;
 
-                    // Set flag to 1 (big-endian)
+                    // Set flag to 1 (big-endian) - volatile write ensures visibility to all threads
                     #if defined(_MSC_VER)
                         *main_loop_flag_ptr = _byteswap_ulong(1);
                     #else
@@ -2190,9 +2190,11 @@ void Mw05StartVblankPumpOnce() {
                     }
                     s_last_value = current_value;
 
-                    // CRITICAL FIX: Force-create render thread at VBlank 75 (matching Xenia behavior)
-                    // Thread #1 gets stuck in main game loop and never creates render thread naturally
-                    if (s_flag_set_count == 75) {
+                    // DISABLED: Force-create render thread at VBlank 75
+                    // The game should create this thread naturally when the context at 0x40009D2C is initialized
+                    // Force-creating it too early with NULL context causes it to not function properly
+                    // Let the game create it naturally via the proper initialization chain
+                    if (false && s_flag_set_count == 75) {
                         extern void Mw05ForceCreateRenderThread();
                         Mw05ForceCreateRenderThread();
                     }
@@ -5969,8 +5971,16 @@ void RtlFillMemoryUlong(void* Destination, uint32_t Length, uint32_t Pattern)
         dest[i] = pattern_be;
 }
 
-void KeBugCheckEx()
+void KeBugCheckEx(uint32_t bugcheck_code, uint32_t param1, uint32_t param2, uint32_t param3, uint32_t param4)
 {
+    fprintf(stderr, "[BUGCHECK] KeBugCheckEx called!\n");
+    fprintf(stderr, "[BUGCHECK]   Code: 0x%08X\n", bugcheck_code);
+    fprintf(stderr, "[BUGCHECK]   Param1: 0x%08X\n", param1);
+    fprintf(stderr, "[BUGCHECK]   Param2: 0x%08X\n", param2);
+    fprintf(stderr, "[BUGCHECK]   Param3: 0x%08X\n", param3);
+    fprintf(stderr, "[BUGCHECK]   Param4: 0x%08X\n", param4);
+    fflush(stderr);
+
     __builtin_debugtrap();
 }
 

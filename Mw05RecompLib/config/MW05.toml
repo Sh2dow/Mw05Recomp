@@ -22866,6 +22866,7 @@ functions = [
     { address = 0x8284DDC8, size = 0xD8 },
     { address = 0x8284DEA0, size = 0x28 },
     { address = 0x8284DEC8, size = 0x50 },
+    { address = 0x8284DF08, size = 0x10 },
     { address = 0x8284DF18, size = 0x148 },
     { address = 0x8284E060, size = 0x88 },
     { address = 0x8284E0E8, size = 0x40 },

@@ -1159,15 +1159,25 @@ PPC_FUNC(sub_82598A20) {
     static std::atomic<uint64_t> s_call_count{0};
     const uint64_t count = s_call_count.fetch_add(1);
 
+    // Identify the caller based on link register (lr)
+    const char* caller_name = "UNKNOWN";
+    switch ((uint32_t)ctx.lr) {
+        case 0x82439B00: caller_name = "sub_82439AF0"; break;  // Simple wrapper
+        case 0x82458B6C: caller_name = "sub_82458B20"; break;  // Setup function
+        case 0x82599138: caller_name = "sub_82599010"; break;  // Complex setup
+        case 0x825AA9FC: caller_name = "sub_825AA970"; break;  // Thread #8 worker loop
+        case 0x82597AB4: caller_name = "sub_82597A00"; break;  // VBlank callback path
+    }
+
     // Lightweight entry trace. Keep stderr + trace consistent with other shims.
     if (count < 20 || (count % 100) == 0) {
-        fprintf(stderr, "[PRESENT-CB] sub_82598A20 called! count=%llu r3=%08X r4=%08X lr=%08X\n",
-                count, ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr);
+        fprintf(stderr, "[PRESENT-CB] sub_82598A20 called! count=%llu caller=%s r3=%08X r4=%08X r5=%08X lr=%08X\n",
+                count, caller_name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
         fflush(stderr);
     }
 
-    KernelTraceHostOpF("sub_82598A20.PRESENT enter lr=%08llX r3=%08X r4=%08X r5=%08X r31=%08X",
-                       (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r31.u32);
+    KernelTraceHostOpF("sub_82598A20.PRESENT enter count=%llu caller=%s lr=%08llX r3=%08X r4=%08X r5=%08X r31=%08X",
+                       count, caller_name, (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r31.u32);
 
     // Optional stub mode to force progress: call VdSwap directly and return.
     static const bool s_present_stub = [](){
@@ -1199,6 +1209,58 @@ PPC_FUNC(sub_82598A20) {
         DumpSchedState("82598A20.pre", ctx.r3.u32);
         uint32_t sysPtr = ReadBE32(ctx.r3.u32 + 13520);
         KernelTraceHostOpF("sub_82598A20.PRESENT pre.syscmd ptr13520=%08X", sysPtr);
+    }
+
+    // CRITICAL: Track the function pointer gate at r31+0x3CEC
+    // This pointer controls whether the rendering function is called
+    // If it's NULL, the caller skips the call (see 0x82597A8C-0x82597A90)
+    if (looks_ptr(ctx.r31.u32)) {
+        uint32_t func_ptr_addr = ctx.r31.u32 + 0x3CEC;  // r31 + 15596
+        uint32_t func_ptr = ReadBE32(func_ptr_addr);
+        static uint32_t s_last_func_ptr = 0xFFFFFFFF;
+        if (func_ptr != s_last_func_ptr) {
+            fprintf(stderr, "[PRESENT-GATE] Function pointer at r31+0x3CEC changed: was=%08X now=%08X (r31=%08X addr=%08X)\n",
+                    s_last_func_ptr, func_ptr, ctx.r31.u32, func_ptr_addr);
+            fflush(stderr);
+            KernelTraceHostOpF("sub_82598A20.PRESENT.GATE r31=%08X addr=%08X was=%08X now=%08X",
+                               ctx.r31.u32, func_ptr_addr, s_last_func_ptr, func_ptr);
+            s_last_func_ptr = func_ptr;
+        }
+    }
+
+    // Track the global flag at 0x7FC86544 that gates VBlank callback execution
+    // This flag is checked in the VBlank callback (sub_825979A8) at line 55:
+    // else if ( !a1 && (MEMORY[0x7FC86544] & 1) != 0 )
+    // If bit 0 is cleared, the VBlank callback won't call the rendering function
+    static uint32_t s_last_flag_value = 0xFFFFFFFF;
+    if (looks_ptr(0x7FC86544)) {
+        uint32_t flag_value = ReadBE32(0x7FC86544);
+        if (flag_value != s_last_flag_value) {
+            fprintf(stderr, "[PRESENT-FLAG] Global flag at 0x7FC86544 changed: was=%08X now=%08X (bit0=%d)\n",
+                    s_last_flag_value, flag_value, (flag_value & 1));
+            fflush(stderr);
+            KernelTraceHostOpF("sub_82598A20.PRESENT.FLAG addr=7FC86544 was=%08X now=%08X bit0=%d",
+                               s_last_flag_value, flag_value, (flag_value & 1));
+            s_last_flag_value = flag_value;
+        }
+    }
+
+    // Track the countdown field at r4+0x3CF8 (offset 15608 = a2[3902])
+    // This field is decremented on each VBlank callback (sub_825979A8 line 59-68)
+    // When it reaches 0, the function pointer at a2[2597]+4 is cleared to 0
+    // This is likely why the rendering function stops being called after 7 times
+    if (looks_ptr(ctx.r4.u32)) {
+        uint32_t countdown_addr = ctx.r4.u32 + 0x3CF8;  // r4 + 15608
+        uint32_t countdown = ReadBE32(countdown_addr);
+        static uint32_t s_last_countdown = 0xFFFFFFFF;
+        if (countdown != s_last_countdown) {
+            fprintf(stderr, "[PRESENT-COUNTDOWN] Countdown at r4+0x3CF8 changed: was=%08X now=%08X (r4=%08X addr=%08X)\n",
+                    s_last_countdown, countdown, ctx.r4.u32, countdown_addr);
+            fflush(stderr);
+            KernelTraceHostOpF("sub_82598A20.PRESENT.COUNTDOWN r4=%08X addr=%08X was=%08X now=%08X",
+                               ctx.r4.u32, countdown_addr, s_last_countdown, countdown);
+            s_last_countdown = countdown;
+        }
     }
 
     // Forward to original present implementation

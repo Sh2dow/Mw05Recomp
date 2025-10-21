@@ -108,12 +108,61 @@ def main():
     print(f"[START] Starting game: {exe_path}")
     print(f"[START] Will run for {args.duration} seconds and auto-handle any messageboxes...")
 
-    # MINIMAL ENVIRONMENT - Only enable streaming bridge to see if sentinel writes happen
+    # FULL ENVIRONMENT - Use all environment variables from run_with_env.cmd
     env = os.environ.copy()
-    env["MW05_STREAM_BRIDGE"] = "1"
+    env["MW05_DEBUG_PROFILE"] = "1"
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
+    # env["MW05_BREAK_82813514"] = "0"
+    # env["MW05_FAKE_ALLOC_SYSBUF"] = "1"
+    # env["MW05_UNBLOCK_MAIN"] = "1"
+    # env["MW05_TRACE_KERNEL"] = "1"
+    # env["MW05_HOST_TRACE_IMPORTS"] = "1"
+    # env["MW05_HOST_TRACE_HOSTOPS"] = "1"
+    # env["MW05_TRACE_HEAP"] = "1"
+    # env["MW05_BREAK_SLEEP_LOOP"] = "1"
+    # env["MW05_BREAK_SLEEP_AFTER"] = "5"
+    # env["MW05_VBLANK_VDSWAP"] = "0"
+    # env["MW05_KICK_VIDEO"] = "0"
+    # env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
+    # env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
+    # env["MW05_FORCE_PRESENT"] = "0"
+    # env["MW05_FORCE_PRESENT_BG"] = "0"
+    # env["MW05_VDSWAP_NOTIFY"] = "0"
+    # env["MW05_FAST_BOOT"] = "0"
+    # env["MW05_FAST_RET"] = "0"
+    # env["MW05_FORCE_VD_INIT"] = "1"
+    # env["MW05_TRACE_INDIRECT"] = "0"
+    # env["MW05_TITLE_STATE_TRACE"] = "1"
+    # env["MW05_BREAK_WAIT_LOOP"] = "0"
+    # env["MW05_FORCE_VIDEO_THREAD"] = "0"
+    # env["MW05_FORCE_VIDEO_THREAD_TICK"] = "0"
+    # env["MW05_DEFAULT_VD_ISR"] = "0"
+    # env["MW05_REGISTER_DEFAULT_VD_ISR"] = "0"
+    # env["MW05_PULSE_VD_ON_SLEEP"] = "0"
+    # env["MW05_PRESENT_HEARTBEAT_MS"] = "0"
+    # env["MW05_STREAM_BRIDGE"] = "1"
+    # env["MW05_STREAM_FALLBACK_BOOT"] = "1"
+    # env["MW05_STREAM_ACK_NO_PATH"] = "0"
+    # env["MW05_LOOP_TRY_PM4_PRE"] = "0"
+    # env["MW05_LOOP_TRY_PM4_POST"] = "0"
+    # env["MW05_INNER_TRY_PM4"] = "0"
+    # env["MW05_FORCE_GFX_NOTIFY_CB"] = "1"
+    # env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0x40007180"
+    # env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
+    # env["MW05_SET_PRESENT_CB"] = "1"
+    # env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
+    # env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
+    # env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
+    # env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
+    # env["MW05_SCHED_R3_EA"] = "0x00260370"
+    # env["MW05_FPW_KICK_PM4"] = "1"
+    # env["MW05_FORCE_RENDER_THREADS"] = "1"
+    # env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"
+    # env["MW05_PULSE_VD_EVENT_ON_SLEEP"] = "1"
+    # env["MW05_PM4_APPLY_STATE"] = "1"
+    # env["MW05_FORCE_PRESENT_FLAG"] = "1"
 
-    print(f"[ENV] Running with MW05_STREAM_BRIDGE=1 only (minimal environment)")
+    print(f"[ENV] Running with FULL environment (all MW05_* variables set)")
 
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")

@@ -187,6 +187,24 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
         tid, localParams.function);
     fflush(stderr);
 
+    // DISABLED: Force-creation of worker threads causes NULL-CALL errors
+    // The callback parameter structure at 0x82A2B318 is not initialized yet when we force-create threads
+    // This causes worker threads to call NULL function pointers and trigger KeBugCheckEx
+    // Let the game create worker threads naturally instead
+    #if 0
+    if (localParams.function == 0x8262E9A8) {
+        fprintf(stderr, "[GUEST_THREAD] Main thread detected (entry=0x8262E9A8), force-creating worker threads...\n");
+        fflush(stderr);
+
+        // Forward declare the function from mw05_trace_threads.cpp
+        extern void Mw05ForceCreateMissingWorkerThreads();
+        Mw05ForceCreateMissingWorkerThreads();
+
+        fprintf(stderr, "[GUEST_THREAD] Worker threads created, continuing with main thread...\n");
+        fflush(stderr);
+    }
+    #endif
+
     GuestThread::Start(localParams);
 
     fprintf(stderr, "[GUEST_THREAD] Thread tid=%08X entry=%08X COMPLETED\n",

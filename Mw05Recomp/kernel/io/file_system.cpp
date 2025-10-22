@@ -866,12 +866,15 @@ void RegisterFileSystemHooks() {
     KernelTraceHostOp("HOST.FileSystem.RegisterXFileHooks.done");
 }
 
-// Use static constructor to register hooks early
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    static void __cdecl file_system_hooks_ctor();
-    __declspec(allocate(".CRT$XCU")) void (__cdecl*file_system_hooks_ctor_)(void) = file_system_hooks_ctor;
-    static void __cdecl file_system_hooks_ctor() { RegisterFileSystemHooks(); }
-#else
-    __attribute__((constructor)) static void file_system_hooks_ctor() { RegisterFileSystemHooks(); }
-#endif
+// DISABLED: Static constructor causes crash during global construction
+// because g_memory.base is nullptr when InsertFunction() is called.
+// RegisterFileSystemHooks() is now called manually in main() after memory is initialized.
+//
+// #if defined(_MSC_VER)
+// #  pragma section(".CRT$XCU",read)
+//     static void __cdecl file_system_hooks_ctor();
+//     __declspec(allocate(".CRT$XCU")) void (__cdecl*file_system_hooks_ctor_)(void) = file_system_hooks_ctor;
+//     static void __cdecl file_system_hooks_ctor() { RegisterFileSystemHooks(); }
+// #else
+//     __attribute__((constructor)) static void file_system_hooks_ctor() { RegisterFileSystemHooks(); }
+// #endif

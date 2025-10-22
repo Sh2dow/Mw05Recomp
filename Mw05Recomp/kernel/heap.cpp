@@ -53,8 +53,28 @@ void Heap::Init()
     }
 
     // User heap uses o1heap allocator
-    heapBase = g_memory.Translate(0x20000);
-    heapSize = RESERVED_BEGIN - 0x20000;
+    // CRITICAL FIX: Skip the first 1 MB to avoid low-address corruption
+    // o1heap stores its instance structure at the BEGINNING of the heap arena
+    // If we start at 0x20000 (128 KB), the instance is vulnerable to NULL pointer writes
+    // By starting at 0x100000 (1 MB), we move the instance to a safer address
+    const uint32_t HEAP_START = 0x100000;  // 1 MB (was 0x20000 = 128 KB)
+    heapBase = g_memory.Translate(HEAP_START);
+    heapSize = RESERVED_BEGIN - HEAP_START;
+
+    // CRITICAL: o1heap stores its instance structure at the BEGINNING of heapBase
+    // The instance structure is about 0x20000 bytes (128 KB) based on o1heap.c
+    // We CANNOT place canaries inside the heap arena because o1heap will overwrite them!
+    // Instead, we'll place canaries OUTSIDE the heap arena, in the reserved space before and after
+
+    // For now, DISABLE canaries because we don't have space outside the heap arena
+    // The heap arena spans from 0x20000 to 0x7FEA0000 (entire user address space)
+    // There's no safe place to put canaries without interfering with the heap
+    canaryBefore = nullptr;
+    canaryAfter = nullptr;
+
+    fprintf(stderr, "[HEAP-CANARY] Canaries DISABLED (no safe location outside heap arena)\n");
+    fflush(stderr);
+
     heap = o1heapInit(heapBase, heapSize);
 
     // Physical heap uses BUMP ALLOCATOR (no o1heap)
@@ -90,6 +110,22 @@ void Heap::Init()
             initialDiagnostics.capacity, initialDiagnostics.allocated);
     fflush(stderr);
 
+    // CRITICAL DEBUG: Calculate the address of the capacity field
+    // O1HeapInstance layout: bins[64] (512 bytes) + nonempty_bin_mask (8 bytes) + diagnostics.capacity (8 bytes)
+    // So capacity is at offset 520 from heap instance start
+    void* capacity_addr = (char*)heapBase + 520;
+    fprintf(stderr, "[HEAP-DEBUG] Capacity field is at address %p (heapBase=%p + 520)\n", capacity_addr, heapBase);
+    fprintf(stderr, "[HEAP-DEBUG] Current capacity value: 0x%016zX (%zu bytes)\n", initialDiagnostics.capacity, initialDiagnostics.capacity);
+    fprintf(stderr, "[HEAP-DEBUG] If you see writes to address %p, that's the corruption source!\n", capacity_addr);
+    fflush(stderr);
+
+    // Verify canaries are still intact after o1heapInit
+    if (!CheckCanaries("Init")) {
+        fprintf(stderr, "[HEAP-CANARY] ERROR: Canaries corrupted during o1heapInit!\n");
+        fflush(stderr);
+        abort();
+    }
+
     // Register shutdown handler to prevent heap operations during process exit
     std::atexit(HeapShutdownHandler);
 
@@ -103,20 +139,54 @@ void* Heap::Alloc(size_t size)
 
     size_t actual_size = std::max<size_t>(1, size);
 
-    // CRITICAL DEBUG: Check heap pointer BEFORE allocation
-    if (!heap) {
-        fprintf(stderr, "[HEAP-ALLOC-ERROR] heap pointer is NULL! size=%zu\n", actual_size);
-        fprintf(stderr, "[HEAP-ALLOC-ERROR] heapBase=%p heapSize=%zu\n", heapBase, heapSize);
+    // CRITICAL: Check canaries BEFORE every allocation to detect corruption early
+    // BUT skip logging during global construction to avoid fprintf() before C runtime is ready
+    if (!inGlobalConstruction && !ValidateHeapIntegrity("Alloc")) {
+        fprintf(stderr, "[HEAP-ALLOC-ERROR] Heap integrity check FAILED before allocation!\n");
+        fprintf(stderr, "[HEAP-ALLOC-ERROR] Requested size: %zu bytes\n", actual_size);
         fflush(stderr);
+        // Don't abort yet - try to continue and see if we can get more info
+    }
+
+    // CRITICAL DEBUG: Check heap pointer BEFORE allocation
+    // BUT skip logging during global construction to avoid fprintf() before C runtime is ready
+    if (!heap) {
+        if (!inGlobalConstruction) {
+            fprintf(stderr, "[HEAP-ALLOC-ERROR] heap pointer is NULL! size=%zu\n", actual_size);
+            fprintf(stderr, "[HEAP-ALLOC-ERROR] heapBase=%p heapSize=%zu\n", heapBase, heapSize);
+            fflush(stderr);
+        }
         return nullptr;
     }
 
-    void* ptr = o1heapAllocate(heap, actual_size);
+    void* ptr = nullptr;
+
+    // Wrap o1heapAllocate in SEH to catch any exceptions
+    __try {
+        ptr = o1heapAllocate(heap, actual_size);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        if (!inGlobalConstruction) {
+            DWORD exceptionCode = GetExceptionCode();
+            fprintf(stderr, "[HEAP-ALLOC-ERROR] SEH Exception during allocation - code=0x%08lX\n", exceptionCode);
+            fprintf(stderr, "[HEAP-ALLOC-ERROR] Requested size: %zu bytes\n", actual_size);
+            fflush(stderr);
+        }
+        return nullptr;
+    }
 
     // Diagnostic logging for allocation failures (ALWAYS log, not just for large allocations)
-    if (!ptr) {
+    // BUT skip logging during global construction to avoid fprintf() before C runtime is ready
+    if (!ptr && !inGlobalConstruction) {
         // Get heap diagnostics
-        O1HeapDiagnostics diag = o1heapGetDiagnostics(heap);
+        O1HeapDiagnostics diag;
+        __try {
+            diag = o1heapGetDiagnostics(heap);
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            fprintf(stderr, "[HEAP-ALLOC-FAIL] Cannot get diagnostics - heap corrupted!\n");
+            fflush(stderr);
+            return nullptr;
+        }
+
         fprintf(stderr, "[HEAP-ALLOC-FAIL] Failed to allocate %zu bytes from user heap\n", actual_size);
         fprintf(stderr, "[HEAP-DIAG] heap=%p heapBase=%p heapSize=%zu\n", heap, heapBase, heapSize);
         fprintf(stderr, "[HEAP-DIAG] capacity=%zu allocated=%zu peak_allocated=%zu oom_count=%zu\n",
@@ -163,7 +233,15 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
     if (endAddr > (size_t)physicalBase + physicalSize) {
         fprintf(stderr, "[AllocPhysical] FAILED: Out of physical memory! requested=%zu available=%zu\n",
                 size, (size_t)physicalBase + physicalSize - nextPhysicalAddr);
+        fprintf(stderr, "[AllocPhysical] FAILED: physicalBase=%p physicalSize=%zu nextAddr=%p\n",
+                physicalBase, physicalSize, (void*)nextPhysicalAddr);
         fflush(stderr);
+
+        // CRITICAL: Check if this allocation failure might cause heap corruption
+        // If the game tries to use the NULL pointer, it might write to low memory
+        fprintf(stderr, "[AllocPhysical] WARNING: Allocation failure might cause corruption!\n");
+        fflush(stderr);
+
         return nullptr;
     }
 
@@ -171,12 +249,27 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
     nextPhysicalAddr = endAddr;
     physicalAllocated = nextPhysicalAddr - (size_t)physicalBase;
 
-    fprintf(stderr, "[AllocPhysical] size=%zu align=%zu aligned=%p next=%p\n",
-            size, alignment, (void*)aligned, (void*)nextPhysicalAddr);
-    fprintf(stderr, "[AllocPhysical] Physical heap usage: %zu / %zu bytes (%.2f%%)\n",
-            physicalAllocated, physicalSize,
-            100.0 * physicalAllocated / physicalSize);
-    fflush(stderr);
+    // Log large allocations (> 1 MB) with more detail
+    if (size > 1024 * 1024) {
+        fprintf(stderr, "[AllocPhysical] LARGE ALLOCATION: size=%zu (%.2f MB) align=%zu\n",
+                size, size / (1024.0 * 1024.0), alignment);
+        fprintf(stderr, "[AllocPhysical]   aligned=%p next=%p\n",
+                (void*)aligned, (void*)nextPhysicalAddr);
+        fprintf(stderr, "[AllocPhysical]   Physical heap usage: %zu / %zu bytes (%.2f%%)\n",
+                physicalAllocated, physicalSize,
+                100.0 * physicalAllocated / physicalSize);
+        fflush(stderr);
+
+        // CRITICAL: After large physical allocations, check if user heap is still intact
+        if (!CheckCanaries("AllocPhysical-after-large")) {
+            fprintf(stderr, "[AllocPhysical] CORRUPTION: Canaries corrupted after large physical allocation!\n");
+            fprintf(stderr, "[AllocPhysical]   Allocated: %p - %p (%zu bytes)\n",
+                    (void*)aligned, (void*)endAddr, size);
+            fprintf(stderr, "[AllocPhysical]   User heap: %p - %p\n",
+                    heapBase, (uint8_t*)heapBase + heapSize);
+            fflush(stderr);
+        }
+    }
 
     return (void*)aligned;
 }
@@ -271,7 +364,29 @@ size_t Heap::Size(void* ptr)
 
 O1HeapDiagnostics Heap::GetDiagnostics()
 {
+    // CRITICAL FIX: Check if heap is initialized and not shutting down
+    if (!mutex || !heap || shutdownInProgress.load()) {
+        // Return zero diagnostics if heap is not ready
+        O1HeapDiagnostics zero{};
+        zero.capacity = 0;
+        zero.allocated = 0;
+        zero.peak_allocated = 0;
+        zero.oom_count = 0;
+        return zero;
+    }
+
     std::lock_guard lock(*mutex);
+
+    // Double-check after acquiring lock
+    if (!heap || shutdownInProgress.load()) {
+        O1HeapDiagnostics zero{};
+        zero.capacity = 0;
+        zero.allocated = 0;
+        zero.peak_allocated = 0;
+        zero.oom_count = 0;
+        return zero;
+    }
+
     return o1heapGetDiagnostics(heap);
 }
 
@@ -586,6 +701,120 @@ PPC_FUNC(sub_82441C70)
     }
     // Return success
     ctx.r3.u32 = 0;
+}
+
+// Check if memory guards (canaries) are intact
+bool Heap::CheckCanaries(const char* caller)
+{
+    canaryCheckCount++;
+
+    if (!canaryBefore || !canaryAfter) {
+        // Canaries not initialized yet
+        return true;
+    }
+
+    bool beforeOk = (*canaryBefore == CANARY_MAGIC);
+    bool afterOk = (*canaryAfter == CANARY_MAGIC);
+
+    if (!beforeOk || !afterOk) {
+        fprintf(stderr, "[HEAP-CANARY] CORRUPTION DETECTED in %s (check #%zu)!\n", caller, canaryCheckCount);
+        fprintf(stderr, "[HEAP-CANARY]   canaryBefore: expected=0x%016llX actual=0x%016llX %s\n",
+                (unsigned long long)CANARY_MAGIC, (unsigned long long)*canaryBefore,
+                beforeOk ? "OK" : "CORRUPTED!");
+        fprintf(stderr, "[HEAP-CANARY]   canaryAfter:  expected=0x%016llX actual=0x%016llX %s\n",
+                (unsigned long long)CANARY_MAGIC, (unsigned long long)*canaryAfter,
+                afterOk ? "OK" : "CORRUPTED!");
+        fprintf(stderr, "[HEAP-CANARY]   heapBase=%p heapSize=%zu\n", heapBase, heapSize);
+        fprintf(stderr, "[HEAP-CANARY]   canaryBefore addr=%p canaryAfter addr=%p\n",
+                (void*)canaryBefore, (void*)canaryAfter);
+        fflush(stderr);
+        return false;
+    }
+
+    // Log every 100 checks to show canaries are being monitored
+    if (canaryCheckCount % 100 == 0) {
+        fprintf(stderr, "[HEAP-CANARY] Check #%zu: canaries intact in %s\n", canaryCheckCount, caller);
+        fflush(stderr);
+    }
+
+    return true;
+}
+
+// Validate heap integrity (checks canaries + diagnostics)
+bool Heap::ValidateHeapIntegrity(const char* caller)
+{
+    // Check canaries first
+    if (!CheckCanaries(caller)) {
+        return false;
+    }
+
+    // Check if heap pointer is valid
+    if (!heap) {
+        fprintf(stderr, "[HEAP-VALIDATE] ERROR in %s: heap pointer is NULL!\n", caller);
+        fflush(stderr);
+        return false;
+    }
+
+    // Check if shutting down
+    if (shutdownInProgress.load(std::memory_order_relaxed)) {
+        // During shutdown, heap might be in inconsistent state - skip validation
+        return true;
+    }
+
+    // Get current diagnostics (this might trigger assertion if heap is corrupted)
+    O1HeapDiagnostics current;
+    __try {
+        current = o1heapGetDiagnostics(heap);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        DWORD exceptionCode = GetExceptionCode();
+        fprintf(stderr, "[HEAP-VALIDATE] SEH Exception in %s - code=0x%08lX\n", caller, exceptionCode);
+        fprintf(stderr, "[HEAP-VALIDATE] Exception occurred while getting diagnostics\n");
+        fflush(stderr);
+        return false;
+    }
+
+    // Check if capacity has changed (indicates corruption)
+    if (current.capacity != initialDiagnostics.capacity) {
+        // CRITICAL DEBUG: Read the capacity field directly from memory to see the corrupted value
+        void* capacity_addr = (char*)heapBase + 520;  // Capacity is at offset 520 in O1HeapInstance
+        uint64_t corrupted_value = *(uint64_t*)capacity_addr;
+        uint32_t guest_addr = g_memory.MapVirtual(capacity_addr);
+
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED] CORRUPTION in %s: capacity changed!\n", caller);
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   initial capacity: %zu (%.2f MB)\n",
+                initialDiagnostics.capacity, initialDiagnostics.capacity / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   current capacity: %zu (%.2f MB)\n",
+                current.capacity, current.capacity / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   heap=%p heapBase=%p heapSize=%zu\n",
+                heap, heapBase, heapSize);
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   Capacity field address: host=%p guest=0x%08X\n",
+                capacity_addr, guest_addr);
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   Corrupted value written to capacity field: 0x%016llX\n", corrupted_value);
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   This value was written by some code - need to find the source!\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   ANALYSIS: 0xEE is Microsoft's debug heap pattern for FREED MEMORY\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   This means something is writing to memory that has been freed!\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   Possible causes:\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]     1. Use-after-free: Code has pointer to freed memory and writes to it\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]     2. Buffer overflow: Code writes past end of allocation\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]     3. Wild pointer: Code calculates wrong address and writes to it\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   NOTE: This address is in VirtualAlloc memory, NOT C runtime heap!\n");
+        fprintf(stderr, "[HEAP-CORRUPTION-DETECTED]   The 0xEE pattern should NOT appear here unless something is explicitly writing it.\n");
+        fflush(stderr);
+        return false;
+    }
+
+    // Check if capacity is within reasonable bounds
+    if (current.capacity == 0 || current.capacity > heapSize) {
+        fprintf(stderr, "[HEAP-VALIDATE] CORRUPTION in %s: capacity out of bounds!\n", caller);
+        fprintf(stderr, "[HEAP-VALIDATE]   capacity: %zu (%.2f MB)\n",
+                current.capacity, current.capacity / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-VALIDATE]   heapSize: %zu (%.2f MB)\n",
+                heapSize, heapSize / (1024.0 * 1024.0));
+        fflush(stderr);
+        return false;
+    }
+
+    return true;
 }
 
 GUEST_FUNCTION_HOOK(__imp__sub_82441C70, sub_82441C70);

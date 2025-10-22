@@ -100,8 +100,24 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
 
 GuestThreadContext::~GuestThreadContext()
 {
-    // CRITICAL FIX: Use g_userHeap.Free() instead of free (matches g_userHeap.Alloc() in constructor)
-    g_userHeap.Free(thread);
+    // CRITICAL FIX: DO NOT FREE thread context memory!
+    // Freeing causes use-after-free bugs because o1heap immediately reuses the memory
+    // for the next thread allocation, but the previous thread may still be accessing it.
+    // This causes heap corruption when multiple threads are created/destroyed rapidly.
+    //
+    // Evidence from traces:
+    // - Thread #8 allocates at 0x67FF20, completes, and frees memory
+    // - Thread #9 immediately reuses 0x67FF20 (same address!)
+    // - Race condition: thread #8 cleanup still accessing memory while thread #9 uses it
+    // - Result: o1heap instance structure gets corrupted
+    //
+    // Solution: LEAK thread contexts (don't free them)
+    // - Thread contexts are only 265 KB each
+    // - Games don't create thousands of threads (typically 10-20)
+    // - Total leak: ~5 MB for 20 threads (acceptable)
+    // - Matches Xbox 360 behavior (thread memory never freed during gameplay)
+    //
+    // g_userHeap.Free(thread);  // DISABLED - causes heap corruption
 }
 
 #ifdef USE_PTHREAD

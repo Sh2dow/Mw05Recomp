@@ -148,8 +148,11 @@ static inline void RegisterSchedulerContext(uint32_t baseEA) {
     if (count < 8) {
         g_schedulerContexts[count].store(baseEA, std::memory_order_relaxed);
         g_schedulerContextCount.fetch_add(1, std::memory_order_release);
-        if (TitleStateTraceOn()) {
-            KernelTraceHostOpF("HOST.RegisterSchedulerContext base=%08X count=%d", baseEA, count + 1);
+        // DEBUG: Always log scheduler context registration (first 10 times)
+        static std::atomic<int> s_reg_log_count{0};
+        if (s_reg_log_count.fetch_add(1, std::memory_order_relaxed) < 10) {
+            fprintf(stderr, "[SCHED-REG] RegisterSchedulerContext base=%08X count=%d\n", baseEA, count + 1);
+            fflush(stderr);
         }
     }
 }
@@ -161,8 +164,39 @@ static inline void ProcessMW05Queue(uint32_t baseEA) {
     uint32_t qhead = ReadBE32(baseEA + 0x10);
     uint32_t qtail = ReadBE32(baseEA + 0x14);
 
+    // DEBUG: Check VBlank callback function pointer
+    // According to decompiled sub_825979A8, the VBlank callback is at a2[3899]
+    // where a2 is the context pointer (baseEA)
+    // Offset: 3899 * 4 = 15596 = 0x3CEC
+    uint32_t vblank_cb_ptr = ReadBE32(baseEA + 0x3CEC);
+
+    static std::atomic<int> s_queue_log_count{0};
+    static std::atomic<uint32_t> s_last_vblank_cb{0};
+    int log_count = s_queue_log_count.fetch_add(1, std::memory_order_relaxed);
+    uint32_t last_cb = s_last_vblank_cb.load(std::memory_order_relaxed);
+
+    if (log_count < 20 || vblank_cb_ptr != last_cb) {
+        fprintf(stderr, "[QUEUE-DEBUG] ProcessMW05Queue #%d: base=%08X qhead=%08X qtail=%08X vblank_cb=%08X\n",
+                log_count, baseEA, qhead, qtail, vblank_cb_ptr);
+
+        if (vblank_cb_ptr == 0) {
+            fprintf(stderr, "[QUEUE-DEBUG]   VBlank callback NOT SET (a2[3899]=0) - game won't process queue!\n");
+        } else {
+            fprintf(stderr, "[QUEUE-DEBUG]   VBlank callback SET to 0x%08X\n", vblank_cb_ptr);
+        }
+
+        s_last_vblank_cb.store(vblank_cb_ptr, std::memory_order_relaxed);
+        fflush(stderr);
+    }
+
     // If queue is empty, nothing to do
-    if (qtail == 0 || qhead == qtail) return;
+    if (qtail == 0 || qhead == qtail) {
+        if (log_count < 20) {
+            fprintf(stderr, "[QUEUE-DEBUG] Queue empty or not initialized (qtail=%08X qhead=%08X)\n", qtail, qhead);
+            fflush(stderr);
+        }
+        return;
+    }
 
     // CRITICAL FIX: If qhead is 0, MW05 hasn't initialized it yet.
     // The queue actually starts at the syscmd buffer (typically 0x00140400).
@@ -702,19 +736,70 @@ PPC_FUNC(sub_825979A8) {
         DumpSchedState("825979A8", ctx.r4.u32);
     }
 
-    // Optional: host-side workaround to set present callback pointer if the game left it null
-    // CHANGED DEFAULT TO TRUE - this is required for draws to appear!
-    static const bool s_set_present_cb = [](){ if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0'); return true; }();
-    if (s_set_present_cb) {
-        // Context (r4) + 0x3CEC holds the function pointer the ISR calls to present/do work
-        const uint32_t ctx_ea = ctx.r4.u32;
-        const uint32_t present_fp_ea = ctx_ea ? (ctx_ea + 0x3CECu) : 0u;
-        if (present_fp_ea && ReadBE32(present_fp_ea) == 0u) {
-            // Known-good present function address from investigation: sub_82598A20
-            const uint32_t kPresentFuncEA = 0x82598A20u;
-            WriteBE32(present_fp_ea, kPresentFuncEA);
-            if (s_trace_gfx_callback) {
-                KernelTraceHostOpF("HOST.sub_825979A8.set_present_cb ptr@%08X=%08X", present_fp_ea, kPresentFuncEA);
+    // Track the present function pointer at a2[3899] (offset 0x3CEC)
+    // This pointer is checked by the graphics callback to decide whether to call the present function
+    // If it's NULL, the callback skips the present function call
+    //
+    // CRITICAL FIX: The memory system stores values in LITTLE-ENDIAN format!
+    // PPC_STORE_U32 byte-swaps before writing, so the bytes in memory are little-endian.
+    // We must read the value directly WITHOUT byte-swapping to get the correct value!
+    static uint32_t s_last_present_fp = 0xFFFFFFFF;
+    static uint32_t s_present_fp_check_count = 0;
+    const uint32_t ctx_ea = ctx.r4.u32;
+    const uint32_t present_fp_ea = ctx_ea ? (ctx_ea + 0x3CECu) : 0u;
+    const uint32_t source = ctx.r3.u32;
+    if (present_fp_ea && source == 0) {  // Only check on source=0 (VBlank)
+        // Read the function pointer directly (memory is in little-endian format)
+        uint32_t present_fp = 0;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(present_fp_ea))) {
+            present_fp = *p;  // Read little-endian value directly (no byte-swap!)
+        }
+
+        // Log the function pointer value on every source=0 call (first 20 calls)
+        if (s_present_fp_check_count < 20) {
+            fprintf(stderr, "[GFX-CB-FP-CHECK] source=0 call #%u: present_fp=%08X (ctx=%08X addr=%08X)\n",
+                    s_present_fp_check_count, present_fp, ctx_ea, present_fp_ea);
+            fflush(stderr);
+        }
+        s_present_fp_check_count++;
+
+        // Log when the function pointer changes
+        if (present_fp != s_last_present_fp) {
+            fprintf(stderr, "[GFX-CB-FP] Present function pointer at ctx+0x3CEC changed: was=%08X now=%08X (ctx=%08X addr=%08X)\n",
+                    s_last_present_fp, present_fp, ctx_ea, present_fp_ea);
+            fflush(stderr);
+            s_last_present_fp = present_fp;
+        }
+
+        // CRITICAL FIX: The game sets the present function pointer, but we need to check if it's valid
+        // The present function should be at 0x82598A20 (from investigation)
+        // If the game set a different address, log it and optionally override it
+        static const bool s_set_present_cb = [](){ if (const char* v = std::getenv("MW05_SET_PRESENT_CB")) return !(v[0]=='0' && v[1]=='\0'); return true; }();
+        const uint32_t kPresentFuncEA = 0x82598A20u;  // Known-good present function address
+
+        if (s_set_present_cb) {
+            // CRITICAL FIX: The game writes the present function pointer in the WRONG format!
+            // The game writes 0x82598A20 to memory (little-endian bytes: 20 8A 59 82),
+            // but the GUEST callback reads it with PPC_LOAD_U32 (which byte-swaps),
+            // so it gets __builtin_bswap32(0x82598A20) = 0x208A5982 (WRONG!)
+            //
+            // We need to write 0x208A5982 to memory (little-endian bytes: 82 59 8A 20),
+            // so that PPC_LOAD_U32 reads: __builtin_bswap32(0x208A5982) = 0x82598A20 (CORRECT!)
+            //
+            // So we ALWAYS overwrite the value with the byte-swapped version.
+            if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(present_fp_ea))) {
+                *p = __builtin_bswap32(kPresentFuncEA);  // Write byte-swapped value
+            }
+
+            if (present_fp == 0u) {
+                fprintf(stderr, "[GFX-CB-FP] Forced present function pointer (was NULL): ptr@%08X=%08X (stored as %08X)\n",
+                        present_fp_ea, kPresentFuncEA, __builtin_bswap32(kPresentFuncEA));
+                fflush(stderr);
+            } else if (present_fp != __builtin_bswap32(kPresentFuncEA)) {
+                // Game set a different value - log it and override it
+                fprintf(stderr, "[GFX-CB-FP] Game set present function pointer to %08X (expected %08X) - OVERRIDING to %08X\n",
+                        present_fp, __builtin_bswap32(kPresentFuncEA), __builtin_bswap32(kPresentFuncEA));
+                fflush(stderr);
             }
         }
     }
@@ -768,6 +853,30 @@ PPC_FUNC(sub_825979A8) {
 
     SetPPCContext(ctx);
     SetPPCContext(ctx);
+
+    // CRITICAL DEBUG: Log what the GUEST callback will see when it reads the flag and present function pointer
+    // This helps us understand why the callback isn't calling the present function
+    static uint32_t s_guest_debug_count = 0;
+    if (source == 0 && s_guest_debug_count < 20) {
+        // Read the flag at 0x7FC86544 (same way the GUEST code does with PPC_LOAD_U32)
+        const uint32_t flag_ea = 0x7FC86544;
+        uint32_t flag_value_guest = 0;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(flag_ea))) {
+            flag_value_guest = __builtin_bswap32(*p);  // PPC_LOAD_U32 byte-swaps
+        }
+
+        // Read the present function pointer at ctx+15596 (same way the GUEST code does with PPC_LOAD_U32)
+        const uint32_t present_fp_ea_guest = ctx_ea + 15596;
+        uint32_t present_fp_guest = 0;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(present_fp_ea_guest))) {
+            present_fp_guest = __builtin_bswap32(*p);  // PPC_LOAD_U32 byte-swaps
+        }
+
+        fprintf(stderr, "[GFX-CB-GUEST] VBlank call #%u: source=%u ctx=%08X flag=%08X (bit0=%u) present_fp=%08X\n",
+                s_guest_debug_count, source, ctx_ea, flag_value_guest, (flag_value_guest & 1), present_fp_guest);
+        fflush(stderr);
+        s_guest_debug_count++;
+    }
 
     __imp__sub_825979A8(ctx, base);
 }
@@ -1232,9 +1341,15 @@ PPC_FUNC(sub_82598A20) {
     // This flag is checked in the VBlank callback (sub_825979A8) at line 55:
     // else if ( !a1 && (MEMORY[0x7FC86544] & 1) != 0 )
     // If bit 0 is cleared, the VBlank callback won't call the rendering function
+    //
+    // CRITICAL FIX: Read the flag directly WITHOUT byte-swapping!
+    // The memory system stores values in little-endian format (PPC_STORE_U32 byte-swaps before writing).
     static uint32_t s_last_flag_value = 0xFFFFFFFF;
     if (looks_ptr(0x7FC86544)) {
-        uint32_t flag_value = ReadBE32(0x7FC86544);
+        uint32_t flag_value = 0;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(0x7FC86544))) {
+            flag_value = *p;  // Read little-endian value directly (no byte-swap!)
+        }
         if (flag_value != s_last_flag_value) {
             fprintf(stderr, "[PRESENT-FLAG] Global flag at 0x7FC86544 changed: was=%08X now=%08X (bit0=%d)\n",
                     s_last_flag_value, flag_value, (flag_value & 1));

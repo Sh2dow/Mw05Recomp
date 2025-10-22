@@ -199,6 +199,8 @@ static void RegisterMw05FunctionHooks() {
     __declspec(allocate(".CRT$XCU")) void (__cdecl*mw05_function_hooks_ctor_)(void) = mw05_function_hooks_ctor;
     static void __cdecl mw05_function_hooks_ctor() { RegisterMw05FunctionHooks(); }
 #else
-    __attribute__((constructor)) static void mw05_function_hooks_ctor() { RegisterMw05FunctionHooks(); }
+    // DISABLED: Static constructor causes crash during global construction
+    // RegisterMw05FunctionHooks() is now called manually in main() after memory is initialized
+    // __attribute__((constructor)) static void mw05_function_hooks_ctor() { RegisterMw05FunctionHooks(); }
 #endif
 

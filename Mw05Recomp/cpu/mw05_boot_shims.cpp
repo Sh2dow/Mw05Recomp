@@ -30,6 +30,7 @@ extern "C"
     void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
+    void __imp__sub_8215BC78(PPCContext& ctx, uint8_t* base);  // Memory allocator free function
 
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
@@ -96,26 +97,43 @@ inline void ClearSchedulerBlock(uint8_t* base, uint32_t blockEA) {
 }
 }
 
+// CRITICAL FIX: std::getenv() is NOT thread-safe!
+// Multiple worker threads calling getenv() simultaneously causes crashes.
+// Cache environment variable values at startup (single-threaded).
+namespace {
+    struct EnvVarCache {
+        bool fastBoot = false;
+        bool breakLoop82813514 = false;
+        bool breakCRTInit = false;
+
+        EnvVarCache() {
+            // Initialize in constructor (called once at startup, single-threaded)
+            if(const char* v = std::getenv("MW05_FAST_BOOT")) {
+                fastBoot = !(v[0] == '0' && v[1] == '\0');
+            }
+            if(const char* v = std::getenv("MW05_BREAK_82813514")) {
+                breakLoop82813514 = !(v[0] == '0' && v[1] == '\0');
+            }
+            if(const char* v = std::getenv("MW05_BREAK_CRT_INIT")) {
+                breakCRTInit = !(v[0] == '0' && v[1] == '\0');
+            }
+        }
+    };
+
+    // Global instance - initialized once at startup before any threads are created
+    static const EnvVarCache g_envCache;
+}
+
 static inline bool FastBootEnabled() {
-    if(const char* v = std::getenv("MW05_FAST_BOOT")) {
-        // Enable unless explicitly "0"
-        return !(v[0] == '0' && v[1] == '\0');
-    }
-    return false;
+    return g_envCache.fastBoot;
 }
 
 static inline bool BreakLoop82813514Enabled() {
-    if(const char* v = std::getenv("MW05_BREAK_82813514")) {
-        return !(v[0] == '0' && v[1] == '\0');
-    }
-    return false;
+    return g_envCache.breakLoop82813514;
 }
 
 static inline bool BreakCRTInitLoopEnabled() {
-    if(const char* v = std::getenv("MW05_BREAK_CRT_INIT")) {
-        return !(v[0] == '0' && v[1] == '\0');
-    }
-    return false;
+    return g_envCache.breakCRTInit;
 }
 
 static inline bool Break8262DD80Enabled() {
@@ -524,3 +542,47 @@ PPC_FUNC(sub_828134E0)
 // It saves/restores qword_828F1F98 to prevent corruption
 // NOTE: sub_82630378 wrapper is also in mw05_trace_threads.cpp - wait function wrapper
 // NOTE: sub_82598A20 wrapper is in mw05_trace_shims.cpp - rendering function that calls VdSwap
+
+// CRITICAL FIX: Wrapper for sub_8215BC78 (memory allocator free function)
+// This function fills freed memory with 0xEE pattern, but it has a bug where it tries to
+// free NULL pointers, causing it to write to address 0x10 (NULL + 16), which corrupts
+// the o1heap capacity field at 0x100208.
+//
+// Root cause: The game's memory allocator is being called with r31=NULL (freed block pointer),
+// and when it calculates the fill address as r31+16, it results in 0x10 instead of a valid address.
+//
+// Solution: Add NULL check before calling the original function. If r31 is NULL or points to
+// an invalid address range, skip the free operation to prevent heap corruption.
+//
+// Evidence from logs:
+//   [HEAP-CAPACITY-WRITE]   ea=0x00100208 val=0xEEEEEEEE lr=0x8215BDC4
+//   [HEAP-CAPACITY-WRITE]   r3=0x00000010 r4=0xEEEEEEEE r5=0x158FFFF0
+//   [HEAP-CAPACITY-WRITE]   r31=0x00000000 r30=0x15900000 r29=0x829159E0
+//
+// The function signature is: sub_8215BC78(r3=allocator_ptr, r4=freed_block_ptr, r5=size)
+// where r4 (freed_block_ptr) is copied to r31 at function entry.
+//
+PPC_FUNC(sub_8215BC78) {
+    // Check if the freed block pointer (r4) is NULL or invalid
+    uint32_t freed_block_ptr = ctx.r4.u32;
+
+    // Valid heap addresses should be in range [0x100000, 0x7FEA0000] (user heap)
+    // or [0xA0000000, 0x100000000] (physical heap)
+    bool is_valid_user_heap = (freed_block_ptr >= 0x100000 && freed_block_ptr < 0x7FEA0000);
+    bool is_valid_phys_heap = (freed_block_ptr >= 0xA0000000);
+
+    if (!is_valid_user_heap && !is_valid_phys_heap) {
+        // Invalid pointer - skip the free operation to prevent heap corruption
+        fprintf(stderr, "[HEAP-FREE-SKIP] Skipping free of invalid pointer: r4=0x%08X (NULL or out of range)\n", freed_block_ptr);
+        fprintf(stderr, "[HEAP-FREE-SKIP]   r3=0x%08X r5=0x%08X lr=0x%08X\n",
+                ctx.r3.u32, ctx.r5.u32, ctx.lr);
+        fprintf(stderr, "[HEAP-FREE-SKIP]   This prevents corruption of o1heap capacity field at 0x100208\n");
+        fflush(stderr);
+
+        // Return without calling the original function
+        return;
+    }
+
+    // Valid pointer - call the original function
+    __imp__sub_8215BC78(ctx, base);
+}

@@ -412,7 +412,7 @@ T GuestToHostFunction(const TFunction& func, TArgs&&... argv)
             } else {
                 // CRITICAL DEBUG: Check function table entry directly
                 uint64_t code_offset = uint64_t(uint32_t(func) - uint32_t(PPC_CODE_BASE));
-                uint64_t table_offset = PPC_IMAGE_SIZE + (code_offset * sizeof(PPCFunc*));
+                uint64_t table_offset = PPC_MEMORY_SIZE + (code_offset * sizeof(PPCFunc*));
                 PPCFunc** funcPtrAddr = reinterpret_cast<PPCFunc**>(g_memory.base + table_offset);
                 PPCFunc* funcPtr = *funcPtrAddr;
 

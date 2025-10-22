@@ -5,13 +5,21 @@
 Memory::Memory()
 {
 #ifdef _WIN32
-    base = (uint8_t*)VirtualAlloc((void*)0x100000000ull, PPC_MEMORY_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // CRITICAL FIX: Allocate extra space for function pointer table!
+    // The function table is stored AFTER the guest memory at base + PPC_MEMORY_SIZE.
+    // Function table size: PPC_CODE_SIZE * sizeof(PPCFunc*) = 16 MB * 8 = 128 MB
+    // Total allocation: 4 GB (guest memory) + 128 MB (function table) = 4.125 GB
+    const uint64_t function_table_size = PPC_CODE_SIZE * sizeof(PPCFunc*);
+    const uint64_t total_allocation_size = PPC_MEMORY_SIZE + function_table_size;
+
+    base = (uint8_t*)VirtualAlloc((void*)0x100000000ull, total_allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
     if (base == nullptr)
-        base = (uint8_t*)VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        base = (uint8_t*)VirtualAlloc(nullptr, total_allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
     if (base == nullptr) {
-        fprintf(stderr, "[MEMORY-INIT] ERROR: VirtualAlloc FAILED! Cannot allocate %llu bytes\n", PPC_MEMORY_SIZE);
+        fprintf(stderr, "[MEMORY-INIT] ERROR: VirtualAlloc FAILED! Cannot allocate %llu bytes (guest: %llu + function table: %llu)\n",
+                total_allocation_size, PPC_MEMORY_SIZE, function_table_size);
         fflush(stderr);
         return;
     }
@@ -19,13 +27,15 @@ Memory::Memory()
     // Write to a log file since stderr might not be set up yet
     FILE* log = fopen("memory_init.log", "w");
     if (log) {
-        fprintf(log, "[MEMORY-INIT] VirtualAlloc succeeded: base=%p size=0x%llX (%.2f GB)\n",
-                base, PPC_MEMORY_SIZE, PPC_MEMORY_SIZE / (1024.0 * 1024.0 * 1024.0));
+        fprintf(log, "[MEMORY-INIT] VirtualAlloc succeeded: base=%p total_size=0x%llX (%.2f GB) [guest: %.2f GB + function table: %.2f MB]\n",
+                base, total_allocation_size, total_allocation_size / (1024.0 * 1024.0 * 1024.0),
+                PPC_MEMORY_SIZE / (1024.0 * 1024.0 * 1024.0), function_table_size / (1024.0 * 1024.0));
         fflush(log);
     }
 
-    fprintf(stderr, "[MEMORY-INIT] VirtualAlloc succeeded: base=%p size=0x%llX (%.2f GB)\n",
-            base, PPC_MEMORY_SIZE, PPC_MEMORY_SIZE / (1024.0 * 1024.0 * 1024.0));
+    fprintf(stderr, "[MEMORY-INIT] VirtualAlloc succeeded: base=%p total_size=0x%llX (%.2f GB) [guest: %.2f GB + function table: %.2f MB]\n",
+            base, total_allocation_size, total_allocation_size / (1024.0 * 1024.0 * 1024.0),
+            PPC_MEMORY_SIZE / (1024.0 * 1024.0 * 1024.0), function_table_size / (1024.0 * 1024.0));
     fflush(stderr);
 
     // CRITICAL CHECK: Verify that VirtualAlloc actually zeroed the memory
@@ -133,6 +143,10 @@ Memory::Memory()
     }
 
     fprintf(stderr, "[FUNC-TABLE-INIT] Populated function table: %zu total, %zu null\n", total_funcs, null_funcs);
+    fflush(stderr);
+
+    fprintf(stderr, "[MEMORY-INIT] Memory::Memory() constructor COMPLETED successfully!\n");
+    fprintf(stderr, "[MEMORY-INIT] Returning from constructor...\n");
     fflush(stderr);
 }
 

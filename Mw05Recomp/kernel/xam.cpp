@@ -12,6 +12,7 @@
 #include <os/logger.h>
 
 #include <cstdlib>
+#include <chrono>
 
 // Forward decl from kernel/imports.cpp
 extern "C" bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait);
@@ -178,6 +179,14 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
         const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
         XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 0);  // param=0 (user index 0)
         KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
+    }
+
+    // MW05 FIX: Send profile-related notifications to unblock game initialization
+    // Most Wanted may be waiting for profile/storage notifications before loading resources
+    if (qwAreas & (1ull << 2)) {  // If listening to area 2 (storage notifications)
+        const uint32_t XN_SYS_STORAGEDEVICESCHANGED = 0x14;  // area=0, message=20
+        XamNotifyEnqueueEvent(XN_SYS_STORAGEDEVICESCHANGED, 0);
+        KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)");
     }
 
     const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
@@ -578,6 +587,25 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
     if (hid::IsInputAllowed())
         hid::GetState(userIndex, state);
 
+    // AUTO-PRESS START BUTTON: Simulate START button press after 5 seconds to get past title screen
+    // This allows the game to progress from the title screen to the main menu/gameplay
+    static auto s_startTime = std::chrono::steady_clock::now();
+    static bool s_autoStartPressed = false;
+    static bool s_autoStartLoggedOnce = false;
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - s_startTime).count();
+
+    // Press START button between 5-10 seconds, then release
+    bool autoStart = (elapsed >= 5 && elapsed < 10);
+    if (autoStart && !s_autoStartLoggedOnce) {
+        s_autoStartLoggedOnce = true;
+        KernelTraceHostOpF("HOST.XamInputGetState.auto_start_press elapsed=%lld", (long long)elapsed);
+    }
+    if (autoStart) {
+        s_autoStartPressed = true;
+    }
+
     auto keyboardState = SDL_GetKeyboardState(NULL);
 
     if (GameWindow::s_isFocused && !keyboardState[SDL_SCANCODE_LALT])
@@ -614,7 +642,7 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
         if (keyboardState[Config::Key_DPadRight])
             state->Gamepad.wButtons |= XAMINPUT_GAMEPAD_DPAD_RIGHT;
 
-        if (keyboardState[Config::Key_Start])
+        if (keyboardState[Config::Key_Start] || s_autoStartPressed)
             state->Gamepad.wButtons |= XAMINPUT_GAMEPAD_START;
         if (keyboardState[Config::Key_Back])
             state->Gamepad.wButtons |= XAMINPUT_GAMEPAD_BACK;

@@ -26,7 +26,7 @@ PPC_FUNC(sub_82442080)
 }
 
 PPC_FUNC_IMPL(__imp__sub_824411E0);
-PPC_FUNC(sub_824411E0) 
+PPC_FUNC(sub_824411E0)
 {
     fprintf(stderr, "[INIT-TRACE] sub_824411E0 ENTER\n"); fflush(stderr);
     SetPPCContext(ctx);
@@ -292,14 +292,18 @@ void Mw05ForceCreateMissingWorkerThreads() {
     static std::atomic<bool> s_created{false};
     static std::atomic<int> s_check_count{0};
 
-    // Allow multiple checks (every 60 ticks = 1 second at 60 Hz)
+    // Allow multiple checks
+    // - First 10 seconds: check every tick (to catch early initialization)
+    // - After 10 seconds: check every 60 ticks (1 second at 60 Hz)
     int check_count = s_check_count.fetch_add(1);
     if (s_created.load()) return;  // Already created, don't check again
 
-    // Only check every 60 ticks (1 second)
-    if (check_count % 60 != 0) return;
+    // Check frequently during first 10 seconds (600 ticks), then slow down
+    bool should_check = (check_count < 600) || (check_count % 60 == 0);
+    if (!should_check) return;
 
-    fprintf(stderr, "[FORCE_WORKERS] Check #%d: Checking if callback parameter structure is initialized...\n", check_count / 60);
+    int check_number = (check_count < 600) ? check_count : (check_count / 60);
+    fprintf(stderr, "[FORCE_WORKERS] Check #%d (tick %d): Checking if callback parameter structure is initialized...\n", check_number, check_count);
     fflush(stderr);
 
     // CRITICAL: Check if the callback parameter structure at 0x82A2B318 is initialized
@@ -476,14 +480,54 @@ PPC_FUNC(sub_82630068) {
     fflush(stderr);
 }
 
-// sub_8262FDA8 - Second initialization function
+// sub_8262FDA8 - Second initialization function (callback dispatcher)
+// This function iterates through a linked list at 0x828DF17C and calls each callback
+// The NULL-CALL error at lr=8262FDF0 target=FFFFFFFF indicates a corrupted callback pointer
 PPC_FUNC_IMPL(__imp__sub_8262FDA8);
 PPC_FUNC(sub_8262FDA8) {
-    fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 ENTER r3=%08X\n", ctx.r3.u32);
-    fflush(stderr);
+    static int call_count = 0;
+    call_count++;
+
+    // Only log first 10 calls to avoid spam
+    if (call_count <= 10) {
+        fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 ENTER #%d r3=%08X\n", call_count, ctx.r3.u32);
+        fflush(stderr);
+    }
+
+    // Read the callback list head at 0x828DF17C
+    uint32_t list_head_addr = 0x828DF17C;
+    uint32_t list_head_ptr = PPC_LOAD_U32(list_head_addr);
+
+    if (call_count <= 10) {
+        fprintf(stderr, "[XSTART_INIT]   Callback list head at 0x%08X = 0x%08X\n", list_head_addr, list_head_ptr);
+
+        // Traverse the list and log each node
+        uint32_t current = list_head_ptr;
+        int node_count = 0;
+        while (current != list_head_addr && node_count < 10) {
+            uint32_t next_ptr = PPC_LOAD_U32(current + 0);  // Next pointer at offset +0
+            uint32_t func_ptr = PPC_LOAD_U32(current + 4);  // Function pointer at offset +4 (guess)
+
+            fprintf(stderr, "[XSTART_INIT]   Node #%d at 0x%08X: next=0x%08X func=0x%08X\n",
+                    node_count, current, next_ptr, func_ptr);
+
+            if (func_ptr == 0xFFFFFFFF) {
+                fprintf(stderr, "[XSTART_INIT]   *** CORRUPTED FUNCTION POINTER DETECTED! ***\n");
+            }
+
+            current = next_ptr;
+            node_count++;
+        }
+
+        fflush(stderr);
+    }
+
     __imp__sub_8262FDA8(ctx, base);
-    fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 EXIT r3=%08X\n", ctx.r3.u32);
-    fflush(stderr);
+
+    if (call_count <= 10) {
+        fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 EXIT #%d r3=%08X\n", call_count, ctx.r3.u32);
+        fflush(stderr);
+    }
 }
 
 // sub_826BE558 - Third initialization function
@@ -897,6 +941,25 @@ void Mw05ForceCreateRenderThread() {
     }
 }
 
+// Wrapper for sub_8261A558 - callback function called by sub_82850820
+// This is the function that processes work items and calls the work function
+PPC_FUNC_IMPL(__imp__sub_8261A558);
+PPC_FUNC(sub_8261A558) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[CALLBACK_8261A558] ENTER: count=%llu r3=%08X tid=%lx\n",
+            count, ctx.r3.u32, GetCurrentThreadId());
+    fflush(stderr);
+
+    // Call the original
+    __imp__sub_8261A558(ctx, base);
+
+    fprintf(stderr, "[CALLBACK_8261A558] RETURN: count=%llu r3=%08X\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
 // Wrapper for sub_82850820 - Thread #1 main worker loop
 // This is the function that should eventually call ExCreateThread to create the render thread
 PPC_FUNC_IMPL(__imp__sub_82850820);
@@ -913,6 +976,136 @@ PPC_FUNC(sub_82850820) {
 
     fprintf(stderr, "[THREAD1_LOOP] sub_82850820 RETURN: count=%llu r3=%08X\n",
             count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_823AF590 - initialization function called before worker loop
+// This function does a lot of initialization and should create worker threads
+PPC_FUNC_IMPL(__imp__sub_823AF590);
+PPC_FUNC(sub_823AF590) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[INIT_823AF590] ENTER: count=%llu tid=%lx\n",
+            count, GetCurrentThreadId());
+    fflush(stderr);
+
+    // Call the original
+    __imp__sub_823AF590(ctx, base);
+
+    fprintf(stderr, "[INIT_823AF590] RETURN: count=%llu r3=%08X\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_823B0190 - main worker loop (infinite loop)
+// This function runs the main game loop and should never return
+PPC_FUNC_IMPL(__imp__sub_823B0190);
+PPC_FUNC(sub_823B0190) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[WORKER_LOOP_823B0190] ENTER: count=%llu tid=%lx\n",
+            count, GetCurrentThreadId());
+    fflush(stderr);
+
+    // Check the value of dword_82A2CBA8 (loop condition variable)
+    const uint32_t loop_flag_addr = 0x82A2CBA8;
+    void* loop_flag_ptr = g_memory.Translate(loop_flag_addr);
+    if (loop_flag_ptr) {
+        uint32_t loop_flag = __builtin_bswap32(*(uint32_t*)loop_flag_ptr);
+        fprintf(stderr, "[WORKER_LOOP_823B0190] dword_82A2CBA8 = 0x%08X (loop runs if == 0)\n", loop_flag);
+        fflush(stderr);
+    }
+
+    // Call the original (this should never return!)
+    __imp__sub_823B0190(ctx, base);
+
+    fprintf(stderr, "[WORKER_LOOP_823B0190] RETURN: count=%llu r3=%08X (UNEXPECTED!)\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_826E87E0 - creates 4 worker threads
+// This function creates threads with entry points: 0x826E7B90, 0x826E7BC0, 0x826E7BF0, 0x826E7C20
+PPC_FUNC_IMPL(__imp__sub_826E87E0);
+PPC_FUNC(sub_826E87E0) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[THREAD_CREATOR_826E87E0] ENTER: count=%llu tid=%lx r3=%08X\n",
+            count, GetCurrentThreadId(), ctx.r3.u32);
+    fflush(stderr);
+
+    // Call the original
+    __imp__sub_826E87E0(ctx, base);
+
+    fprintf(stderr, "[THREAD_CREATOR_826E87E0] RETURN: count=%llu r3=%08X\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_82813598 - initializes thread pool manager
+// This function is called from sub_8245FBD0 during initialization
+// It should create the thread pool manager object and call sub_826E87E0
+//
+// FIXED: The hang was caused by infinite recursion in StoreBE64_Watched during static initialization.
+// The fix (in Mw05Recomp/kernel/trace.h) prevents the recursion by setting the flag BEFORE calling
+// KernelTraceHostOp. Now we can safely call the original function!
+PPC_FUNC_IMPL(__imp__sub_82813598);
+PPC_FUNC(sub_82813598) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    fprintf(stderr, "[THREAD_POOL_INIT_82813598] ENTER: count=%llu tid=%lx r3=%08X\n",
+            count, GetCurrentThreadId(), ctx.r3.u32);
+    fflush(stderr);
+
+    // Call the original function (hang bug is now fixed!)
+    __imp__sub_82813598(ctx, base);
+
+    fprintf(stderr, "[THREAD_POOL_INIT_82813598] RETURN: count=%llu r3=%08X\n",
+            count, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_8245FBD0 - called early in sub_823AF590 initialization
+// This might be hanging the initialization
+PPC_FUNC_IMPL(__imp__sub_8245FBD0);
+PPC_FUNC(sub_8245FBD0) {
+    fprintf(stderr, "[INIT_8245FBD0] ENTER tid=%lx\n", GetCurrentThreadId());
+    fflush(stderr);
+
+    __imp__sub_8245FBD0(ctx, base);
+
+    fprintf(stderr, "[INIT_8245FBD0] RETURN r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_823BCBF0 - file check function called in sub_823AF590
+// This might be hanging on file I/O
+PPC_FUNC_IMPL(__imp__sub_823BCBF0);
+PPC_FUNC(sub_823BCBF0) {
+    fprintf(stderr, "[FILE_CHECK_823BCBF0] ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
+    fflush(stderr);
+
+    __imp__sub_823BCBF0(ctx, base);
+
+    fprintf(stderr, "[FILE_CHECK_823BCBF0] RETURN r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// Wrapper for sub_823BB258 - file loading function called in sub_823AF590
+// This might be hanging on file I/O
+PPC_FUNC_IMPL(__imp__sub_823BB258);
+PPC_FUNC(sub_823BB258) {
+    fprintf(stderr, "[FILE_LOAD_823BB258] ENTER r3=%08X r4=%08X tid=%lx\n",
+            ctx.r3.u32, ctx.r4.u32, GetCurrentThreadId());
+    fflush(stderr);
+
+    __imp__sub_823BB258(ctx, base);
+
+    fprintf(stderr, "[FILE_LOAD_823BB258] RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
 
@@ -1302,23 +1495,7 @@ PPC_FUNC(sub_8215E510)
     fprintf(stderr, "[INIT-TRACE] sub_8215E510 RETURN\n"); fflush(stderr);
 }
 
-PPC_FUNC_IMPL(__imp__sub_8245FBD0);
-PPC_FUNC(sub_8245FBD0) 
-{
-    fprintf(stderr, "[INIT-TRACE] sub_8245FBD0 ENTER (this creates Thread #2)\n"); fflush(stderr);
-    SetPPCContext(ctx);
-    __imp__sub_8245FBD0(ctx, base);
-    fprintf(stderr, "[INIT-TRACE] sub_8245FBD0 RETURN (Thread #2 should be running)\n"); fflush(stderr);
-}
 
-PPC_FUNC_IMPL(__imp__sub_823BCBF0);
-PPC_FUNC(sub_823BCBF0) 
-{
-    fprintf(stderr, "[INIT-TRACE] sub_823BCBF0 ENTER (file check)\n"); fflush(stderr);
-    SetPPCContext(ctx);
-    __imp__sub_823BCBF0(ctx, base);
-    fprintf(stderr, "[INIT-TRACE] sub_823BCBF0 RETURN r3=%08X\n", ctx.r3.u32); fflush(stderr);
-}
 
 PPC_FUNC_IMPL(__imp__sub_82812F10);
 PPC_FUNC(sub_82812F10)
@@ -1328,6 +1505,9 @@ PPC_FUNC(sub_82812F10)
     __imp__sub_82812F10(ctx, base);
     fprintf(stderr, "[INIT-TRACE] sub_82812F10 RETURN\n"); fflush(stderr);
 }
+
+// NOTE: sub_8215FDC0 wrapper is already defined in mw05_function_hooks.cpp
+// NOTE: sub_82813598 wrapper is already defined below (lines 1447+)
 
 // Wrapper for sub_82630378 to log the handle parameter
 PPC_FUNC_IMPL(__imp__sub_82630378);
@@ -1343,94 +1523,7 @@ PPC_FUNC(sub_82630378)
 // NOTE: sub_826346A8 wrapper is already defined in mw05_boot_shims.cpp
 // We'll add memory tracking there instead of creating a duplicate wrapper here
 
-// Wrapper for sub_82813598 to fix qword_828F1F98 initialization
-// This function manually sets qword_828F1F98 before/after calling the original function
-// to work around a bug in the recompiled PPC code.
-PPC_FUNC_IMPL(__imp__sub_82813598);
-PPC_FUNC(sub_82813598)
-{
-    static int s_callCount = 0;
-    int callNum = ++s_callCount;
-
-    if (callNum <= 5) {
-        fprintf(stderr, "[WRAPPER-82813598] Worker init function called! r3=0x%08X\n", ctx.r3.u32);
-        fflush(stderr);
-    }
-
-    // The expected calculation: divw r9, 0xFF676980, r3
-    // When r3 = 0x64 (100 decimal):
-    // 0xFF676980 / 0x64 = 0xFFFE7960 (sign-extended to 64-bit: 0xFFFFFFFFFFFE7960)
-    const int32_t dividend = (int32_t)0xFF676980;  // -9999488 in decimal
-    const int32_t divisor = (int32_t)ctx.r3.u32;
-
-    if (divisor == 0) {
-        fprintf(stderr, "[WRAPPER-82813598] ERROR: divisor is 0! Cannot divide!\n");
-        fflush(stderr);
-        ctx.r3.u64 = 0;
-        return;
-    }
-
-    const int64_t result = (int64_t)dividend / (int64_t)divisor;
-
-    if (callNum <= 5) {
-        fprintf(stderr, "[WRAPPER-82813598] Calculation: 0x%08X / 0x%08X = 0x%016llX\n",
-                (uint32_t)dividend, (uint32_t)divisor, (uint64_t)result);
-        fflush(stderr);
-    }
-
-    // Store the result into qword_828F1F98 BEFORE calling the original function
-    const uint32_t qword_addr = 0x828F1F98;
-    void* qword_ptr = g_memory.Translate(qword_addr);
-    if (qword_ptr) {
-        // Write new value (big-endian)
-        uint64_t value_be = __builtin_bswap64((uint64_t)result);
-        *(uint64_t*)qword_ptr = value_be;
-
-        if (callNum <= 5) {
-            fprintf(stderr, "[WRAPPER-82813598] qword_828F1F98 set to 0x%016llX\n", (uint64_t)result);
-            fflush(stderr);
-        }
-    } else {
-        fprintf(stderr, "[WRAPPER-82813598] ERROR: Failed to translate address 0x%08X\n", qword_addr);
-        fflush(stderr);
-    }
-
-    // Call the original recompiled function to do the rest of the work
-    if (callNum <= 5) {
-        fprintf(stderr, "[WRAPPER-82813598] Calling original function...\n");
-        fflush(stderr);
-    }
-
-    SetPPCContext(ctx);
-    __imp__sub_82813598(ctx, base);
-
-    if (callNum <= 5) {
-        fprintf(stderr, "[WRAPPER-82813598] Original function returned, r3=0x%08X\n", ctx.r3.u32);
-        fflush(stderr);
-    }
-
-    // Verify qword_828F1F98 is still set correctly after the original function returns
-    if (qword_ptr) {
-        uint64_t final_value = __builtin_bswap64(*(uint64_t*)qword_ptr);
-
-        if (callNum <= 5) {
-            fprintf(stderr, "[WRAPPER-82813598] FINAL: qword_828F1F98 = 0x%016llX\n", final_value);
-            fflush(stderr);
-        }
-
-        if (final_value != (uint64_t)result) {
-            fprintf(stderr, "[WRAPPER-82813598] WARNING: Value was corrupted! Restoring...\n");
-            fflush(stderr);
-
-            // Restore the value
-            uint64_t value_be = __builtin_bswap64((uint64_t)result);
-            *(uint64_t*)qword_ptr = value_be;
-
-            fprintf(stderr, "[WRAPPER-82813598] Value restored to 0x%016llX\n", (uint64_t)result);
-            fflush(stderr);
-        }
-    }
-}
+// NOTE: sub_82813598 wrapper is already defined above (lines 1004-1022)
 
 // Register the thread entry point hooks
 // These wrapper functions are registered via g_memory.InsertFunction in main.cpp

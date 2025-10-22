@@ -23,8 +23,22 @@ struct Heap
     // Flag to disable heap operations during shutdown to prevent o1heap assertions
     std::atomic<bool> shutdownInProgress{false};
 
+    // Flag to disable logging during global construction (before main() is called)
+    // This prevents fprintf() from being called before the C runtime is fully initialized
+    bool inGlobalConstruction{true};
+
     // Store initial diagnostics to detect heap corruption
     O1HeapDiagnostics initialDiagnostics{};
+
+    // Memory guards (canaries) to detect heap corruption
+    static constexpr uint64_t CANARY_MAGIC = 0xDEADBEEFCAFEBABEull;
+    uint64_t* canaryBefore{nullptr};  // Canary placed before o1heap instance
+    uint64_t* canaryAfter{nullptr};   // Canary placed after o1heap instance
+    size_t canaryCheckCount{0};       // Number of times canaries have been checked
+
+    // Default constructor - does nothing
+    // Init() will be called manually in main() after C runtime is fully initialized
+    Heap() = default;
 
     void Init();
 
@@ -36,6 +50,12 @@ struct Heap
 
     // Get heap diagnostics for debugging
     O1HeapDiagnostics GetDiagnostics();
+
+    // Check if memory guards (canaries) are intact
+    bool CheckCanaries(const char* caller);
+
+    // Validate heap integrity (checks canaries + diagnostics)
+    bool ValidateHeapIntegrity(const char* caller);
 
     template<typename T, typename... Args>
     T* Alloc(Args&&... args)

@@ -37,3 +37,6 @@ FileHandle* XCreateFileA
     uint32_t dwCreationDisposition,
     uint32_t dwFlagsAndAttributes
 );
+
+// Register file system hooks (must be called after g_memory is initialized)
+void RegisterFileSystemHooks();

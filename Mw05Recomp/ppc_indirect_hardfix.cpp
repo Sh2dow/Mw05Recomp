@@ -24,7 +24,9 @@ static void RegisterIndirectHardfixes() {
     __declspec(allocate(".CRT$XCU")) void (*ppc_indirect_hardfix_ctor_)(void) = ppc_indirect_hardfix_ctor;
     static void __cdecl ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
 #else
-    __attribute__((constructor)) static void ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
+    // DISABLED: Static constructor causes crash during global construction
+    // RegisterIndirectHardfixes() is now called manually in main() after memory is initialized
+    // __attribute__((constructor)) static void ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
 #endif
 
 

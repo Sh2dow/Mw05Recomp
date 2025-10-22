@@ -60,6 +60,8 @@ PPC_FUNC(sub_825CEE28)
     ctx.r3.u32 = 0;
 }
 
+
+
 static void RegisterHookOverridesManual() {
     KernelTraceHostOp("HOST.ManualOverridesCtor");
     // Safety guard
@@ -106,7 +108,9 @@ static void RegisterHookOverridesManualOnce() {
     __declspec(allocate(".CRT$XCU")) void (*ppc_hook_overrides_manual_ctor_)(void) = ppc_hook_overrides_manual_ctor;
     static void __cdecl ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
 #else
-    __attribute__((constructor)) static void ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
+    // DISABLED: Static constructor causes crash during global construction
+    // RegisterHookOverridesManualOnce() is now called manually in main() after memory is initialized
+    // __attribute__((constructor)) static void ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
 #endif
 
 // Fallback: a global object to trigger registration via C++ static initialization

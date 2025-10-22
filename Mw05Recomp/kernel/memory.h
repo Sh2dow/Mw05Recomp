@@ -51,7 +51,7 @@ struct Memory
     {
         // CRITICAL DEBUG: Log the function table write operation
         uint64_t code_offset = uint64_t(uint32_t(guest) - uint32_t(PPC_CODE_BASE));
-        uint64_t table_offset = PPC_IMAGE_SIZE + (code_offset * sizeof(PPCFunc*));
+        uint64_t table_offset = PPC_MEMORY_SIZE + (code_offset * sizeof(PPCFunc*));
         PPCFunc** funcPtrAddr = reinterpret_cast<PPCFunc**>(base + table_offset);
 
         // Log BEFORE write

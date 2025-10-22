@@ -1738,7 +1738,25 @@ void Mw05StartVblankPumpOnce() {
         }();
         static auto pump_start_time = std::chrono::steady_clock::now();
         static auto last_iteration_end = std::chrono::steady_clock::now();
-        while (g_vblankPumpRun.load(std::memory_order_acquire)) {
+
+        // CRITICAL DEBUG: Wrap entire loop in SEH to detect silent crashes
+        #if defined(_WIN32)
+        __try {
+        #endif
+        while (true) {
+            // CRITICAL DEBUG: Check g_vblankPumpRun at start of each iteration
+            const bool pumpRun = g_vblankPumpRun.load(std::memory_order_acquire);
+            const uint32_t preTickValue = g_vblankTicks.load(std::memory_order_acquire);
+            if (preTickValue < 20) {
+                fprintf(stderr, "[VBLANK-LOOP-START] About to increment tick (current=%u) pumpRun=%d\n", preTickValue, pumpRun ? 1 : 0);
+                fflush(stderr);
+            }
+            if (!pumpRun) {
+                fprintf(stderr, "[VBLANK-LOOP-EXIT] g_vblankPumpRun is false at tick %u, exiting loop\n", preTickValue);
+                fflush(stderr);
+                break;
+            }
+
             auto loop_start = std::chrono::steady_clock::now();
             auto inter_iteration_gap = std::chrono::duration_cast<std::chrono::milliseconds>(loop_start - last_iteration_end);
             auto elapsed_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(loop_start - pump_start_time);
@@ -1746,8 +1764,15 @@ void Mw05StartVblankPumpOnce() {
             // Global vblank tick counter for gating guest ISR dispatches
             const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
 
+            // CRITICAL DEBUG: Log immediately after tick increment for first 20 ticks
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-TICK-INCREMENTED] currentTick=%u (after fetch_add)\n", currentTick);
+                fflush(stderr);
+            }
+
             // Debug: log tick count every 10 ticks AND always log tick 0
             // Also log every tick after 350 to track crash
+            // CRITICAL DEBUG: Log first 20 ticks to debug early exit
             static bool s_detailed_logging = false;
             if (currentTick >= 350 && currentTick <= 450) {
                 if (!s_detailed_logging) {
@@ -1755,10 +1780,10 @@ void Mw05StartVblankPumpOnce() {
                     fflush(stderr);
                     s_detailed_logging = true;
                 }
-                fprintf(stderr, "[VBLANK-TICK] count=%u (detailed mode)\n", currentTick);
+                fprintf(stderr, "[VBLANK-TICK] count=%u (detailed mode) g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
                 fflush(stderr);
-            } else if (currentTick == 0 || currentTick % 10 == 0) {
-                fprintf(stderr, "[VBLANK-TICK] count=%u\n", currentTick);
+            } else if (currentTick == 0 || currentTick % 10 == 0 || currentTick < 20) {
+                fprintf(stderr, "[VBLANK-TICK] count=%u g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
                 fflush(stderr);
             }
 
@@ -1775,7 +1800,15 @@ void Mw05StartVblankPumpOnce() {
             // Need to find what sets r31 to 0 in the sleep function to allow threads to exit
 
             // MW05 FIX: Check if worker threads need to be created (every second)
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-BEFORE-WORKERS] tick=%u about to call Mw05ForceCreateMissingWorkerThreads\n", currentTick);
+                fflush(stderr);
+            }
             Mw05ForceCreateMissingWorkerThreads();
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-WORKERS] tick=%u returned from Mw05ForceCreateMissingWorkerThreads\n", currentTick);
+                fflush(stderr);
+            }
 
             // MW05 FIX: Call VdCallGraphicsNotificationRoutines periodically to invoke registered callbacks
             // Only do this if a real callback is registered (not the host magic value)
@@ -1818,14 +1851,34 @@ void Mw05StartVblankPumpOnce() {
                     // EXPERIMENT: Disable callback invocation to test if registration alone causes the crash
                     static bool s_disable_invocation = Mw05EnvEnabled("MW05_DISABLE_CALLBACK_INVOCATION");
                     if (!s_disable_invocation) {
-                        // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
-                        VdCallGraphicsNotificationRoutines(0u);
-                        VdCallGraphicsNotificationRoutines(1u);
+                        // CRITICAL FIX: Call graphics callback asynchronously to avoid blocking VBlank pump!
+                        // The VBlank pump MUST run at 60 Hz, so we can't wait for the callback to complete.
+                        // The callback will run in a separate thread and complete whenever it's done.
+                        std::thread callback_thread([currentTick]() {
+                            // CRITICAL: Ensure guest context for this thread so function table is initialized!
+                            EnsureGuestContextForThisThread("VBlankPump.AsyncCallback");
+                            // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
+                            VdCallGraphicsNotificationRoutines(0u);
+                            VdCallGraphicsNotificationRoutines(1u);
+                        });
+                        // Detach the thread immediately - don't wait for it to complete!
+                        callback_thread.detach();
                     } else {
                         fprintf(stderr, "[MW05_FIX] Callback invocation DISABLED (registration only)\n");
                         fflush(stderr);
                     }
                 }
+            }
+
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-GFX-CB] tick=%u after graphics callback section\n", currentTick);
+                fflush(stderr);
+            }
+
+            // CRITICAL DEBUG: Log before video thread section
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-BEFORE-VIDEO-THREAD] tick=%u about to check video thread section\n", currentTick);
+                fflush(stderr);
             }
 
             // EXPERIMENTAL: Force-trigger video thread initialization after boot completes
@@ -2174,21 +2227,31 @@ void Mw05StartVblankPumpOnce() {
                 volatile uint32_t* main_loop_flag_ptr = static_cast<volatile uint32_t*>(g_memory.Translate(main_loop_flag_ea));
                 if (main_loop_flag_ptr) {
                     // Read current value before setting (volatile read)
-                    uint32_t current_value = *main_loop_flag_ptr;
+                    // NOTE: Memory is already in big-endian format, so we need to byte-swap when reading
+                    #if defined(_MSC_VER)
+                        uint32_t current_value = _byteswap_ulong(*main_loop_flag_ptr);
+                    #else
+                        uint32_t current_value = __builtin_bswap32(*main_loop_flag_ptr);
+                    #endif
 
-                    // Set flag to 1 (big-endian) - volatile write ensures visibility to all threads
+                    // Set flag to 1 (write in big-endian format for PowerPC)
+                    // Memory is stored in big-endian, so we byte-swap the value before writing
                     #if defined(_MSC_VER)
                         *main_loop_flag_ptr = _byteswap_ulong(1);
                     #else
                         *main_loop_flag_ptr = __builtin_bswap32(1);
                     #endif
 
+                    // CRITICAL: Memory fence to ensure the write is visible to all threads
+                    // Without this, the main thread's CPU cache may not see the update
+                    std::atomic_thread_fence(std::memory_order_release);
+
                     // Log first few sets and any changes for debugging
                     static uint32_t s_flag_set_count = 0;
                     static uint32_t s_last_value = 0;
                     s_flag_set_count++;
                     if (s_flag_set_count <= 10 || (s_flag_set_count % 60 == 0) || current_value != s_last_value) {
-                        fprintf(stderr, "[VBLANK] Main loop flag: was=0x%08X now=0x01000000 (tick=%u count=%u)\n",
+                        fprintf(stderr, "[VBLANK] Main loop flag: was=0x%08X now=0x00000001 (tick=%u count=%u)\n",
                                 current_value, currentTick, s_flag_set_count);
                         fflush(stderr);
                     }
@@ -2205,6 +2268,18 @@ void Mw05StartVblankPumpOnce() {
                 }
             }
 
+            // CRITICAL DEBUG: Log after main loop flag section
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-MAIN-LOOP-FLAG] tick=%u after setting main loop flag\n", currentTick);
+                fflush(stderr);
+            }
+
+            // CRITICAL DEBUG: Log before ring buffer section
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-BEFORE-RINGBUF] tick=%u about to advance ring buffer\n", currentTick);
+                fflush(stderr);
+            }
+
             // Advance the ring-buffer write-back pointer a bit so guest
             // polling sees steady GPU progress even before the first present.
             uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
@@ -2216,6 +2291,12 @@ void Mw05StartVblankPumpOnce() {
                     uint32_t next = (cur + 0x40u) & mask; // smaller step than present
                     *rptr = next ? next : 0x20u;
                 }
+            }
+
+            // CRITICAL DEBUG: Log after ring buffer section
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-RINGBUF] tick=%u after ring buffer advance\n", currentTick);
+                fflush(stderr);
             }
 
             // Grace check: if no graphics ISR registered after a while, log once
@@ -2231,6 +2312,12 @@ void Mw05StartVblankPumpOnce() {
                     KernelTraceHostOp("HOST.VdISR.missing.after_grace");
                 }
                 s_isr_missing_logged = true;
+            }
+
+            // CRITICAL DEBUG: Log after ISR grace check
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-ISR-CHECK] tick=%u after ISR grace check\n", currentTick);
+                fflush(stderr);
             }
 
             // Optional: diff-based write-watch on the System Command Buffer to detect PM4 construction
@@ -2409,21 +2496,48 @@ void Mw05StartVblankPumpOnce() {
                         s_isr_call_count++;
                         EnsureGuestContextForThisThread("VblankPump");
 
-                        // Wrap guest ISR call in SEH to prevent crashes from killing the vblank pump
-                        #if defined(_WIN32)
-                            __try {
-                                GuestToHostFunction<void>(cb, 0u, ctx);
-                            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                static int s_exception_count = 0;
-                                s_exception_count++;
-                                if (s_exception_count <= 5 || s_exception_count % 60 == 0) {
-                                    KernelTraceHostOpF("HOST.VblankPump.guest_isr.seh_abort ticks=%u code=%08X count=%d",
-                                                      (unsigned)ticks3, (unsigned)GetExceptionCode(), s_exception_count);
+                        // CRITICAL DEBUG: Log before calling guest ISR
+                        if (currentTick < 20) {
+                            fprintf(stderr, "[VBLANK-BEFORE-GUEST-ISR] tick=%u about to call guest ISR cb=0x%08X ctx=0x%08X\n", currentTick, cb, ctx);
+                            fflush(stderr);
+                        }
+
+                        // CRITICAL FIX: Call guest ISR asynchronously without waiting!
+                        // The VBlank pump MUST run at 60 Hz, so we can't wait for the guest ISR to complete.
+                        // The guest ISR will run in a separate thread and complete whenever it's done.
+                        // This allows the VBlank pump to continue at 60 Hz regardless of how long the guest ISR takes.
+                        std::thread isr_thread([cb, ctx, currentTick]() {
+                            #if defined(_WIN32)
+                                __try {
+                                    GuestToHostFunction<void>(cb, 0u, ctx);
+                                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                    DWORD exceptionCode = GetExceptionCode();
+
+                                    // Log first exception only to avoid spam
+                                    static std::atomic<bool> s_logged_exception{false};
+                                    if (!s_logged_exception.exchange(true, std::memory_order_relaxed)) {
+                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION] Graphics callback threw exception (context not initialized yet)\n");
+                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Exception code: 0x%08lX\n", exceptionCode);
+                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Callback: 0x%08X\n", cb);
+                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Context: 0x%08X\n", ctx);
+                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Will continue calling callback - it should work once context is initialized\n");
+                                        fflush(stderr);
+                                    }
                                 }
-                            }
-                        #else
-                            GuestToHostFunction<void>(cb, 0u, ctx);
-                        #endif
+                            #else
+                                GuestToHostFunction<void>(cb, 0u, ctx);
+                            #endif
+                        });
+
+                        // Detach the thread immediately - don't wait for it to complete!
+                        // This allows the VBlank pump to continue at 60 Hz
+                        isr_thread.detach();
+
+                        // CRITICAL DEBUG: Log after calling guest ISR
+                        if (currentTick < 20) {
+                            fprintf(stderr, "[VBLANK-AFTER-GUEST-ISR] tick=%u guest ISR called asynchronously\n", currentTick);
+                            fflush(stderr);
+                        }
                     }
                 } else if (const char* d = std::getenv("MW05_DEFAULT_VD_ISR")) {
                     if (!(d[0]=='0' && d[1]=='\0')) {
@@ -3506,6 +3620,12 @@ void Mw05StartVblankPumpOnce() {
             static auto next_tick_time = loop_start + period;
             auto sleep_start = std::chrono::steady_clock::now();
 
+            // CRITICAL DEBUG: Log before sleep for first 20 ticks
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-SLEEP] tick=%u before sleep g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
+                fflush(stderr);
+            }
+
             // Only sleep if we haven't already exceeded the target time
             if (sleep_start < next_tick_time) {
                 std::this_thread::sleep_until(next_tick_time);
@@ -3522,8 +3642,26 @@ void Mw05StartVblankPumpOnce() {
                 KernelTraceHostOpF("HOST.VblankPump.timing tick=%u loop_ms=%lld sleep_ms=%lld total_ms=%lld gap_ms=%lld elapsed_ms=%lld",
                                   currentTick, (long long)loop_duration.count(), (long long)sleep_duration.count(), (long long)total_duration.count(), (long long)inter_iteration_gap.count(), (long long)elapsed_since_start.count());
             }
+
+            // CRITICAL DEBUG: Log after sleep for first 20 ticks
+            if (currentTick < 20) {
+                fprintf(stderr, "[VBLANK-AFTER-SLEEP] tick=%u after sleep g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
+                fflush(stderr);
+            }
+
             last_iteration_end = sleep_end;
         }
+        // CRITICAL DEBUG: Log when exiting while loop
+        fprintf(stderr, "[VBLANK-EXIT] Exiting while loop g_vblankPumpRun=%d\n", g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
+        fflush(stderr);
+        #if defined(_WIN32)
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DWORD exceptionCode = GetExceptionCode();
+            fprintf(stderr, "[VBLANK-PUMP-CRASH] SEH Exception in VBlank pump: code=0x%08lX\n", exceptionCode);
+            fflush(stderr);
+            KernelTraceHostOpF("HOST.VblankPump.exception code=0x%08lX", exceptionCode);
+        }
+        #endif
         KernelTraceHostOp("HOST.VblankPump.exit");
     }).detach();
 }
@@ -6481,40 +6619,119 @@ extern "C"
 
 void Mw05ForceVdInitOnce() {
     if (!Mw05ForceVdInitEnabled()) {
+        static std::atomic<bool> s_logged_disabled{false};
+        if (!s_logged_disabled.exchange(true, std::memory_order_relaxed)) {
+            fprintf(stderr, "[VD-INIT] Mw05ForceVdInitOnce DISABLED by MW05_FORCE_VD_INIT=0\n");
+            fflush(stderr);
+        }
         return;
     }
 
     bool expected = false;
     if (!g_forceVdInitDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        static std::atomic<bool> s_logged_already{false};
+        if (!s_logged_already.exchange(true, std::memory_order_relaxed)) {
+            fprintf(stderr, "[VD-INIT] Mw05ForceVdInitOnce already called, skipping\n");
+            fflush(stderr);
+        }
         return;
     }
+
+    fprintf(stderr, "[VD-INIT] Mw05ForceVdInitOnce STARTING initialization\n");
+    fflush(stderr);
 
     Mw05MaybeForceRegisterVdEventFromEnv();
 
     if (g_RbLen.load(std::memory_order_relaxed) == 0 ||
         g_RbWriteBackPtr.load(std::memory_order_relaxed) == 0)
     {
+        fprintf(stderr, "[VD-INIT] Ring buffer not initialized, allocating now\n");
+        fflush(stderr);
         const uint32_t len_log2 = 16;
         void* ring_host = g_userHeap.Alloc(1u << len_log2);
         if (ring_host)
         {
             const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
+            fprintf(stderr, "[VD-INIT] Allocated ring buffer: guest=%08X len_log2=%u\n", ring_guest, len_log2);
+            fflush(stderr);
             void* wb_host = g_userHeap.Alloc(64);
             if (wb_host)
             {
                 const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
+                fprintf(stderr, "[VD-INIT] Allocated writeback buffer: guest=%08X\n", wb_guest);
+                fflush(stderr);
                 VdInitializeRingBuffer(ring_guest, len_log2);
                 VdEnableRingBufferRPtrWriteBack(wb_guest);
                 VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
             }
         }
+    } else {
+        fprintf(stderr, "[VD-INIT] Ring buffer already initialized: len=%u wb=%08X\n",
+                g_RbLen.load(std::memory_order_relaxed),
+                g_RbWriteBackPtr.load(std::memory_order_relaxed));
+        fflush(stderr);
     }
 
+    fprintf(stderr, "[VD-INIT] Calling Mw05ApplyVdPokesOnce\n");
+    fflush(stderr);
     Mw05ApplyVdPokesOnce();
-    VdInitializeEngines(0, 0, 0, 0, 0);
+
+    // CRITICAL FIX: Call the game's graphics initialization function sub_825A85E0
+    // This function calls VdInitializeEngines with the proper callback (sub_825A85C8)
+    // and sets up the graphics interrupt callback (sub_825979A8)
+    // This is what Xenia does - Thread #7 calls sub_825A85E0 to initialize graphics
+    fprintf(stderr, "[VD-INIT] Calling game's graphics init function sub_825A85E0\n");
+    fflush(stderr);
+    {
+        // Set up PPC context for the call
+        PPCContext ctx{};
+        if (auto* cur = GetPPCContext()) ctx = *cur;  // Preserve TOC/r13 etc.
+
+        // r3 = graphics context address (0x40007180 is the context we allocated in main.cpp)
+        ctx.r3.u32 = 0x40007180;
+
+        // Call the game's graphics initialization function
+        uint8_t* base = g_memory.base;
+        __imp__sub_825A85E0(ctx, base);
+
+        fprintf(stderr, "[VD-INIT] sub_825A85E0 returned: r3=%08X\n", ctx.r3.u32);
+        fflush(stderr);
+    }
+
+    fprintf(stderr, "[VD-INIT] Calling VdGetSystemCommandBuffer\n");
+    fflush(stderr);
     VdGetSystemCommandBuffer(nullptr, nullptr);
+    fprintf(stderr, "[VD-INIT] Calling VdCallGraphicsNotificationRoutines\n");
+    fflush(stderr);
     VdCallGraphicsNotificationRoutines(0u);
+    fprintf(stderr, "[VD-INIT] Calling Mw05StartVblankPumpOnce\n");
+    fflush(stderr);
     Mw05StartVblankPumpOnce();
+    fprintf(stderr, "[VD-INIT] Mw05ForceVdInitOnce COMPLETE\n");
+    fflush(stderr);
+
+    // DEBUG: Check the callback queue state
+    auto read_be32 = [](uint32_t ea) -> uint32_t {
+        if (!ea) return 0u;
+        if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(ea))) {
+        #if defined(_MSC_VER)
+            return _byteswap_ulong(*p);
+        #else
+            return __builtin_bswap32(*p);
+        #endif
+        }
+        return 0u;
+    };
+
+    uint32_t queue_enabled = read_be32(0x8290965C);
+    uint32_t queue_start = read_be32(0x82909650);
+    uint32_t queue_current = read_be32(0x82909654);
+    uint32_t queue_end = read_be32(0x82909664);
+    uint32_t callback_ptr = read_be32(0x82909668);
+    fprintf(stderr, "[VD-INIT] Callback queue state:\n");
+    fprintf(stderr, "[VD-INIT]   enabled=%08X start=%08X current=%08X end=%08X callback=%08X\n",
+            queue_enabled, queue_start, queue_current, queue_end, callback_ptr);
+    fflush(stderr);
 }
 
 // fwd decls for locally-defined VD bridge helpers used below
@@ -7140,9 +7357,9 @@ void ExRegisterTitleTerminateNotification()
 void VdShutdownEngines()
 {
     LOG_UTILITY("!!! STUB !!!");
+    fprintf(stderr, "[VdShutdownEngines] CALLED! Stopping VBlank pump...\n");
+    fflush(stderr);
     g_vblankPumpRun.store(false, std::memory_order_release);
-
-
 }
 
 void VdQueryVideoMode(XVIDEO_MODE* vm)
@@ -7197,53 +7414,30 @@ void VdSetDisplayMode(uint32_t /*mode*/)
 
 void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 {
-    // CRITICAL FIX: Intercept static context address and replace with heap-allocated one
-    // The game has the static address 0x40007180 hardcoded in its code, but we've allocated
-    // the context on the heap (following Xenia's approach). We need to redirect the game's
-    // static address to our heap-allocated context.
-    constexpr uint32_t STATIC_CONTEXT_ADDRESS = 0x40007180;
+    // CRITICAL FIX: Initialize the context memory to prevent access violations!
+    // The callback at 0x825979A8 tries to access memory at context+0x2894
+    // But the game hasn't initialized this memory yet when the callback is first called
+    // So we initialize it with zeros to prevent crashes
     uint32_t original_context = context;
-
-    if (context == STATIC_CONTEXT_ADDRESS) {
-        // Game is using the hardcoded static address - redirect to heap-allocated context
-        uint32_t heap_ctx = g_graphics_context_ea;
-        if (heap_ctx == 0) {
-            // Context not yet allocated - allocate it now
-            heap_ctx = Mw05EnsureGraphicsContextAllocated();
-            if (heap_ctx == 0) {
-                fprintf(stderr, "[VdSetGraphicsInterruptCallback] ERROR: Failed to allocate graphics context\n");
-                fflush(stderr);
-                return;
-            }
-        }
-
-        fprintf(stderr, "[VdSetGraphicsInterruptCallback] REDIRECTING context: 0x%08X -> 0x%08X (heap-allocated)\n",
-                context, heap_ctx);
-        fflush(stderr);
-        context = heap_ctx;
-    }
 
     g_VdGraphicsCallback = callback;
     g_VdGraphicsCallbackCtx = context;
 
-    // CRITICAL FIX: Initialize the frame callback pointer in the graphics context
-    // The VD ISR callback at sub_825979A8 checks context[3899] for a frame callback pointer
-    // If set, it calls this function each frame (the present function at 0x82598A20)
-    // We need to set this pointer to enable the frame callback mechanism
-    // context[3899] = *(context + 0x3CEC)
-    {
-        const uint32_t frame_callback_ptr_offset = 0x3CEC;  // Offset to context[3899]
-        const uint32_t frame_callback_ptr_ea = context + frame_callback_ptr_offset;
-        const uint32_t present_function_ea = 0x82598A20;  // Present function address
+    // Initialize the context memory (16KB should be enough)
+    // The callback accesses context[2597] which is at offset 0x2894 (10388 bytes)
+    // So we need at least 16KB of initialized memory
+    static bool s_context_initialized = false;
+    if (!s_context_initialized && context != 0) {
+        s_context_initialized = true;
 
-        // Set the frame callback pointer to the present function
-        if (void* callback_ptr = g_memory.Translate(frame_callback_ptr_ea)) {
-            #if defined(_MSC_VER)
-                *static_cast<uint32_t*>(callback_ptr) = _byteswap_ulong(present_function_ea);
-            #else
-                *static_cast<uint32_t*>(callback_ptr) = __builtin_bswap32(present_function_ea);
-            #endif
-            fprintf(stderr, "[VdSetGraphicsInterruptCallback] Set frame callback at ctx+0x3CEC to 0x%08X (present function)\n", present_function_ea);
+        // Get host pointer to context memory
+        void* ctx_host = g_memory.Translate(context);
+        if (ctx_host) {
+            // Initialize 16KB of memory with zeros
+            std::memset(ctx_host, 0, 16384);
+
+            fprintf(stderr, "[CONTEXT-INIT] Initialized context memory at 0x%08X (16KB)\n", context);
+            fprintf(stderr, "[CONTEXT-INIT]   This prevents access violations in graphics callback\n");
             fflush(stderr);
         }
     }
@@ -7256,8 +7450,7 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
         fprintf(stderr, "========================================\n");
         fprintf(stderr, "[NATURAL-REG] Game naturally registered graphics callback!\n");
         fprintf(stderr, "[NATURAL-REG]   Callback: 0x%08X\n", callback);
-        fprintf(stderr, "[NATURAL-REG]   Context (original):  0x%08X\n", original_context);
-        fprintf(stderr, "[NATURAL-REG]   Context (redirected): 0x%08X\n", context);
+        fprintf(stderr, "[NATURAL-REG]   Context:  0x%08X\n", context);
         fprintf(stderr, "[NATURAL-REG]   Tick:     %u\n", g_vblankTicks.load());
         fprintf(stderr, "========================================\n");
         fprintf(stderr, "\n");
@@ -7269,28 +7462,9 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 }
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context)
 {
-    // CRITICAL FIX: Intercept static context address and replace with heap-allocated one
-    // Same redirection logic as VdSetGraphicsInterruptCallback
-    constexpr uint32_t STATIC_CONTEXT_ADDRESS = 0x40007180;
-
-    if (context == STATIC_CONTEXT_ADDRESS) {
-        // Game is using the hardcoded static address - redirect to heap-allocated context
-        uint32_t heap_ctx = g_graphics_context_ea;
-        if (heap_ctx == 0) {
-            // Context not yet allocated - allocate it now
-            heap_ctx = Mw05EnsureGraphicsContextAllocated();
-            if (heap_ctx == 0) {
-                fprintf(stderr, "[VdRegisterGraphicsNotificationRoutine] ERROR: Failed to allocate graphics context\n");
-                fflush(stderr);
-                return;
-            }
-        }
-
-        fprintf(stderr, "[VdRegisterGraphicsNotificationRoutine] REDIRECTING context: 0x%08X -> 0x%08X (heap-allocated)\n",
-                context, heap_ctx);
-        fflush(stderr);
-        context = heap_ctx;
-    }
+    // NO REDIRECTION - use the context address provided by the game
+    // We initialize the context memory at 0x40007180 in VdSetGraphicsInterruptCallback
+    // so there's no need to redirect to a heap-allocated address
 
     KernelTraceHostOpF("HOST.VdRegisterGraphicsNotificationRoutine cb=%08X ctx=%08X", callback, context);
     {
@@ -7482,6 +7656,9 @@ void VdInitializeEDRAM()
 void VdCallGraphicsNotificationRoutines(uint32_t source)
 {
     KernelTraceHostOpF("HOST.VdCallGraphicsNotificationRoutines source=%u", source);
+
+    // MW05 FIX: Check if worker threads need to be created (called frequently from graphics callbacks)
+    Mw05ForceCreateMissingWorkerThreads();
 
     // First, dispatch any registered graphics notification routines (list),
     // which some titles rely on to advance their render scheduler.
@@ -8550,18 +8727,27 @@ void XamUserReadProfileSettings
     void* overlapped
 )
 {
-    KernelTraceHostOpF("HOST.XamUserReadProfileSettings titleId=%08X userIndex=%u xuidCount=%u settingCount=%u bufferSize=%u buffer=%p",
-                      titleId, userIndex, xuidCount, settingCount, bufferSize ? (uint32_t)*bufferSize : 0, buffer);
+    fprintf(stderr, "[PROFILE-READ] titleId=%08X userIndex=%u xuidCount=%u settingCount=%u bufferSize=%u buffer=%p\n",
+            titleId, userIndex, xuidCount, settingCount, bufferSize ? (uint32_t)*bufferSize : 0, buffer);
+
+    // Log setting IDs being requested
+    if (settingIds && settingCount > 0) {
+        fprintf(stderr, "[PROFILE-READ] Requested settings:");
+        for (uint32_t i = 0; i < settingCount && i < 10; i++) {
+            fprintf(stderr, " %08X", settingIds[i]);
+        }
+        fprintf(stderr, "\n");
+    }
 
     if (buffer != nullptr)
     {
         memset(buffer, 0, *bufferSize);
-        KernelTraceHostOpF("HOST.XamUserReadProfileSettings -> cleared buffer");
+        fprintf(stderr, "[PROFILE-READ] -> cleared buffer\n");
     }
     else
     {
         *bufferSize = 4;
-        KernelTraceHostOpF("HOST.XamUserReadProfileSettings -> set bufferSize=4");
+        fprintf(stderr, "[PROFILE-READ] -> set bufferSize=4\n");
     }
 }
 

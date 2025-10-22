@@ -8736,7 +8736,9 @@ void RegisterMw05VideoManualHooks()
     #  pragma comment(linker, "/include:mw05_video_manual_ctor_")
     static void __cdecl mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
 #else
-    __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
+    // DISABLED: Static constructor causes crash during global construction
+    // RegisterMw05VideoManualHooks() is now called manually in main() after memory is initialized
+    // __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
 #endif
     // NOTE: All function declarations moved to mw05_trace_shims.cpp
 

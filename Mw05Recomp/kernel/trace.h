@@ -96,8 +96,12 @@ static inline void TraceRbWrite(uint32_t ea, size_t n) {
 
 inline void StoreBE8_Watched(uint8_t* /*base*/, uint32_t ea, uint8_t v8)
 {
-    static bool banner8 = (KernelTraceHostOp("HOST.watch.store8 override ACTIVE"), true);
-    (void)banner8;
+    // CRITICAL FIX: Prevent infinite recursion during static initialization
+    static bool banner8_logged = false;
+    if (!banner8_logged) {
+        banner8_logged = true;
+        KernelTraceHostOp("HOST.watch.store8 override ACTIVE");
+    }
 
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
@@ -139,8 +143,43 @@ static inline void BE_Store32(uint8_t* p, uint32_t v) {
 }
 
 inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
-    static bool banner = (KernelTraceHostOp("HOST.watch.store override ACTIVE"), true);
-    (void)banner;
+    // CRITICAL FIX: Prevent infinite recursion during static initialization
+    static bool banner_logged = false;
+    if (!banner_logged) {
+        banner_logged = true;
+        KernelTraceHostOp("HOST.watch.store override ACTIVE");
+    }
+
+    // CRITICAL DEBUG: Detect writes to o1heap capacity field at 0x100208
+    // The capacity field is 8 bytes, so it could be written as two 32-bit stores
+    if (ea == 0x100208 || ea == 0x10020C || (ea <= 0x100208 && ea + 4 > 0x100208)) {
+        if (auto* c = GetPPCContext()) {
+            uint32_t lr = c->lr;
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE] Store32 to o1heap capacity field!\n");
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   ea=0x%08X val=0x%08X lr=0x%08X\n", ea, v, lr);
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   This is the CORRUPTION SOURCE!\n");
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
+                    c->r3.u32, c->r4.u32, c->r5.u32);
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
+                    c->r31.u32, c->r30.u32, c->r29.u32);
+            fflush(stderr);
+        }
+    }
+
+    // CRITICAL DEBUG: Watch for stores to callback parameter structure at 0x82A2B318
+    // The structure is 32 bytes (0x82A2B318 to 0x82A2B338)
+    // Field at offset +0x10 (0x82A2B328) is the work_func pointer (should be 0x82441E58)
+    if (ea >= 0x82A2B318 && ea < 0x82A2B338) {
+        if (auto* c = GetPPCContext()) {
+            uint32_t lr = c->lr;
+            fprintf(stderr, "[CALLBACK_PARAM_WATCH] Store32 to callback param structure: ea=%08X val=%08X lr=%08X\n", ea, v, lr);
+            fprintf(stderr, "[CALLBACK_PARAM_WATCH]   Offset from base: +0x%X (%d bytes)\n", ea - 0x82A2B318, ea - 0x82A2B318);
+            if (ea == 0x82A2B328) {  // work_func field at offset +0x10
+                fprintf(stderr, "[CALLBACK_PARAM_WATCH]   *** WORK_FUNC FIELD WRITE: val=%08X (expected 0x82441E58) ***\n", v);
+            }
+            fflush(stderr);
+        }
+    }
 
     // Log all stores from sub_82849DE8 function (worker thread initialization)
     // This function is at 0x82849DE8-0x82849F78, so lr should be in range 0x82849DE8-0x82849F7C
@@ -355,11 +394,36 @@ inline uint64_t LoadBE64_Watched(uint8_t* base, uint32_t ea)
 // 64-bit big-endian watched store
 inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
 {
-    static bool banner64 = (KernelTraceHostOp("HOST.watch.store64 override ACTIVE"), true);
-    (void)banner64;
+    // CRITICAL FIX: Prevent infinite recursion during static initialization
+    // The old code had: static bool banner64 = (KernelTraceHostOp(...), true);
+    // This caused infinite recursion because KernelTraceHostOp could trigger
+    // another memory store, which would call StoreBE64_Watched again before
+    // the static initialization completed.
+    // Solution: Use a simple static bool without calling any functions during initialization
+    static bool banner64_logged = false;
+    if (!banner64_logged) {
+        banner64_logged = true;
+        // Log banner AFTER setting the flag to prevent recursion
+        KernelTraceHostOp("HOST.watch.store64 override ACTIVE");
+    }
 
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+
+    // CRITICAL DEBUG: Detect writes to o1heap capacity field at 0x100208
+    // This is where the corruption happens (0xEEEEEEEEEEEEEEEE pattern)
+    if (ea == 0x100208 || (ea <= 0x100208 && ea + 8 > 0x100208)) {
+        fprintf(stderr, "[HEAP-CAPACITY-WRITE] Store64 to o1heap capacity field!\n");
+        fprintf(stderr, "[HEAP-CAPACITY-WRITE]   ea=0x%08X val=0x%016llX lr=0x%08llX\n", ea, v64, lr);
+        fprintf(stderr, "[HEAP-CAPACITY-WRITE]   This is the CORRUPTION SOURCE!\n");
+        if (c) {
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
+                    c->r3.u32, c->r4.u32, c->r5.u32);
+            fprintf(stderr, "[HEAP-CAPACITY-WRITE]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
+                    c->r31.u32, c->r30.u32, c->r29.u32);
+        }
+        fflush(stderr);
+    }
 
     KernelTraceHostOpF("HOST.Store64BE_W.called ea=%08X val=%016llX", ea, v64);
 
@@ -444,8 +508,12 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
 
 inline void StoreBE128_Watched(uint8_t* base, uint32_t ea, uint64_t hi, uint64_t lo)
 {
-    static bool banner128 = (KernelTraceHostOp("HOST.watch.store128 override ACTIVE"), true);
-    (void)banner128;
+    // CRITICAL FIX: Prevent infinite recursion during static initialization
+    static bool banner128_logged = false;
+    if (!banner128_logged) {
+        banner128_logged = true;
+        KernelTraceHostOp("HOST.watch.store128 override ACTIVE");
+    }
 
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
@@ -483,8 +551,12 @@ inline void StoreBE128_Watched(uint8_t* base, uint32_t ea, uint64_t hi, uint64_t
 
 inline void StoreBE128_Watched_P(uint8_t* base, uint32_t ea, const void* src16)
 {
-    static bool banner128p = (KernelTraceHostOp("HOST.watch.store128(ptr) override ACTIVE"), true);
-    (void)banner128p;
+    // CRITICAL FIX: Prevent infinite recursion during static initialization
+    static bool banner128p_logged = false;
+    if (!banner128p_logged) {
+        banner128p_logged = true;
+        KernelTraceHostOp("HOST.watch.store128(ptr) override ACTIVE");
+    }
 
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
@@ -550,16 +622,16 @@ inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
     // Check if this is the flag address that the main thread is waiting on
     const uint32_t FLAG_EA = 0x82A2CF40;
     if (ea == FLAG_EA) {
-        // CRITICAL FIX: Enable by default to allow main loop to run
-        // The main loop needs to run so the game can progress through initialization
+        // DISABLED: Workaround no longer needed after fixing byte-swapping in VBlank handler
+        // The flag is now correctly written in big-endian format and read correctly
         static bool unblock_enabled = []() {
             const char* env = std::getenv("MW05_UNBLOCK_MAIN");
-            if (env && *env == '0') return false;  // Allow disabling via env var
-            return true;  // Enabled by default
+            if (env && *env && *env != '0') return true;  // Allow enabling via env var
+            return false;  // Disabled by default (byte-swapping is fixed)
         }();
 
         if (unblock_enabled) {
-            // Force return 1 to unblock the main thread
+            // Force return 1 to unblock the main thread (only if env var is set)
             static int log_count = 0;
             if (log_count++ < 10) {
                 KernelTraceHostOpF("HOST.LoadBE32_Watched FORCING flag ea=%08X to 1", ea);
@@ -572,6 +644,11 @@ inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
     // ea is a guest address (e.g., 0x82813090)
     // The default PPC_LOAD_U32 macro does: base + ea
     // So we just replicate that behavior here
+
+    // CRITICAL: Memory fence to ensure we see the latest writes from other threads
+    // Without this, the CPU cache may return stale values
+    std::atomic_thread_fence(std::memory_order_acquire);
+
     return __builtin_bswap32(*(volatile uint32_t*)(base + ea));
 }
 

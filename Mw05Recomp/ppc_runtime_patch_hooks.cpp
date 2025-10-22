@@ -85,6 +85,8 @@ static bool RuntimePatchesEnabled()
     __declspec(allocate(".CRT$XCU")) void (*ppc_runtime_patch_hooks_ctor_)(void) = ppc_runtime_patch_hooks_ctor;
     static void __cdecl ppc_runtime_patch_hooks_ctor() { if (RuntimePatchesEnabled()) InstallRuntimePatches(); else KernelTraceHostOp("HOST.Patch.skip"); }
 #else
-    __attribute__((constructor)) static void ppc_runtime_patch_hooks_ctor() { if (RuntimePatchesEnabled()) InstallRuntimePatches(); else KernelTraceHostOp("HOST.Patch.skip"); }
+    // DISABLED: Static constructor causes crash during global construction
+    // InstallRuntimePatches() is now called manually in main() after memory is initialized
+    // __attribute__((constructor)) static void ppc_runtime_patch_hooks_ctor() { if (RuntimePatchesEnabled()) InstallRuntimePatches(); else KernelTraceHostOp("HOST.Patch.skip"); }
 #endif
 

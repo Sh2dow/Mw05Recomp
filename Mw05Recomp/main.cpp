@@ -200,7 +200,16 @@ void KiSystemStartup()
         std::_Exit(1);
     }
 
+    // Initialize heap now that C runtime is fully ready
     g_userHeap.Init();
+    g_userHeap.inGlobalConstruction = false;  // Mark that global construction is complete
+
+    // Register ALL function hooks now that memory is initialized
+    // (was previously done in static constructors, but that caused crash because g_memory.base was nullptr)
+    RegisterFileSystemHooks();
+    // Note: Other hook registration functions (RegisterMw05FunctionHooks, RegisterMw05VideoManualHooks, etc.)
+    // are static and cannot be called from here. They will need to be made non-static or wrapped.
+    // For now, we'll rely on the generated hook overrides which are registered automatically.
 
     // Publish ExLoadedImageName/ExLoadedCommandLine guest pointers (needs heap)
     Mw05InitKernelVarExportsOnce();

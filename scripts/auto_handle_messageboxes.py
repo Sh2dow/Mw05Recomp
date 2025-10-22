@@ -9,6 +9,9 @@ import time
 import sys
 import os
 from pathlib import Path
+from pywinauto import Desktop
+import psutil
+import win32process
 
 # Add pywinauto to path if needed
 try:
@@ -19,69 +22,43 @@ except ImportError:
     print("ERROR: pywinauto not installed. Install with: pip install pywinauto")
     sys.exit(1)
 
+
+TARGET_PROCESSES = ["Mw05Recomp.exe"]
+
 def find_and_click_messagebox():
-    """Find any messagebox and click Ignore/OK button."""
     try:
-        # Find all windows with common messagebox titles
-        messagebox_titles = [
-            "Mw05 Recompiled",
-            "Microsoft Visual C++ Runtime Library",
-            "Debug Error",
-            "Error",
-            "Assertion Failed"
-        ]
-        
-        for title in messagebox_titles:
+        for win in Desktop(backend="win32").windows():
+            if win.class_name() != "#32770":
+                continue  # only dialog boxes
+
+            # Get process name
             try:
-                windows = find_windows(title_re=f".*{title}.*")
-                if windows:
-                    print(f"[MSGBOX] Found messagebox with title containing '{title}'")
-                    for hwnd in windows:
-                        try:
-                            app = Application().connect(handle=hwnd)
-                            dlg = app.window(handle=hwnd)
-                            
-                            # Try to click Ignore button first
-                            try:
-                                ignore_btn = dlg.child_window(title="Ignore", control_type="Button")
-                                if ignore_btn.exists():
-                                    print(f"[MSGBOX] Clicking 'Ignore' button")
-                                    ignore_btn.click()
-                                    time.sleep(0.5)
-                                    return True
-                            except:
-                                pass
-                            
-                            # Try to click OK button
-                            try:
-                                ok_btn = dlg.child_window(title="OK", control_type="Button")
-                                if ok_btn.exists():
-                                    print(f"[MSGBOX] Clicking 'OK' button")
-                                    ok_btn.click()
-                                    time.sleep(0.5)
-                                    return True
-                            except:
-                                pass
-                            
-                            # Try to click Retry button (will retry the operation)
-                            try:
-                                retry_btn = dlg.child_window(title="Retry", control_type="Button")
-                                if retry_btn.exists():
-                                    print(f"[MSGBOX] Clicking 'Retry' button")
-                                    retry_btn.click()
-                                    time.sleep(0.5)
-                                    return True
-                            except:
-                                pass
-                                
-                        except Exception as e:
-                            pass
-            except:
-                pass
-                
+                _, pid = win32process.GetWindowThreadProcessId(win.handle)
+                proc = psutil.Process(pid)
+                pname = proc.name()
+            except Exception:
+                continue
+
+            # Skip if not our game
+            if pname not in TARGET_PROCESSES:
+                continue
+
+            print(f"[MSGBOX] Found dialog: '{win.window_text()}' (pid={pid}, process={pname})")
+
+            # Try clicking common buttons
+            for btn_title in ["Ignore", "Abort", "OK", "Yes", "Continue", "Retry"]:
+                try:
+                    btn = win.child_window(title=btn_title, control_type="Button")
+                    if btn.exists():
+                        print(f"[MSGBOX] Clicking '{btn_title}'")
+                        btn.click()
+                        time.sleep(0.5)
+                        return True
+                except Exception:
+                    continue
+
     except Exception as e:
-        pass
-    
+        print(f"[WARN] Exception in find_and_click_messagebox: {e}")
     return False
 
 def main():
@@ -108,21 +85,77 @@ def main():
     print(f"[START] Starting game: {exe_path}")
     print(f"[START] Will run for {args.duration} seconds and auto-handle any messageboxes...")
 
-    # CLEAN ENVIRONMENT - Only essential variables that don't corrupt heap
-    # User reported that heap shows 0 MB and game crashes with full environment
-    # But works fine with only MW05_STREAM_BRIDGE=1 and MW05_HOST_TRACE_FILE
+    # ENVIRONMENT VARIABLES - EXACT COPY from run_with_env.cmd
+    # These are CRITICAL for the game to progress past initialization
     env = os.environ.copy()
     env["MW05_DEBUG_PROFILE"] = "1"
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
+    env["MW05_BREAK_82813514"] = "0"
+    env["MW05_FAKE_ALLOC_SYSBUF"] = "1"
+    env["MW05_UNBLOCK_MAIN"] = "1"
+    env["MW05_TRACE_KERNEL"] = "1"
+    env["MW05_HOST_TRACE_IMPORTS"] = "1"
+    env["MW05_HOST_TRACE_HOSTOPS"] = "1"
+    env["MW05_TRACE_HEAP"] = "1"
+    env["MW05_BREAK_SLEEP_LOOP"] = "1"
+    env["MW05_BREAK_SLEEP_AFTER"] = "5"
 
-    # CRITICAL: Enable streaming bridge for file I/O
+    env["MW05_VBLANK_VDSWAP"] = "0"
+    env["MW05_KICK_VIDEO"] = "0"
+    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "0"
+    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
+    env["MW05_FORCE_PRESENT"] = "0"
+    env["MW05_FORCE_PRESENT_BG"] = "0"
+    env["MW05_VDSWAP_NOTIFY"] = "0"
+    env["MW05_FAST_BOOT"] = "0"
+    env["MW05_FAST_RET"] = "0"
+    env["MW05_FORCE_VD_INIT"] = "1"
+    env["MW05_TRACE_INDIRECT"] = "0"
+    env["MW05_TITLE_STATE_TRACE"] = "1"
+    env["MW05_BREAK_WAIT_LOOP"] = "0"
+    env["MW05_FORCE_VIDEO_THREAD"] = "0"
+    env["MW05_FORCE_VIDEO_THREAD_TICK"] = "0"
+    env["MW05_DEFAULT_VD_ISR"] = "0"
+    env["MW05_REGISTER_DEFAULT_VD_ISR"] = "0"
+    env["MW05_PULSE_VD_ON_SLEEP"] = "0"
+    env["MW05_PRESENT_HEARTBEAT_MS"] = "0"
     env["MW05_STREAM_BRIDGE"] = "1"
+    env["MW05_STREAM_FALLBACK_BOOT"] = "1"
+    env["MW05_STREAM_ACK_NO_PATH"] = "0"
+    env["MW05_LOOP_TRY_PM4_PRE"] = "0"
+    env["MW05_LOOP_TRY_PM4_POST"] = "0"
+    env["MW05_INNER_TRY_PM4"] = "0"
+    env["MW05_FORCE_GFX_NOTIFY_CB"] = "1"
+    env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0x40007180"
+    env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
+    env["MW05_SET_PRESENT_CB"] = "1"
+    env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
+    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
+    env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
+    env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
+    env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
 
-    # NOTE: Removed all force-creation and force-initialization variables
-    # because they corrupt the heap (heap shows 0 MB) and cause crashes.
-    # The game should create worker threads naturally without force-initialization.
+    env["MW05_SCHED_R3_EA"] = "0x00260370"
+    env["MW05_FPW_KICK_PM4"] = "1"
 
-    print(f"[ENV] Running with CLEAN environment (MW05_STREAM_BRIDGE + MW05_HOST_TRACE_FILE only)")
+    # Force-create the render threads that issue draw commands
+    env["MW05_FORCE_RENDER_THREADS"] = "1"
+
+    # CRITICAL: Force initialization of callback parameter structure
+    # This is required for worker threads to start processing work items
+    env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "1"
+
+    # Signal the VD interrupt event to wake up the render thread
+    env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"
+    env["MW05_PULSE_VD_EVENT_ON_SLEEP"] = "1"
+
+    # Enable PM4 state application
+    env["MW05_PM4_APPLY_STATE"] = "1"
+
+    # Force the flag at r31+10434 that gates present calls
+    env["MW05_FORCE_PRESENT_FLAG"] = "1"
+
+    print(f"[ENV] Running with ALL environment variables from run_with_env.cmd + MW05_FORCE_INIT_CALLBACK_PARAM")
 
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")

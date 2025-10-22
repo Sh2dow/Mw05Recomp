@@ -9,7 +9,7 @@ REM Set all environment variables from run_with_debug.ps1
 set MW05_HOST_TRACE_FILE=mw05_host_trace.log
 set MW05_BREAK_82813514=0
 set MW05_FAKE_ALLOC_SYSBUF=1
-set MW05_UNBLOCK_MAIN=1
+set MW05_UNBLOCK_MAIN=0
 set MW05_TRACE_KERNEL=1
 set MW05_HOST_TRACE_IMPORTS=1
 set MW05_HOST_TRACE_HOSTOPS=1

@@ -356,6 +356,27 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
         }
     }
 
+    // WATCHPOINT: Log writes to callback parameter structure at 0x82A2B318
+    // This structure is critical for worker thread initialization
+    // We need to find what naturally initializes it (especially work_func at +0x10)
+    if (ea >= 0x82A2B318 && ea < 0x82A2B338) {  // Structure is 32 bytes (0x20)
+        if (auto* c = GetPPCContext()) {
+            uint32_t offset = ea - 0x82A2B318;
+            const char* field_name = "unknown";
+            if (offset == 0x00) field_name = "field_00";
+            else if (offset == 0x04) field_name = "field_04";
+            else if (offset == 0x08) field_name = "state";
+            else if (offset == 0x0C) field_name = "result";
+            else if (offset == 0x10) field_name = "work_func (CRITICAL!)";
+            else if (offset == 0x14) field_name = "work_param";
+            else if (offset == 0x18) field_name = "field_18";
+            else if (offset == 0x1C) field_name = "flag";
+
+            KernelTraceHostOpF("HOST.WATCHPOINT.0x82A2B318 WRITE: offset=+0x%02X (%s) val=0x%08X lr=%08llX",
+                              offset, field_name, v, (unsigned long long)c->lr);
+        }
+    }
+
     // Prevent main thread flag at 0x82A2CF40 from being reset to 0
     // This works in conjunction with LoadBE32_Watched forcing reads to return 1
     const uint32_t FLAG_EA = 0x82A2CF40;

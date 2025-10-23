@@ -451,7 +451,7 @@ bool ConfigDef<T, isHidden>::IsHidden()
 }
 
 template<typename T, bool isHidden>
-void ConfigDef<T, isHidden>::ReadValue(toml::v3::ex::parse_result& toml)
+void ConfigDef<T, isHidden>::ReadValue(toml::parse_result& toml)
 {
     if (auto pSection = toml[Section].as_table())
     {

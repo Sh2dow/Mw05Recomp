@@ -60,12 +60,10 @@ public:
             fprintf(stderr, "[INIT-MGR]          Running callback immediately...\n");
             fflush(stderr);
             
-            try {
-                callback();
-                fprintf(stderr, "[INIT-MGR] ✓ '%s' (late registration)\n", name);
-            } catch (const std::exception& e) {
-                fprintf(stderr, "[INIT-MGR] ✗ '%s' FAILED: %s\n", name, e.what());
-            }
+            // Exceptions are disabled in this build, so we can't use try/catch
+            // Just call the callback directly
+            callback();
+            fprintf(stderr, "[INIT-MGR] ✓ '%s' (late registration)\n", name);
             fflush(stderr);
             return;
         }
@@ -105,17 +103,11 @@ public:
                     entry.name.c_str(), entry.priority);
             fflush(stderr);
 
-            try {
-                entry.callback();
-                succeeded++;
-                fprintf(stderr, "[INIT-MGR] ✓ '%s' completed successfully\n", entry.name.c_str());
-            } catch (const std::exception& e) {
-                failed++;
-                fprintf(stderr, "[INIT-MGR] ✗ '%s' FAILED: %s\n", entry.name.c_str(), e.what());
-            } catch (...) {
-                failed++;
-                fprintf(stderr, "[INIT-MGR] ✗ '%s' FAILED: Unknown exception\n", entry.name.c_str());
-            }
+            // Exceptions are disabled in this build, so we can't use try/catch
+            // Just call the callback directly
+            entry.callback();
+            succeeded++;
+            fprintf(stderr, "[INIT-MGR] ✓ '%s' completed successfully\n", entry.name.c_str());
             fflush(stderr);
         }
 

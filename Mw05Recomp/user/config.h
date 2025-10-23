@@ -7,7 +7,7 @@ class IConfigDef
 public:
     virtual ~IConfigDef() = default;
     virtual bool IsHidden() = 0;
-    virtual void ReadValue(toml::v3::ex::parse_result& toml) = 0;
+    virtual void ReadValue(toml::parse_result& toml) = 0;
     virtual void MakeDefault() = 0;
     virtual std::string_view GetSection() const = 0;
     virtual std::string_view GetName() const = 0;
@@ -185,7 +185,7 @@ public:
     ~ConfigDef();
 
     bool IsHidden() override;
-    void ReadValue(toml::v3::ex::parse_result& toml) override;
+    void ReadValue(toml::parse_result& toml) override;
     void MakeDefault() override;
     std::string_view GetSection() const override;
     std::string_view GetName() const override;

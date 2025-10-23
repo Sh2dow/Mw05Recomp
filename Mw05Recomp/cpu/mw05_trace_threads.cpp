@@ -42,8 +42,38 @@ PPC_FUNC(sub_8262D9D0) {
     uint64_t count = s_callCount.fetch_add(1);
 
     // Log every call - this should be called if the sleep-skip flag is ZERO
-    KernelTraceHostOpF("HOST.sub_8262D9D0.called lr=%08llX count=%llu r3=%08X",
-                      ctx.lr, count, ctx.r3.u32);
+    if (count < 10 || count % 10000 == 0) {
+        KernelTraceHostOpF("HOST.sub_8262D9D0.called lr=%08llX count=%llu r3=%08X",
+                          ctx.lr, count, ctx.r3.u32);
+    }
+
+    // CRITICAL FIX: Set the main loop flag directly from the sleep function
+    // This avoids cache coherency issues because the flag is set from the same thread that checks it
+    static const bool s_set_flag_from_sleep = [](){
+        if (const char* v = std::getenv("MW05_SET_FLAG_FROM_SLEEP"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true; // ENABLED BY DEFAULT to fix cache coherency issue
+    }();
+
+    if (s_set_flag_from_sleep) {
+        // Set the main loop flag at 0x82A2CF40 to 1
+        // This is the flag that the main loop checks to exit the sleep loop
+        const uint32_t main_loop_flag_ea = 0x82A2CF40;
+        uint32_t* main_loop_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(main_loop_flag_ea));
+        if (main_loop_flag_ptr) {
+            // Set flag to 1 (big-endian)
+            *main_loop_flag_ptr = _byteswap_ulong(1);
+
+            // Log the first few times
+            if (count < 10) {
+                KernelTraceHostOpF("HOST.sub_8262D9D0.set_main_loop_flag ea=%08X count=%llu",
+                                  main_loop_flag_ea, count);
+            }
+        }
+
+        // Return immediately without sleeping
+        return;
+    }
 
     // Call the original
     __imp__sub_8262D9D0(ctx, base);
@@ -289,6 +319,11 @@ extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCoun
 // This function manually creates the missing threads to unblock the game
 // NOTE: This function is called from guest_thread.cpp, so it cannot be static
 void Mw05ForceCreateMissingWorkerThreads() {
+    // DISABLED: Force-creating worker threads causes NULL callback crashes
+    // The threads call functions that expect initialization that hasn't happened yet
+    // The game creates its own worker threads naturally - let it do so
+    return;
+
     static std::atomic<bool> s_created{false};
     static std::atomic<int> s_check_count{0};
 
@@ -353,23 +388,25 @@ void Mw05ForceCreateMissingWorkerThreads() {
             fprintf(stderr, "[FORCE_WORKERS] FORCE-INITIALIZING callback parameter structure (check_count=%d)...\n", check_count);
             fflush(stderr);
 
-            // Initialize the callback parameter structure with known values from working session
-            // +0x00 (0): field_00 = 0xB5901790 (varies)
-            // +0x04 (4): field_04 = varies
-            // +0x08 (8): state = 0x00000001
+            // Initialize the callback parameter structure with MINIMAL values
+            // The 0xB5901790 values at +0x00 and +0x18 are context-specific and cause crashes
+            // Try initializing with zeros except for the critical work_func pointer
+            // +0x00 (0): field_00 = 0x00000000 (was 0xB5901790 - context-specific!)
+            // +0x04 (4): field_04 = 0x00000000
+            // +0x08 (8): state = 0x00000000 (was 0x00000001)
             // +0x0C (12): result = 0x00000000
             // +0x10 (16): work_func = 0x82441E58 (CRITICAL!)
             // +0x14 (20): work_param = 0x00000000
-            // +0x18 (24): field_18 = 0xB5901790
+            // +0x18 (24): field_18 = 0x00000000 (was 0xB5901790 - context-specific!)
             // +0x1C (28): flag = 0 (0 = 1 param, non-zero = 2 params)
 
-            callback_param_u32[0] = 0xB5901790u;  // +0x00
+            callback_param_u32[0] = 0x00000000u;  // +0x00 - ZERO instead of 0xB5901790
             callback_param_u32[1] = 0x00000000u;  // +0x04
-            callback_param_u32[2] = 0x00000001u;  // +0x08 - state
+            callback_param_u32[2] = 0x00000000u;  // +0x08 - state (ZERO instead of 1)
             callback_param_u32[3] = 0x00000000u;  // +0x0C - result
             callback_param_u32[4] = 0x82441E58u;  // +0x10 - work_func (CRITICAL!)
             callback_param_u32[5] = 0x00000000u;  // +0x14 - work_param
-            callback_param_u32[6] = 0xB5901790u;  // +0x18
+            callback_param_u32[6] = 0x00000000u;  // +0x18 - ZERO instead of 0xB5901790
             callback_param_u32[7] = 0x00000000u;  // +0x1C - flag
 
             fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure initialized! work_func=0x82441E58\n");
@@ -658,6 +695,19 @@ PPC_FUNC(sub_82441E80) {
             ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
     fflush(stderr);
 
+    // CRITICAL DEBUG: Add periodic logging to see if main loop is stuck
+    // Create a background thread that logs the program counter every 5 seconds
+    static std::atomic<bool> s_monitor_started{false};
+    if (!s_monitor_started.exchange(true)) {
+        std::thread([]() {
+            for (int i = 0; i < 12; ++i) {  // Log for 60 seconds (12 * 5s)
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                fprintf(stderr, "[MAIN_LOOP_MONITOR] Still running after %d seconds...\n", (i+1)*5);
+                fflush(stderr);
+            }
+        }).detach();
+    }
+
     // Call the original function
     __imp__sub_82441E80(ctx, base);
 
@@ -731,10 +781,8 @@ PPC_FUNC(sub_828508A8)
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
-    KernelTraceHostOp("HOST.ThreadEntry.828508A8.enter");
-    fprintf(stderr, "[THREAD_828508A8] ENTER count=%llu tid=%lx r3=%08X r4=%08X r5=%08X lr=%08X\n",
+    KernelTraceHostOpF("HOST.ThreadEntry.828508A8.enter count=%llu tid=%lx r3=%08X r4=%08X r5=%08X lr=%08X",
             count, GetCurrentThreadId(), ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.lr);
-    fflush(stderr);
 
     // CRITICAL DEBUG: Check what's in the context structure at offset +84
     // This should contain the callback function pointer that sub_82850820 will call
@@ -900,12 +948,54 @@ PPC_FUNC(sub_828508A8)
     });
     monitor.detach();
 
-    // Call the original thread entry point
-    __imp__sub_828508A8(ctx, base);
+    // CRITICAL FIX: The recompiled code for sub_828508A8 has a bug - it gets stuck in a sleep loop
+    // at sub_8262F2A0 instead of calling KeWaitForSingleObject on event 0x400007E0.
+    // According to CRITICAL_FINDINGS_VdInit.md, this thread should call sub_82850820 which
+    // eventually leads to VdInitializeEngines with the correct callback.
+    //
+    // WORKAROUND: Skip the buggy recompiled code and call sub_82850820 directly.
+    static const bool s_skip_buggy_code = [](){
+        if (const char* v = std::getenv("MW05_SKIP_828508A8_BUG"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true; // ENABLED BY DEFAULT - this is critical for game progression
+    }();
 
-    fprintf(stderr, "[THREAD_828508A8] EXIT count=%llu tid=%lx r3=%08X\n", count, GetCurrentThreadId(), ctx.r3.u32);
-    fflush(stderr);
-    KernelTraceHostOp("HOST.ThreadEntry.828508A8.exit");
+    KernelTraceHostOpF("HOST.ThreadEntry.828508A8.workaround_check skip=%d", s_skip_buggy_code ? 1 : 0);
+
+    if (s_skip_buggy_code) {
+        KernelTraceHostOp("HOST.ThreadEntry.828508A8.workaround_active");
+
+        // CRITICAL FIX: Install PPC context into TLS before calling guest code
+        // VdInitializeEngines checks GetPPCContext() to determine if it's being called from a guest thread
+        // Without this, GetPPCContext() returns NULL and the callback is skipped
+        PPCContext* saved_ctx = GetPPCContext();
+        SetPPCContext(ctx);
+
+        KernelTraceHostOpF("HOST.ThreadEntry.828508A8.context_installed GetPPCContext=%p", (void*)GetPPCContext());
+
+        // Call sub_82850820 directly (this is what sub_828508A8 should do after initialization)
+        // The context parameter (r3) should be passed through
+        // NOTE: sub_82850820 is defined below with PPC_FUNC_IMPL, so we can call it directly
+        sub_82850820(ctx, base);
+
+        KernelTraceHostOp("HOST.ThreadEntry.828508A8.sub_82850820_returned");
+
+        // Restore previous PPC context
+        if (saved_ctx) {
+            SetPPCContext(*saved_ctx);
+        } else {
+            g_ppcContext = nullptr;
+        }
+
+        // Set return value to 0 (success)
+        ctx.r3.u32 = 0;
+    } else {
+        KernelTraceHostOp("HOST.ThreadEntry.828508A8.calling_original");
+        // Call the original thread entry point
+        __imp__sub_828508A8(ctx, base);
+    }
+
+    KernelTraceHostOpF("HOST.ThreadEntry.828508A8.exit count=%llu tid=%lx r3=%08X", count, GetCurrentThreadId(), ctx.r3.u32);
 }
 
 // CRITICAL FIX: Force-create render thread at VBlank 75 (matching Xenia behavior)
@@ -1522,6 +1612,7 @@ PPC_FUNC(sub_82812F10)
 
 // NOTE: sub_8215FDC0 wrapper is already defined in mw05_function_hooks.cpp
 // NOTE: sub_82813598 wrapper is already defined below (lines 1447+)
+// NOTE: sub_8262F2A0 wrapper is already defined in mw05_trace_shims.cpp - modify that one instead
 
 // Wrapper for sub_82630378 to log the handle parameter
 PPC_FUNC_IMPL(__imp__sub_82630378);

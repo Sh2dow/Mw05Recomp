@@ -59,6 +59,8 @@ $LLVM = $LLVM -replace '\\', '/'
 $LLVM_CL = (Join-Path $LLVM 'clang-cl.exe') -replace '\\', '/'
 $LLVM_MT = (Join-Path $LLVM 'llvm-mt.exe') -replace '\\', '/'
 $LLVM_LINK = (Join-Path $LLVM 'lld-link.exe') -replace '\\', '/'
+$LLVM_AR = (Join-Path $LLVM 'llvm-lib.exe') -replace '\\', '/'
+$LLVM_RANLIB = (Join-Path $LLVM 'llvm-ranlib.exe') -replace '\\', '/'
 $RC = (Join-Path $root "bin/$latestSdk/x64/rc.exe") -replace '\\', '/'
 $MT = if (Test-Path $LLVM_MT) { $LLVM_MT } else { (Join-Path $LLVM 'llvm-mt.exe') -replace '\\', '/' }
 
@@ -416,6 +418,8 @@ function Invoke-Configure
     -D CMAKE_C_COMPILER:FILEPATH="$LLVM_CL" `
     -D CMAKE_CXX_COMPILER:FILEPATH="$LLVM_CL" `
     -D CMAKE_LINKER:FILEPATH="$LLVM_LINK" `
+    -D CMAKE_AR:FILEPATH="$LLVM_AR" `
+    -D CMAKE_RANLIB:FILEPATH="$LLVM_RANLIB" `
     -D CMAKE_RC_COMPILER:FILEPATH="$RC" `
     -D CMAKE_MT:FILEPATH="$LLVM_MT" `
     -D CMAKE_TOOLCHAIN_FILE="$toolchain" `

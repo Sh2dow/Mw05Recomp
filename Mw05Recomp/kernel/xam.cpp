@@ -17,6 +17,17 @@
 // Forward decl from kernel/imports.cpp
 extern "C" bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait);
 
+// XamUser signin states
+enum XUserSigninState {
+    eXUserSigninState_NotSignedIn = 0,
+    eXUserSigninState_SignedInLocally = 1,
+    eXUserSigninState_SignedInToLive = 2,
+};
+
+// Fake user data for testing
+static const uint64_t g_fakeXUID = 0xE000000000000001ULL;  // Offline XUID
+static const char* g_fakeUserName = "Player1";
+
 
 struct XamListener : KernelObject
 {
@@ -694,4 +705,136 @@ uint32_t XamInputSetState(uint32_t userIndex, uint32_t flags, XAMINPUT_VIBRATION
     ByteSwapInplace(vibration->wRightMotorSpeed);
 
     return hid::SetState(userIndex, vibration);
+}
+
+// XamUser functions - needed to unblock game initialization
+PPC_FUNC(XamUserGetSigninState)
+{
+    uint32_t userIndex = ctx.r3.u32;
+
+    // Return SignedInLocally for user 0, NotSignedIn for others
+    uint32_t state = (userIndex == 0) ? eXUserSigninState_SignedInLocally : eXUserSigninState_NotSignedIn;
+
+    fprintf(stderr, "[HOST.XamUserGetSigninState] userIndex=%u -> state=%u\n", userIndex, state);
+    fflush(stderr);
+
+    ctx.r3.u32 = state;
+}
+
+PPC_FUNC(XamUserGetXUID)
+{
+    uint32_t userIndex = ctx.r3.u32;
+    uint32_t xuidPtr_ea = ctx.r4.u32;
+
+    // Return fake XUID for user 0
+    if (userIndex == 0 && xuidPtr_ea != 0) {
+        be<uint64_t>* xuidPtr = static_cast<be<uint64_t>*>(g_memory.Translate(xuidPtr_ea));
+        if (xuidPtr) {
+            *xuidPtr = g_fakeXUID;
+            fprintf(stderr, "[HOST.XamUserGetXUID] userIndex=%u -> XUID=%016llX\n", userIndex, g_fakeXUID);
+            fflush(stderr);
+            ctx.r3.u32 = ERROR_SUCCESS;
+            return;
+        }
+    }
+
+    fprintf(stderr, "[HOST.XamUserGetXUID] userIndex=%u -> ERROR (not signed in)\n", userIndex);
+    fflush(stderr);
+    ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
+}
+
+PPC_FUNC(XamUserGetName)
+{
+    uint32_t userIndex = ctx.r3.u32;
+    uint32_t nameBuffer_ea = ctx.r4.u32;
+    uint32_t bufferSize = ctx.r5.u32;
+
+    // Return fake username for user 0
+    if (userIndex == 0 && nameBuffer_ea != 0 && bufferSize > 0) {
+        char* nameBuffer = static_cast<char*>(g_memory.Translate(nameBuffer_ea));
+        if (nameBuffer) {
+            size_t copyLen = std::min((size_t)bufferSize - 1, strlen(g_fakeUserName));
+            memcpy(nameBuffer, g_fakeUserName, copyLen);
+            nameBuffer[copyLen] = '\0';
+
+            fprintf(stderr, "[HOST.XamUserGetName] userIndex=%u -> name='%s'\n", userIndex, g_fakeUserName);
+            fflush(stderr);
+            ctx.r3.u32 = ERROR_SUCCESS;
+            return;
+        }
+    }
+
+    fprintf(stderr, "[HOST.XamUserGetName] userIndex=%u -> ERROR (not signed in)\n", userIndex);
+    fflush(stderr);
+    ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
+}
+
+PPC_FUNC(XamUserCheckPrivilege)
+{
+    uint32_t userIndex = ctx.r3.u32;
+    uint32_t privilege = ctx.r4.u32;
+    uint32_t resultPtr_ea = ctx.r5.u32;
+
+    // Always grant all privileges for user 0
+    if (userIndex == 0 && resultPtr_ea != 0) {
+        be<uint32_t>* resultPtr = static_cast<be<uint32_t>*>(g_memory.Translate(resultPtr_ea));
+        if (resultPtr) {
+            *resultPtr = 1;  // Privilege granted
+            fprintf(stderr, "[HOST.XamUserCheckPrivilege] userIndex=%u privilege=%u -> GRANTED\n", userIndex, privilege);
+            fflush(stderr);
+            ctx.r3.u32 = ERROR_SUCCESS;
+            return;
+        }
+    }
+
+    fprintf(stderr, "[HOST.XamUserCheckPrivilege] userIndex=%u privilege=%u -> ERROR\n", userIndex, privilege);
+    fflush(stderr);
+    ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
+}
+
+PPC_FUNC(XamUserAreUsersFriends)
+{
+    uint32_t userIndex = ctx.r3.u32;
+    uint32_t count = ctx.r5.u32;
+
+    // Stub: no friends
+    fprintf(stderr, "[HOST.XamUserAreUsersFriends] userIndex=%u count=%u -> no friends (stub)\n", userIndex, count);
+    fflush(stderr);
+
+    ctx.r3.u32 = ERROR_SUCCESS;
+}
+
+PPC_FUNC(XamUserCreateStatsEnumerator)
+{
+    uint32_t titleId = ctx.r3.u32;
+    uint32_t userIndex = ctx.r4.u32;
+
+    // Stub: return empty enumerator
+    fprintf(stderr, "[HOST.XamUserCreateStatsEnumerator] titleId=%08X userIndex=%u -> stub\n", titleId, userIndex);
+    fflush(stderr);
+
+    ctx.r3.u32 = ERROR_SUCCESS;
+}
+
+PPC_FUNC(XamUserCreateAchievementEnumerator)
+{
+    uint32_t titleId = ctx.r3.u32;
+    uint32_t userIndex = ctx.r4.u32;
+
+    // Stub: return empty enumerator
+    fprintf(stderr, "[HOST.XamUserCreateAchievementEnumerator] titleId=%08X userIndex=%u -> stub\n", titleId, userIndex);
+    fflush(stderr);
+
+    ctx.r3.u32 = ERROR_SUCCESS;
+}
+
+PPC_FUNC(XamUserCreatePlayerEnumerator)
+{
+    uint32_t userIndex = ctx.r3.u32;
+
+    // Stub: return empty enumerator
+    fprintf(stderr, "[HOST.XamUserCreatePlayerEnumerator] userIndex=%u -> stub\n", userIndex);
+    fflush(stderr);
+
+    ctx.r3.u32 = ERROR_SUCCESS;
 }

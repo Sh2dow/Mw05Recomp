@@ -83,15 +83,16 @@ def main():
     print(f"[START] Will run for {args.duration} seconds and auto-handle any messageboxes...")
 
     # ENVIRONMENT VARIABLES - EXACT COPY from run_with_env.cmd
-    
-    # These are CRITICAL for the game to progress past initialization
     env = os.environ.copy()
 
+    # Enable debug profile to apply default environment variables
     env["MW05_DEBUG_PROFILE"] = "1"
+
+    # Set all environment variables from run_with_env.cmd
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
     env["MW05_BREAK_82813514"] = "0"
     env["MW05_FAKE_ALLOC_SYSBUF"] = "1"
-    env["MW05_UNBLOCK_MAIN"] = "1"
+    env["MW05_UNBLOCK_MAIN"] = "0"
     env["MW05_TRACE_KERNEL"] = "1"
     env["MW05_HOST_TRACE_IMPORTS"] = "1"
     env["MW05_HOST_TRACE_HOSTOPS"] = "1"
@@ -105,6 +106,7 @@ def main():
     env["MW05_FAST_BOOT"] = "0"
     env["MW05_FAST_RET"] = "0"
     env["MW05_FORCE_VD_INIT"] = "1"
+
     env["MW05_TRACE_INDIRECT"] = "0"
     env["MW05_TITLE_STATE_TRACE"] = "1"
     env["MW05_BREAK_WAIT_LOOP"] = "0"
@@ -114,6 +116,7 @@ def main():
     env["MW05_REGISTER_DEFAULT_VD_ISR"] = "0"
     env["MW05_PULSE_VD_ON_SLEEP"] = "0"
     env["MW05_PRESENT_HEARTBEAT_MS"] = "0"
+
     env["MW05_STREAM_BRIDGE"] = "1"
     env["MW05_STREAM_FALLBACK_BOOT"] = "1"
     env["MW05_STREAM_ACK_NO_PATH"] = "0"
@@ -123,28 +126,29 @@ def main():
     env["MW05_FORCE_GFX_NOTIFY_CB"] = "1"
     env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0x40007180"
     env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
-    env["MW05_SET_PRESENT_CB"] = "1"
     env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
-    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
+
     env["MW05_FORCE_PRESENT"] = "1"
     env["MW05_FORCE_PRESENT_BG"] = "1"
+    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
     env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
     env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
     env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
     env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
 
-    # Force the flag at r31+10434 that gates present calls
-    env["MW05_FORCE_PRESENT_FLAG"] = "1"
-
     env["MW05_SCHED_R3_EA"] = "0x00260370"
     env["MW05_FPW_KICK_PM4"] = "1"
 
-    # Force-create the render threads that issue draw commands
-    env["MW05_FORCE_RENDER_THREADS"] = "1"
+    # CRITICAL FIX: Force-call CreateDevice to bypass blocked state machine
+    # The game is stuck in TitleState loop and never calls CreateDevice naturally
+    # This unblocks render thread creation and allows the game to progress
+    env["MW05_FORCE_CALL_CREATEDEVICE"] = "1"
+    env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "100"  # Wait ~1.67 seconds for graphics init
 
-    # CRITICAL: Force initialization of callback parameter structure
-    # This is required for worker threads to start processing work items
-    env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "1"
+    # DISABLE force-creation of render threads - let game create them naturally after CreateDevice
+    # Force-creating threads before their contexts are initialized causes them to exit immediately
+    env["MW05_FORCE_RENDER_THREADS"] = "0"
+    env["MW05_FORCE_RENDER_THREAD"] = "0"
 
     # Signal the VD interrupt event to wake up the render thread
     env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"
@@ -153,7 +157,17 @@ def main():
     # Enable PM4 state application
     env["MW05_PM4_APPLY_STATE"] = "1"
 
-    print(f"[ENV] Running with ALL environment variables from run_with_env.cmd")
+    # Force the flag at r31+10434 that gates present calls
+    env["MW05_FORCE_PRESENT_FLAG"] = "1"
+
+    # CRITICAL: Enable present callback pointer workaround
+    env["MW05_SET_PRESENT_CB"] = "1"
+
+    print(f"[ENV] Using environment variables from run_with_env.cmd + RENDER THREAD FIX")
+    print(f"  MW05_UNBLOCK_MAIN = {env['MW05_UNBLOCK_MAIN']}")
+    print(f"  MW05_STREAM_BRIDGE = {env['MW05_STREAM_BRIDGE']}")
+    print(f"  MW05_FORCE_RENDER_THREADS = {env['MW05_FORCE_RENDER_THREADS']}")
+    print(f"  MW05_FORCE_RENDER_THREAD = {env['MW05_FORCE_RENDER_THREAD']} (CRITICAL!)")
 
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")
@@ -213,14 +227,56 @@ def main():
     print(f"  stdout: {stdout_file}")
     print(f"  stderr: {stderr_file}")
 
-    # Show last 50 lines of stderr
+    # Analyze trace log
+    trace_log = Path("out/build/x64-Clang-Debug/Mw05Recomp/mw05_host_trace.log")
+    if trace_log.exists():
+        log_size_mb = trace_log.stat().st_size / (1024 * 1024)
+        print(f"\n[TRACE] Log size: {log_size_mb:.2f} MB")
+
+        with open(trace_log, "r", encoding="utf-8", errors="ignore") as f:
+            # Read last 10000 lines for analysis
+            lines = f.readlines()
+            tail_lines = lines[-10000:] if len(lines) > 10000 else lines
+
+            # Check for heap allocation
+            heap_lines = [l for l in tail_lines if "Heap Allocated:" in l]
+            if heap_lines:
+                print(f"[HEAP] {heap_lines[-1].strip()}")
+
+            # Check for draws
+            draw_lines = [l for l in tail_lines if "draws=" in l]
+            if draw_lines:
+                last_draw = draw_lines[-1].strip()
+                print(f"[DRAWS] {last_draw}")
+
+            # Check for sleep function calls
+            sleep_calls = len([l for l in tail_lines if "sub_8262D9D0" in l])
+            print(f"[SLEEP] sub_8262D9D0 calls in last 10k lines: {sleep_calls}")
+
+            # Check for main loop flag setting
+            flag_sets = len([l for l in tail_lines if "set_main_loop_flag" in l])
+            print(f"[FLAG] Main loop flag sets: {flag_sets}")
+
+            # Check for PM4 commands
+            pm4_lines = [l for l in tail_lines if "PM4.Scan" in l]
+            print(f"[PM4] PM4 scan operations: {len(pm4_lines)}")
+
+            # Check for VdSwap calls
+            vdswap_lines = [l for l in tail_lines if "VdSwap" in l]
+            print(f"[VDSWAP] VdSwap calls: {len(vdswap_lines)}")
+
+            # Check for Present calls
+            present_lines = [l for l in tail_lines if "PRESENT" in l]
+            print(f"[PRESENT] Present calls: {len(present_lines)}")
+
+    # Show last 30 lines of stderr
     if stderr_file.exists():
         with open(stderr_file, "r") as f:
             lines = f.readlines()
-        print(f"\n[STDERR] Last 50 lines:")
-        for line in lines[-50:]:
+        print(f"\n[STDERR] Last 30 lines:")
+        for line in lines[-30:]:
             print(f"  {line.rstrip()}")
-    
+
     return process.returncode if process.returncode is not None else 0
 
 if __name__ == "__main__":

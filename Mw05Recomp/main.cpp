@@ -101,8 +101,10 @@ static void MwApplyDebugProfile() {
     // MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
     // CRITICAL: Enable VD initialization to allow game to progress to file loading
     MwSetEnvDefault("MW05_FORCE_VD_INIT",                "1");
-    // CRITICAL: Force-initialize callback parameter structure to unblock worker thread creation
-    MwSetEnvDefault("MW05_FORCE_INIT_CALLBACK_PARAM",    "1");
+    // DISABLED: Force-initialization causes KeBugCheckEx (0xF4) - structure must be initialized naturally
+    // The callback parameter structure at 0x82A2B318 is dynamically allocated/initialized by game code
+    // Need to find and call the initialization function instead of force-initializing
+    // MwSetEnvDefault("MW05_FORCE_INIT_CALLBACK_PARAM",    "1");
     MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
     MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");
     MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");

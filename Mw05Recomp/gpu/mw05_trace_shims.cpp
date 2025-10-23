@@ -571,7 +571,12 @@ PPC_FUNC(sub_8262F2A0)
 
     // Extract parameters
     int32_t timeout_ms = static_cast<int32_t>(ctx.r3.s32);
-    BOOLEAN alertable = static_cast<BOOLEAN>(ctx.r4.u32 & 0xFF);
+
+    // CRITICAL FIX: Force r4=0 (alertable=FALSE) to make r31=0 and exit sleep loop
+    // According to CRITICAL_FINDINGS_VdInit.md, threads with entry 0x828508A8 are stuck
+    // in sleep loops because r31 stays non-zero. In Xenia, r31 becomes 0 somehow.
+    // FIX: Force alertable=FALSE so r31=0 and threads exit the loop immediately.
+    BOOLEAN alertable = FALSE;  // FORCED TO FALSE - was: static_cast<BOOLEAN>(ctx.r4.u32 & 0xFF);
 
     // Prepare interval structure on stack
     int64_t interval_value;

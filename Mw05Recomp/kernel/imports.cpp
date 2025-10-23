@@ -1770,6 +1770,16 @@ void Mw05StartVblankPumpOnce() {
                 fflush(stderr);
             }
 
+            // CRITICAL DEBUG: Log every 100 ticks to verify this part of the loop is executing
+            if (currentTick % 100 == 0) {
+                KernelTraceHostOpF("HOST.VblankPump.loop_executing tick=%u", currentTick);
+            }
+
+            // CRITICAL DEBUG: Log tick 3800 specifically to verify this code is executing
+            if (currentTick == 3800) {
+                KernelTraceHostOpF("HOST.VblankPump.TICK_3800_REACHED tick=%u", currentTick);
+            }
+
             // Debug: log tick count every 10 ticks AND always log tick 0
             // Also log every tick after 350 to track crash
             // CRITICAL DEBUG: Log first 20 ticks to debug early exit
@@ -1808,6 +1818,32 @@ void Mw05StartVblankPumpOnce() {
             if (currentTick < 20) {
                 fprintf(stderr, "[VBLANK-AFTER-WORKERS] tick=%u returned from Mw05ForceCreateMissingWorkerThreads\n", currentTick);
                 fflush(stderr);
+            }
+
+            // CRITICAL FIX: Signal event 0x400007E0 to wake up sleeping threads
+            // According to CRITICAL_FINDINGS_VdInit.md, threads with entry 0x828508A8 are stuck
+            // in sleep loops waiting for this event to be signaled. This event wakes them up
+            // so they can call sub_823AF590 -> VdInitializeEngines with correct parameters.
+            static const bool s_signal_wake_event = [](){
+                if (const char* v = std::getenv("MW05_SIGNAL_WAKE_EVENT"))
+                    return !(v[0]=='0' && v[1]=='\0');
+                return true; // ENABLED BY DEFAULT - this is critical for game progression
+            }();
+            if (s_signal_wake_event && currentTick >= 10) {  // Wait a few ticks for event to be created
+                constexpr uint32_t WAKE_EVENT_EA = 0x400007E0;
+                if (auto* event = reinterpret_cast<XKEVENT*>(g_memory.Translate(WAKE_EVENT_EA))) {
+                    static uint32_t s_signal_count = 0;
+                    if (KeSetEvent(event, 0, false)) {
+                        s_signal_count++;
+                        if (s_signal_count <= 5 || s_signal_count % 100 == 0) {
+                            fprintf(stderr, "[VBLANK-WAKE] Signaled event 0x%08X (count=%u tick=%u)\n",
+                                    WAKE_EVENT_EA, s_signal_count, currentTick);
+                            fflush(stderr);
+                            KernelTraceHostOpF("HOST.VblankPump.signal_wake_event ea=%08X count=%u tick=%u",
+                                             WAKE_EVENT_EA, s_signal_count, currentTick);
+                        }
+                    }
+                }
             }
 
             // MW05 FIX: Call VdCallGraphicsNotificationRoutines periodically to invoke registered callbacks
@@ -2217,13 +2253,108 @@ void Mw05StartVblankPumpOnce() {
                 g_vdInterruptPending.store(true, std::memory_order_release);
             }
 
+            // CRITICAL DEBUG: Log before sleep-skip flag code
+            if (currentTick % 100 == 0) {
+                KernelTraceHostOpF("HOST.VblankPump.before_sleep_skip tick=%u", currentTick);
+            }
+
+            // CRITICAL: Set sleep-skip flag to allow main loop to progress
+            // The main loop at sub_82441E80 checks the sleep-skip flag at 0x82A1FF40
+            // When this flag is ZERO, the main loop calls sub_8262D9D0 (sleep function)
+            // When this flag is non-zero, the main loop calls sub_8262DE60 (frame update function)
+            // We need to set this flag to non-zero to allow the main loop to progress
+            {
+                // CRITICAL DEBUG: Log every 100 ticks to verify this block is executing
+                if (currentTick % 100 == 0) {
+                    KernelTraceHostOpF("HOST.VblankPump.sleep_skip_block_entered tick=%u", currentTick);
+                }
+
+                const uint32_t sleep_skip_flag_ea = 0x82A1FF40;
+                volatile uint32_t* sleep_skip_flag_ptr = static_cast<volatile uint32_t*>(g_memory.Translate(sleep_skip_flag_ea));
+
+                // CRITICAL DEBUG: Log translate result
+                if (currentTick % 100 == 0) {
+                    KernelTraceHostOpF("HOST.VblankPump.sleep_skip_translate ea=%08X ptr=%p tick=%u",
+                                      sleep_skip_flag_ea, sleep_skip_flag_ptr, currentTick);
+                }
+
+                if (sleep_skip_flag_ptr) {
+                    // CRITICAL DEBUG: Log that we entered the if block
+                    if (currentTick % 100 == 0) {
+                        KernelTraceHostOpF("HOST.VblankPump.sleep_skip_if_entered tick=%u", currentTick);
+                    }
+
+                    // Read current value with SEH protection
+                    uint32_t current_value = 0;
+                    bool read_success = false;
+                    #if defined(_MSC_VER)
+                        __try {
+                            current_value = _byteswap_ulong(*sleep_skip_flag_ptr);
+                            read_success = true;
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            if (currentTick % 100 == 0) {
+                                KernelTraceHostOpF("HOST.VblankPump.sleep_skip_read_exception code=%08X tick=%u",
+                                                  (unsigned)GetExceptionCode(), currentTick);
+                            }
+                        }
+                    #else
+                        current_value = __builtin_bswap32(*sleep_skip_flag_ptr);
+                        read_success = true;
+                    #endif
+
+                    if (!read_success) {
+                        continue; // Skip this iteration if read failed
+                    }
+
+                    // CRITICAL DEBUG: Log the value we read
+                    if (currentTick % 100 == 0) {
+                        KernelTraceHostOpF("HOST.VblankPump.sleep_skip_value value=%08X tick=%u", current_value, currentTick);
+                    }
+
+                    // Set flag to 1 if it's currently 0
+                    if (current_value == 0) {
+                        #if defined(_MSC_VER)
+                            *sleep_skip_flag_ptr = _byteswap_ulong(1);
+                        #else
+                            *sleep_skip_flag_ptr = __builtin_bswap32(1);
+                        #endif
+
+                        std::atomic_thread_fence(std::memory_order_release);
+
+                        static uint32_t s_sleep_skip_set_count = 0;
+                        s_sleep_skip_set_count++;
+                        if (s_sleep_skip_set_count <= 10 || (s_sleep_skip_set_count % 60 == 0)) {
+                            KernelTraceHostOpF("HOST.VblankPump.sleep_skip_set was=%08X now=00000001 tick=%u count=%u",
+                                              current_value, currentTick, s_sleep_skip_set_count);
+                        }
+                    }
+                }
+            }
+
+            // CRITICAL DEBUG: Log after sleep-skip flag block
+            if (currentTick % 100 == 0) {
+                KernelTraceHostOpF("HOST.VblankPump.after_sleep_skip_block tick=%u", currentTick);
+            }
+
             // CRITICAL: Set main loop flag once per VBlank (60 Hz)
             // The game polls address 0x82A2CF40 in function sub_82441CF0 (main game loop)
             // Game uses consume-and-clear pattern: reads flag, processes frame, clears flag
             // Setting it once per VBlank synchronizes game loop with rendering
             {
+                // CRITICAL DEBUG: Log every 100 ticks
+                if (currentTick % 100 == 0) {
+                    KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_section tick=%u", currentTick);
+                }
+
                 const uint32_t main_loop_flag_ea = 0x82A2CF40;
                 volatile uint32_t* main_loop_flag_ptr = static_cast<volatile uint32_t*>(g_memory.Translate(main_loop_flag_ea));
+
+                // CRITICAL DEBUG: Log translate result
+                if (currentTick % 100 == 0) {
+                    KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_translate ea=%08X ptr=%p tick=%u",
+                                      main_loop_flag_ea, main_loop_flag_ptr, currentTick);
+                }
+
                 if (main_loop_flag_ptr) {
                     // Read current value before setting (volatile read)
                     // NOTE: Memory is already in big-endian format, so we need to byte-swap when reading
@@ -2232,6 +2363,11 @@ void Mw05StartVblankPumpOnce() {
                     #else
                         uint32_t current_value = __builtin_bswap32(*main_loop_flag_ptr);
                     #endif
+
+                    // CRITICAL DEBUG: Log the value we read
+                    if (currentTick % 100 == 0) {
+                        KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_read value=%08X tick=%u", current_value, currentTick);
+                    }
 
                     // Set flag to 1 (write in big-endian format for PowerPC)
                     // Memory is stored in big-endian, so we byte-swap the value before writing
@@ -2243,7 +2379,19 @@ void Mw05StartVblankPumpOnce() {
 
                     // CRITICAL: Memory fence to ensure the write is visible to all threads
                     // Without this, the main thread's CPU cache may not see the update
-                    std::atomic_thread_fence(std::memory_order_release);
+                    // Use seq_cst (strongest) fence to force cache invalidation
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+                    // CRITICAL: Also use Windows-specific memory barrier to ensure cache coherency
+                    #if defined(_MSC_VER)
+                        _ReadWriteBarrier();
+                        MemoryBarrier();
+                    #endif
+
+                    // CRITICAL DEBUG: Log that we set the flag
+                    if (currentTick % 100 == 0) {
+                        KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_set was=%08X now=00000001 tick=%u", current_value, currentTick);
+                    }
 
                     // Log first few sets and any changes for debugging
                     static uint32_t s_flag_set_count = 0;
@@ -2271,6 +2419,14 @@ void Mw05StartVblankPumpOnce() {
             if (currentTick < 20) {
                 fprintf(stderr, "[VBLANK-AFTER-MAIN-LOOP-FLAG] tick=%u after setting main loop flag\n", currentTick);
                 fflush(stderr);
+            }
+
+            // CRITICAL FIX: Force-call CreateDevice to bypass blocked state machine
+            // The game is stuck in TitleState loop and never calls CreateDevice naturally
+            // This unblocks render thread creation and allows the game to progress
+            {
+                extern void Mw05ForceCallCreateDeviceIfRequested();
+                Mw05ForceCallCreateDeviceIfRequested();
             }
 
             // CRITICAL DEBUG: Log before ring buffer section
@@ -7056,6 +7212,97 @@ static void Mw05ForceRegisterGfxNotifyIfRequested() {
     }
 }
 
+// Force-call CreateDevice to bypass blocked state machine
+// The game is stuck in TitleState loop and never calls CreateDevice naturally
+// This function calls CreateDevice (sub_82598230) from host code after graphics init
+static void Mw05ForceCallCreateDeviceIfRequested() {
+    const char* en = std::getenv("MW05_FORCE_CALL_CREATEDEVICE");
+    if (!en || (en[0]=='0' && en[1]=='\0')) {
+        return;
+    }
+
+    // Check if we should delay CreateDevice call until after graphics init
+    static const uint32_t s_call_delay_ticks = [](){
+        if (const char* v = std::getenv("MW05_FORCE_CREATEDEVICE_DELAY_TICKS"))
+            return (uint32_t)std::strtoul(v, nullptr, 10);
+        return 100u; // default: wait 100 ticks (~1.67 seconds at 60 Hz)
+    }();
+
+    const uint32_t current_tick = g_vblankTicks.load(std::memory_order_acquire);
+    if (current_tick < s_call_delay_ticks) {
+        return;
+    }
+
+    // Check if already called (one-time call)
+    static std::atomic<bool> s_called{false};
+    bool expected = false;
+    if (!s_called.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;  // Already called
+    }
+
+    fprintf(stderr, "[CREATEDEVICE-FORCE] Force-calling CreateDevice (sub_82598230) at tick=%u\n", current_tick);
+    fflush(stderr);
+
+    // Get the graphics context address
+    uint32_t gfx_ctx = g_graphics_context_ea;
+    if (gfx_ctx == 0) {
+        fprintf(stderr, "[CREATEDEVICE-FORCE] ERROR: Graphics context not allocated!\n");
+        fflush(stderr);
+        return;
+    }
+
+    // Call CreateDevice with the graphics context as parameter
+    // From analysis: CreateDevice(gfx_ctx, ...) initializes the device and sets gfx_ctx+4
+    EnsureGuestContextForThisThread("ForceCallCreateDevice");
+
+    #if defined(_WIN32)
+    __try {
+    #endif
+        // Forward declaration of the CreateDevice function
+        extern void sub_82598230(PPCContext& ctx, uint8_t* base);
+        extern uint8_t* g_xexBase;
+
+        // Set up PPC context for the call
+        PPCContext* ctx = GetPPCContext();
+        if (!ctx) {
+            fprintf(stderr, "[CREATEDEVICE-FORCE] ERROR: Failed to get PPC context!\n");
+            fflush(stderr);
+            return;
+        }
+
+        // Set parameters for CreateDevice
+        // r3 = graphics context address
+        ctx->r3.u32 = gfx_ctx;
+        ctx->r4.u32 = 0;  // Additional parameters (unknown, set to 0)
+
+        fprintf(stderr, "[CREATEDEVICE-FORCE] Calling sub_82598230 with r3=0x%08X\n", gfx_ctx);
+        fflush(stderr);
+
+        // Call CreateDevice
+        sub_82598230(*ctx, g_xexBase);
+
+        fprintf(stderr, "[CREATEDEVICE-FORCE] sub_82598230 returned r3=0x%08X (0=success)\n", ctx->r3.u32);
+        fflush(stderr);
+
+        if (ctx->r3.u32 == 0) {
+            fprintf(stderr, "[CREATEDEVICE-FORCE] CreateDevice succeeded! Game should now create render threads.\n");
+            fflush(stderr);
+            KernelTraceHostOp("HOST.CreateDevice.force_call.success");
+        } else {
+            fprintf(stderr, "[CREATEDEVICE-FORCE] CreateDevice FAILED with code 0x%08X\n", ctx->r3.u32);
+            fflush(stderr);
+            KernelTraceHostOp("HOST.CreateDevice.force_call.failed");
+        }
+
+    #if defined(_WIN32)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[CREATEDEVICE-FORCE] CreateDevice crashed with exception 0x%08X\n", (unsigned)GetExceptionCode());
+        fflush(stderr);
+        KernelTraceHostOp("HOST.CreateDevice.force_call.exception");
+    }
+    #endif
+}
+
 // Force-create the render thread if it hasn't been created naturally
 // This thread (entry=0x825AA970) is responsible for issuing draw commands
 static void Mw05ForceCreateRenderThreadIfRequested() {
@@ -7587,12 +7834,25 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
                 call_count, (void*)ctx_ptr, GetCurrentThreadId());
         fflush(stderr);
 
+        // Create temporary context if called from host thread
+        PPCContext temp_ctx;
+        bool using_temp_ctx = false;
+
         if (!ctx_ptr) {
-            // No PPC context - this is being called from a host/system thread, not a guest thread
-            // Skip the callback invocation - it's only needed when the game calls VdInitializeEngines
-            fprintf(stderr, "[VdInitEngines #%d] No PPC context (host thread), skipping callback\n", call_count);
+            // No PPC context - this is being called from a host/system thread
+            // Create a temporary context for the callback
+            fprintf(stderr, "[VdInitEngines #%d] No PPC context (host thread), creating temporary context\n", call_count);
             fflush(stderr);
-            return;
+
+            memset(&temp_ctx, 0, sizeof(temp_ctx));
+            ctx_ptr = &temp_ctx;
+            using_temp_ctx = true;
+
+            // Install temporary context into TLS
+            SetPPCContext(temp_ctx);
+            fprintf(stderr, "[VdInitEngines #%d] Temporary context installed, GetPPCContext()=%p\n",
+                    call_count, (void*)GetPPCContext());
+            fflush(stderr);
         }
 
         fprintf(stderr, "[VdInitEngines #%d] Got context, calling callback...\n", call_count);
@@ -7616,6 +7876,13 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
 
             fprintf(stderr, "[VdInitEngines #%d] Callback returned r3=0x%08X\n", call_count, return_value);
             fflush(stderr);
+
+            // Clean up temporary context if we created one
+            if (using_temp_ctx) {
+                g_ppcContext = nullptr;
+                fprintf(stderr, "[VdInitEngines #%d] Temporary context removed\n", call_count);
+                fflush(stderr);
+            }
 }
 
 uint32_t VdIsHSIOTrainingSucceeded()

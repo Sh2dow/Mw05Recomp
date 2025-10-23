@@ -9,6 +9,7 @@
 #include <kernel/heap.h>
 #include <kernel/xam.h>
 #include <kernel/io/file_system.h>
+#include <kernel/init_manager.h>
 #include <file.h>
 #include <xex.h>
 #include <apu/audio.h>
@@ -98,6 +99,10 @@ static void MwApplyDebugProfile() {
     MwSetEnvDefault("MW05_STREAM_ACK_NO_PATH",           "0");
     // MW05_UNBLOCK_MAIN disabled by default - let game run naturally
     // MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
+    // CRITICAL: Enable VD initialization to allow game to progress to file loading
+    MwSetEnvDefault("MW05_FORCE_VD_INIT",                "1");
+    // CRITICAL: Force-initialize callback parameter structure to unblock worker thread creation
+    MwSetEnvDefault("MW05_FORCE_INIT_CALLBACK_PARAM",    "1");
     MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
     MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");
     MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");
@@ -204,12 +209,14 @@ void KiSystemStartup()
     g_userHeap.Init();
     g_userHeap.inGlobalConstruction = false;  // Mark that global construction is complete
 
-    // Register ALL function hooks now that memory is initialized
-    // (was previously done in static constructors, but that caused crash because g_memory.base was nullptr)
-    RegisterFileSystemHooks();
-    // Note: Other hook registration functions (RegisterMw05FunctionHooks, RegisterMw05VideoManualHooks, etc.)
-    // are static and cannot be called from here. They will need to be made non-static or wrapped.
-    // For now, we'll rely on the generated hook overrides which are registered automatically.
+    // Run all registered initialization callbacks in priority order
+    // This replaces the old static constructor approach which caused crashes
+    fprintf(stderr, "[MAIN] Running initialization callbacks...\n");
+    fflush(stderr);
+    InitManager::Instance().RunAll();
+    fprintf(stderr, "[MAIN] Initialization complete! %zu callbacks registered.\n",
+            InitManager::Instance().Count());
+    fflush(stderr);
 
     // Publish ExLoadedImageName/ExLoadedCommandLine guest pointers (needs heap)
     Mw05InitKernelVarExportsOnce();
@@ -926,21 +933,20 @@ int main(int argc, char *argv[])
         if (std::string_view(argv[i]) == "--mwdebug") { mwdebug = true; }
     }
 
-    // Apply in-app debug profile if requested via CLI or env.
-    if (mwdebug || std::getenv("MW05_DEBUG_PROFILE")) {
+    // CRITICAL FIX: Always apply debug profile by default
+    // The debug profile sets critical environment variables that are required for the game to work.
+    // Without these defaults, the game hits o1heap assertion failures during import table processing.
+    // Users can still override individual settings via environment variables.
+    //
+    // Apply debug profile UNLESS explicitly disabled via MW05_DEBUG_PROFILE=0
+    const char* debug_profile_env = std::getenv("MW05_DEBUG_PROFILE");
+    const bool disable_debug_profile = (debug_profile_env && debug_profile_env[0] == '0' && debug_profile_env[1] == '\0');
+
+    if (!disable_debug_profile || mwdebug) {
         MwApplyDebugProfile();
     }
 
-#if defined(_WIN32)
-    if (verbose) {
-        AllocConsole();
-        FILE* fOut = nullptr; FILE* fErr = nullptr;
-        freopen_s(&fOut, "CONOUT$", "w", stdout);
-        freopen_s(&fErr, "CONOUT$", "w", stderr);
-        printf("[boot] Mw05Recomp starting (--verbose)\n");
-        fflush(stdout);
-    }
-#endif
+    // Verbose logging goes to stderr/stdout (no console window allocation)
     if (verbose) { printf("[boot] entering main()\n"); fflush(stdout); }
 
     // Unify MW_VERBOSE hint behavior: if --verbose or MW_VERBOSE env is set,
@@ -1335,14 +1341,8 @@ int main(int argc, char *argv[])
     // NOTE: RegisterMw05VideoManualHooks() is now called AFTER function table re-population
     // (see line ~790) to prevent the manual hook from being overwritten
 
-    // CRITICAL: Register file system hooks BEFORE any guest threads are created
-    // This ensures X* file functions are hooked before the game tries to call them
-    extern void RegisterFileSystemHooks();
-    fprintf(stderr, "[MAIN] Calling RegisterFileSystemHooks() EARLY\n");
-    fflush(stderr);
-    RegisterFileSystemHooks();
-    fprintf(stderr, "[MAIN] RegisterFileSystemHooks() completed\n");
-    fflush(stderr);
+    // NOTE: RegisterFileSystemHooks() is now called by InitManager::RunAll() above
+    // No need to call it manually here anymore!
 
     // MW'05 runtime function mappings for small PPC shims
     g_memory.InsertFunction(0x8243B618, sub_8243B618);

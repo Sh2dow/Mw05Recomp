@@ -1851,18 +1851,17 @@ void Mw05StartVblankPumpOnce() {
                     // EXPERIMENT: Disable callback invocation to test if registration alone causes the crash
                     static bool s_disable_invocation = Mw05EnvEnabled("MW05_DISABLE_CALLBACK_INVOCATION");
                     if (!s_disable_invocation) {
-                        // CRITICAL FIX: Call graphics callback asynchronously to avoid blocking VBlank pump!
-                        // The VBlank pump MUST run at 60 Hz, so we can't wait for the callback to complete.
-                        // The callback will run in a separate thread and complete whenever it's done.
-                        std::thread callback_thread([currentTick]() {
-                            // CRITICAL: Ensure guest context for this thread so function table is initialized!
-                            EnsureGuestContextForThisThread("VBlankPump.AsyncCallback");
-                            // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
-                            VdCallGraphicsNotificationRoutines(0u);
-                            VdCallGraphicsNotificationRoutines(1u);
-                        });
-                        // Detach the thread immediately - don't wait for it to complete!
-                        callback_thread.detach();
+                        // CRITICAL FIX: Call graphics callback directly - NO NEW THREAD!
+                        // Creating a new thread for every VBlank tick (60 Hz) causes massive memory leak!
+                        // The callback is already called from the VBlank pump thread, which is async.
+
+                        // CRITICAL: Ensure guest context for this thread so function table is initialized!
+                        // This is safe because the VBlank pump thread already has a guest context
+                        EnsureGuestContextForThisThread("VBlankPump.AsyncCallback");
+
+                        // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
+                        VdCallGraphicsNotificationRoutines(0u);
+                        VdCallGraphicsNotificationRoutines(1u);
                     } else {
                         fprintf(stderr, "[MW05_FIX] Callback invocation DISABLED (registration only)\n");
                         fflush(stderr);
@@ -2502,36 +2501,29 @@ void Mw05StartVblankPumpOnce() {
                             fflush(stderr);
                         }
 
-                        // CRITICAL FIX: Call guest ISR asynchronously without waiting!
-                        // The VBlank pump MUST run at 60 Hz, so we can't wait for the guest ISR to complete.
-                        // The guest ISR will run in a separate thread and complete whenever it's done.
-                        // This allows the VBlank pump to continue at 60 Hz regardless of how long the guest ISR takes.
-                        std::thread isr_thread([cb, ctx, currentTick]() {
-                            #if defined(_WIN32)
-                                __try {
-                                    GuestToHostFunction<void>(cb, 0u, ctx);
-                                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                                    DWORD exceptionCode = GetExceptionCode();
-
-                                    // Log first exception only to avoid spam
-                                    static std::atomic<bool> s_logged_exception{false};
-                                    if (!s_logged_exception.exchange(true, std::memory_order_relaxed)) {
-                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION] Graphics callback threw exception (context not initialized yet)\n");
-                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Exception code: 0x%08lX\n", exceptionCode);
-                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Callback: 0x%08X\n", cb);
-                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Context: 0x%08X\n", ctx);
-                                        fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Will continue calling callback - it should work once context is initialized\n");
-                                        fflush(stderr);
-                                    }
-                                }
-                            #else
+                        // CRITICAL FIX: Call guest ISR directly - NO NEW THREAD!
+                        // Creating a new thread for every VBlank tick (60 Hz) causes massive memory leak!
+                        // The VBlank pump already runs in a separate thread, so this is already async.
+                        #if defined(_WIN32)
+                            __try {
                                 GuestToHostFunction<void>(cb, 0u, ctx);
-                            #endif
-                        });
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                DWORD exceptionCode = GetExceptionCode();
 
-                        // Detach the thread immediately - don't wait for it to complete!
-                        // This allows the VBlank pump to continue at 60 Hz
-                        isr_thread.detach();
+                                // Log first exception only to avoid spam
+                                static std::atomic<bool> s_logged_exception{false};
+                                if (!s_logged_exception.exchange(true, std::memory_order_relaxed)) {
+                                    fprintf(stderr, "[VBLANK-ISR-EXCEPTION] Graphics callback threw exception (context not initialized yet)\n");
+                                    fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Exception code: 0x%08lX\n", exceptionCode);
+                                    fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Callback: 0x%08X\n", cb);
+                                    fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Context: 0x%08X\n", ctx);
+                                    fprintf(stderr, "[VBLANK-ISR-EXCEPTION]   Will continue calling callback - it should work once context is initialized\n");
+                                    fflush(stderr);
+                                }
+                            }
+                        #else
+                            GuestToHostFunction<void>(cb, 0u, ctx);
+                        #endif
 
                         // CRITICAL DEBUG: Log after calling guest ISR
                         if (currentTick < 20) {

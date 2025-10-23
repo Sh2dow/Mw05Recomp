@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <kernel/trace.h>
 #include <cpu/ppc_context.h>
+#include <kernel/init_manager.h>
 
 extern "C" 
 {
@@ -79,14 +80,12 @@ static bool RuntimePatchesEnabled()
     return false; // default: disabled to allow real code paths
 }
 
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    static void __cdecl ppc_runtime_patch_hooks_ctor();
-    __declspec(allocate(".CRT$XCU")) void (*ppc_runtime_patch_hooks_ctor_)(void) = ppc_runtime_patch_hooks_ctor;
-    static void __cdecl ppc_runtime_patch_hooks_ctor() { if (RuntimePatchesEnabled()) InstallRuntimePatches(); else KernelTraceHostOp("HOST.Patch.skip"); }
-#else
-    // DISABLED: Static constructor causes crash during global construction
-    // InstallRuntimePatches() is now called manually in main() after memory is initialized
-    // __attribute__((constructor)) static void ppc_runtime_patch_hooks_ctor() { if (RuntimePatchesEnabled()) InstallRuntimePatches(); else KernelTraceHostOp("HOST.Patch.skip"); }
-#endif
+// Register with InitManager (priority 100 = default, runs after core systems)
+REGISTER_INIT_CALLBACK("RuntimePatches", []() {
+    if (RuntimePatchesEnabled()) {
+        InstallRuntimePatches();
+    } else {
+        KernelTraceHostOp("HOST.Patch.skip");
+    }
+});
 

@@ -562,6 +562,10 @@ PPC_FUNC(sub_828134E0)
 // The function signature is: sub_8215BC78(r3=allocator_ptr, r4=freed_block_ptr, r5=size)
 // where r4 (freed_block_ptr) is copied to r31 at function entry.
 //
+// NOTE: Using PPC_FUNC_IMPL pattern instead of PPC_FUNC to ensure this wrapper is called
+// for BOTH direct calls (bl) and indirect calls (function pointer).
+//
+PPC_FUNC_IMPL(__imp__sub_8215BC78);
 PPC_FUNC(sub_8215BC78) {
     // Check if the freed block pointer (r4) is NULL or invalid
     uint32_t freed_block_ptr = ctx.r4.u32;

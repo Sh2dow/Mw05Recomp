@@ -8,7 +8,12 @@
 
 // Override PPC store macros to route through watched big-endian stores for tracing.
 // This is force-included for Mw05RecompLib so it applies to all generated PPC TUs.
-// We only override 32/64-bit stores which cover PM4/RB writes and common fences.
+// CRITICAL FIX: Now includes 16-bit stores to prevent heap corruption
+#ifdef PPC_STORE_U16
+#undef PPC_STORE_U16
+#endif
+#define PPC_STORE_U16(ea, v) StoreBE16_Watched(base, (ea), (uint16_t)(v))
+
 #ifdef PPC_STORE_U32
 #undef PPC_STORE_U32
 #endif

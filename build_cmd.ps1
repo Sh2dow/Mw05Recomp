@@ -34,34 +34,33 @@ $CPPWINRTINC = Join-Path $SDKINC "cppwinrt"
 $UCRTLIB = Join-Path $root "Lib\$latestSdk\ucrt\x64"
 $UMLIB = Join-Path $root "Lib\$latestSdk\um\x64"
 
-# Prefer standalone LLVM first
-$LLVM_CANDIDATES = @(
-    "$env:LLVM_HOME\bin",
-    "C:\Program Files\LLVM\bin",
-    (Join-Path $VS "VC\Tools\Llvm\x64\bin")
-) | Where-Object { $_ -and (Test-Path $_) }
-if ($LLVM_CANDIDATES.Count -gt 0)
-{
-    $LLVM = $LLVM_CANDIDATES[0]
+# Prefer standalone LLVM first (LLVM_HOME), then PATH, then VS/Program Files
+$LLVM = $null
+if ($env:LLVM_HOME) {
+    $cand = Join-Path $env:LLVM_HOME 'bin'
+    if (Test-Path $cand) { $LLVM = $cand }
 }
-else
-{
-    throw "No LLVM toolchain found."
+if (-not $LLVM) {
+    $clangCmd = Get-Command clang-cl.exe -ErrorAction SilentlyContinue
+    if ($clangCmd) { $LLVM = (Split-Path -Parent $clangCmd.Path) }
 }
+if (-not $LLVM) {
+    $llvmVs = (Join-Path $VS 'VC\Tools\Llvm\x64\bin')
+    if (Test-Path $llvmVs) { $LLVM = $llvmVs }
+}
+if (-not $LLVM) {
+    $llvmStd = 'C:\Program Files\LLVM\bin'
+    if (Test-Path $llvmStd) { $LLVM = $llvmStd }
+}
+if (-not $LLVM) { throw 'No LLVM toolchain found.' }
 
 # Normalize tool paths for CMake cache entries
-$LLVM_CL = (Join-Path $LLVM "clang-cl.exe") -replace '\\', '/'
-$LLVM_MT = (Join-Path $LLVM "llvm-mt.exe") -replace '\\', '/'
-$LLVM_LINK = (Join-Path $LLVM "lld-link.exe") -replace '\\', '/'
-$RC = (Join-Path $root "bin\$latestSdk\x64\rc.exe") -replace '\\', '/'
-$MT = if (Test-Path $LLVM_MT)
-{
-    $LLVM_MT
-}
-else
-{
-    (Join-Path $LLVM "llvm-mt.exe") -replace '\\', '/'
-}
+$LLVM = $LLVM -replace '\\', '/'
+$LLVM_CL = (Join-Path $LLVM 'clang-cl.exe') -replace '\\', '/'
+$LLVM_MT = (Join-Path $LLVM 'llvm-mt.exe') -replace '\\', '/'
+$LLVM_LINK = (Join-Path $LLVM 'lld-link.exe') -replace '\\', '/'
+$RC = (Join-Path $root "bin/$latestSdk/x64/rc.exe") -replace '\\', '/'
+$MT = if (Test-Path $LLVM_MT) { $LLVM_MT } else { (Join-Path $LLVM 'llvm-mt.exe') -replace '\\', '/' }
 
 # Idempotent env wiring ONCE per shell (sets INCLUDE/LIB/PATH in same block)
 if (-not $env:MW05_ENV_INIT)

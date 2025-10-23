@@ -168,8 +168,6 @@ set(MW05_RECOMP_UI_CXX_SOURCES
     "ui/achievement_menu_stub.cpp"
     "ui/black_bar.cpp"
     "ui/button_guide.cpp"
-    "ui/debug_console.cpp"
-    "ui/debug_console_listener.cpp"
     "ui/fader.cpp"
     "ui/game_window.cpp"
     "ui/imgui_utils.cpp"

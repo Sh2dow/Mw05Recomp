@@ -331,12 +331,26 @@ void Mw05ForceCreateMissingWorkerThreads() {
     if (work_func_ptr == 0 || work_func_ptr == 0xFFFFFFFF) {
         fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure NOT initialized yet (work_func=0x%08X)\n", work_func_ptr);
 
-        // FORCE INITIALIZATION: Try to initialize the callback parameter structure
+        // FORCE INITIALIZATION: Initialize the callback parameter structure immediately
         // Environment variable MW05_FORCE_INIT_CALLBACK_PARAM enables this
         static bool s_force_init_enabled = (std::getenv("MW05_FORCE_INIT_CALLBACK_PARAM") != nullptr);
+        static bool s_force_init_done = false;
+        static bool s_logged_env = false;
 
-        if (s_force_init_enabled && check_count / 60 >= 5) {  // Wait 5 seconds before force-init
-            fprintf(stderr, "[FORCE_WORKERS] FORCE-INITIALIZING callback parameter structure...\n");
+        if (!s_logged_env) {
+            s_logged_env = true;
+            const char* env_val = std::getenv("MW05_FORCE_INIT_CALLBACK_PARAM");
+            fprintf(stderr, "[FORCE_WORKERS-ENV] MW05_FORCE_INIT_CALLBACK_PARAM=%s enabled=%d\n",
+                    env_val ? env_val : "NULL", s_force_init_enabled);
+            fflush(stderr);
+        }
+
+        // CRITICAL FIX: Force-initialize IMMEDIATELY on first check
+        // The game is stuck waiting for this structure to be initialized, but it never happens naturally
+        // Without this initialization, the game never progresses to file loading
+        if (s_force_init_enabled && !s_force_init_done) {
+            s_force_init_done = true;
+            fprintf(stderr, "[FORCE_WORKERS] FORCE-INITIALIZING callback parameter structure (check_count=%d)...\n", check_count);
             fflush(stderr);
 
             // Initialize the callback parameter structure with known values from working session

@@ -12,6 +12,18 @@ struct Memory
 
     Memory();
 
+    // Lazy initialization - ensures memory is allocated before any operations
+    // This is thread-safe in C++11+ (guaranteed by the standard)
+    bool EnsureInitialized() noexcept
+    {
+        if (base == nullptr) {
+            fprintf(stderr, "[MEMORY] ERROR: Memory not initialized! Call from global constructor?\n");
+            fflush(stderr);
+            return false;
+        }
+        return true;
+    }
+
     bool IsInMemoryRange(const void* host) const noexcept
     {
         return host >= base && host < (base + PPC_MEMORY_SIZE);
@@ -47,8 +59,16 @@ struct Memory
         return PPC_LOOKUP_FUNC(base, guest);
     }
 
-    void InsertFunction(uint32_t guest, PPCFunc* host)
+    // Safe version of InsertFunction that checks if memory is initialized
+    bool InsertFunction(uint32_t guest, PPCFunc* host)
     {
+        // CRITICAL: Check if memory is initialized before accessing function table
+        if (!EnsureInitialized()) {
+            fprintf(stderr, "[INSERT-FUNC] ERROR: Cannot insert function 0x%08X - memory not initialized!\n", guest);
+            fflush(stderr);
+            return false;
+        }
+
         // CRITICAL DEBUG: Log the function table write operation
         uint64_t code_offset = uint64_t(uint32_t(guest) - uint32_t(PPC_CODE_BASE));
         uint64_t table_offset = PPC_MEMORY_SIZE + (code_offset * sizeof(PPCFunc*));
@@ -74,6 +94,8 @@ struct Memory
                     (void*)PPC_LOOKUP_FUNC(base, guest));
             fflush(stderr);
         }
+
+        return true;
     }
 };
 

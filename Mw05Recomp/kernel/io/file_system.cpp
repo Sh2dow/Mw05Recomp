@@ -3,6 +3,7 @@
 #include <kernel/xam.h>
 #include <kernel/xdm.h>
 #include <kernel/function.h>
+#include <kernel/init_manager.h>
 #if MW05_ENABLE_UNLEASHED
 #include <mod/mod_loader.h>
 #endif
@@ -866,15 +867,7 @@ void RegisterFileSystemHooks() {
     KernelTraceHostOp("HOST.FileSystem.RegisterXFileHooks.done");
 }
 
-// DISABLED: Static constructor causes crash during global construction
-// because g_memory.base is nullptr when InsertFunction() is called.
-// RegisterFileSystemHooks() is now called manually in main() after memory is initialized.
-//
-// #if defined(_MSC_VER)
-// #  pragma section(".CRT$XCU",read)
-//     static void __cdecl file_system_hooks_ctor();
-//     __declspec(allocate(".CRT$XCU")) void (__cdecl*file_system_hooks_ctor_)(void) = file_system_hooks_ctor;
-//     static void __cdecl file_system_hooks_ctor() { RegisterFileSystemHooks(); }
-// #else
-//     __attribute__((constructor)) static void file_system_hooks_ctor() { RegisterFileSystemHooks(); }
-// #endif
+// Register with InitManager (priority 50 = core system, runs early)
+REGISTER_INIT_CALLBACK_PRIORITY("FileSystemHooks", 50, []() {
+    RegisterFileSystemHooks();
+});

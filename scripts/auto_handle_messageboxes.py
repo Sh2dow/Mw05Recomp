@@ -27,39 +27,36 @@ TARGET_PROCESSES = ["Mw05Recomp.exe"]
 
 def find_and_click_messagebox():
     try:
-        for win in Desktop(backend="win32").windows():
-            if win.class_name() != "#32770":
-                continue  # only dialog boxes
+        for backend in ("win32", "uia"):
+            for win in Desktop(backend=backend).windows():
+                if win.class_name() != "#32770":
+                    continue  # only dialog boxes
 
-            # Get process name
-            try:
-                _, pid = win32process.GetWindowThreadProcessId(win.handle)
-                proc = psutil.Process(pid)
-                pname = proc.name()
-            except Exception:
-                continue
-
-            # Skip if not our game
-            if pname not in TARGET_PROCESSES:
-                continue
-
-            print(f"[MSGBOX] Found dialog: '{win.window_text()}' (pid={pid}, process={pname})")
-
-            # Try clicking common buttons
-            for btn_title in ["Ignore", "Abort", "OK", "Yes", "Continue", "Retry"]:
+                # ↓ inside the same loop now!
                 try:
-                    btn = win.child_window(title=btn_title, control_type="Button")
-                    if btn.exists():
-                        print(f"[MSGBOX] Clicking '{btn_title}'")
-                        btn.click()
-                        time.sleep(0.5)
-                        return True
+                    _, pid = win32process.GetWindowThreadProcessId(win.handle)
+                    proc = psutil.Process(pid)
+                    pname = proc.name()
                 except Exception:
                     continue
 
+                if pname not in TARGET_PROCESSES:
+                    continue
+
+                print(f"[MSGBOX] Found dialog: '{win.window_text()}' (pid={pid}, process={pname}, backend={backend})")
+
+                # Try clicking common buttons
+                for btn in win.descendants(control_type="Button"):
+                    caption = btn.window_text().strip("&").lower()
+                    if caption in ["ignore", "ok", "yes", "continue", "retry", "abort"]:
+                        print(f"[MSGBOX] Clicking '{caption}' via backend={backend}")
+                        btn.click_input()
+                        time.sleep(0.3)
+                        return True
     except Exception as e:
         print(f"[WARN] Exception in find_and_click_messagebox: {e}")
     return False
+
 
 def main():
     """Run game and auto-handle messageboxes."""
@@ -86,8 +83,10 @@ def main():
     print(f"[START] Will run for {args.duration} seconds and auto-handle any messageboxes...")
 
     # ENVIRONMENT VARIABLES - EXACT COPY from run_with_env.cmd
+    
     # These are CRITICAL for the game to progress past initialization
     env = os.environ.copy()
+
     env["MW05_DEBUG_PROFILE"] = "1"
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
     env["MW05_BREAK_82813514"] = "0"
@@ -102,10 +101,6 @@ def main():
 
     env["MW05_VBLANK_VDSWAP"] = "0"
     env["MW05_KICK_VIDEO"] = "0"
-    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "0"
-    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
-    env["MW05_FORCE_PRESENT"] = "0"
-    env["MW05_FORCE_PRESENT_BG"] = "0"
     env["MW05_VDSWAP_NOTIFY"] = "0"
     env["MW05_FAST_BOOT"] = "0"
     env["MW05_FAST_RET"] = "0"
@@ -130,10 +125,16 @@ def main():
     env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
     env["MW05_SET_PRESENT_CB"] = "1"
     env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
+    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
+    env["MW05_FORCE_PRESENT"] = "1"
+    env["MW05_FORCE_PRESENT_BG"] = "1"
     env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
     env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
     env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
     env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
+
+    # Force the flag at r31+10434 that gates present calls
+    env["MW05_FORCE_PRESENT_FLAG"] = "1"
 
     env["MW05_SCHED_R3_EA"] = "0x00260370"
     env["MW05_FPW_KICK_PM4"] = "1"
@@ -152,10 +153,7 @@ def main():
     # Enable PM4 state application
     env["MW05_PM4_APPLY_STATE"] = "1"
 
-    # Force the flag at r31+10434 that gates present calls
-    env["MW05_FORCE_PRESENT_FLAG"] = "1"
-
-    print(f"[ENV] Running with ALL environment variables from run_with_env.cmd + MW05_FORCE_INIT_CALLBACK_PARAM")
+    print(f"[ENV] Running with ALL environment variables from run_with_env.cmd")
 
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")

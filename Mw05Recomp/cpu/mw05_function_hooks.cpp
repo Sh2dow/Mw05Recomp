@@ -2,6 +2,7 @@
 #include <kernel/function.h>
 #include <kernel/memory.h>
 #include <cpu/ppc_context.h>
+#include <kernel/init_manager.h>
 
 // MW05-specific function hooks to fix bugs in recompiled PPC code
 // NOTE: Most hooks have been converted to PPC_FUNC_IMPL wrappers in mw05_trace_threads.cpp
@@ -192,15 +193,8 @@ static void RegisterMw05FunctionHooks() {
     fflush(stderr);
 }
 
-// Use static constructor to register hooks early
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    static void __cdecl mw05_function_hooks_ctor();
-    __declspec(allocate(".CRT$XCU")) void (__cdecl*mw05_function_hooks_ctor_)(void) = mw05_function_hooks_ctor;
-    static void __cdecl mw05_function_hooks_ctor() { RegisterMw05FunctionHooks(); }
-#else
-    // DISABLED: Static constructor causes crash during global construction
-    // RegisterMw05FunctionHooks() is now called manually in main() after memory is initialized
-    // __attribute__((constructor)) static void mw05_function_hooks_ctor() { RegisterMw05FunctionHooks(); }
-#endif
+// Register with InitManager (priority 100 = default, runs after core systems)
+REGISTER_INIT_CALLBACK("MW05FunctionHooks", []() {
+    RegisterMw05FunctionHooks();
+});
 

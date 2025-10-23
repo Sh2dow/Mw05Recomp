@@ -4,6 +4,7 @@
 #include <kernel/memory.h>
 #include <cpu/ppc_context.h>
 #include <ppc/ppc_recomp_shared.h>
+#include <kernel/init_manager.h>
 
 
 static void RegisterIndirectHardfixes() {
@@ -18,16 +19,10 @@ static void RegisterIndirectHardfixes() {
     g_memory.InsertFunction(0x821D64B0, sub_821D6528);
 }
 
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    static void __cdecl ppc_indirect_hardfix_ctor();
-    __declspec(allocate(".CRT$XCU")) void (*ppc_indirect_hardfix_ctor_)(void) = ppc_indirect_hardfix_ctor;
-    static void __cdecl ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
-#else
-    // DISABLED: Static constructor causes crash during global construction
-    // RegisterIndirectHardfixes() is now called manually in main() after memory is initialized
-    // __attribute__((constructor)) static void ppc_indirect_hardfix_ctor() { RegisterIndirectHardfixes(); }
-#endif
+// Register with InitManager (priority 100 = default, runs after core systems)
+REGISTER_INIT_CALLBACK("IndirectHardfixes", []() {
+    RegisterIndirectHardfixes();
+});
 
 
 

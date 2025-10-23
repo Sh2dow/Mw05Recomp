@@ -16,6 +16,7 @@
 #include <kernel/memory.h>
 #include <kernel/xdbf.h>
 #include <kernel/function.h>
+#include <kernel/init_manager.h>
 #include <res/bc_diff/button_bc_diff.bin.h>
 #include <res/font/im_font_atlas.dds.h>
 #include <shader/shader_cache.h>
@@ -31,7 +32,7 @@
 #include <ui/game_window.h>
 #include <ui/black_bar.h>
 #include <ui/tv_static.h>
-#include <ui/debug_console.h>
+
 #include <patches/aspect_ratio_patches.h>
 #include <user/config.h>
 #include <sdl_listener.h>
@@ -1569,7 +1570,6 @@ static void CreateImGuiBackend()
     AchievementMenu::Init();
     AchievementOverlay::Init();
     ButtonGuide::Init();
-    DebugConsole::Init();
     MessageWindow::Init();
     OptionsMenu::Init();
 #if MW05_ENABLE_UNLEASHED
@@ -3038,9 +3038,6 @@ static void DrawImGui()
 
     DrawFPS();
     DrawProfiler();
-
-    // Debug console (toggle with ` or F1)
-    DebugConsole::Render();
 
     ImGui::Render();
 
@@ -8726,20 +8723,10 @@ void RegisterMw05VideoManualHooks()
     g_memory.InsertFunction(0x82C00910, sub_82C00910); // D3DXFillVolumeTexture
 
 }
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    extern "C" {
-        static void __cdecl mw05_video_manual_ctor();
-        __declspec(allocate(".CRT$XCU")) void (*mw05_video_manual_ctor_)(void) = mw05_video_manual_ctor;
-    }
-    // Force the linker to keep the constructor symbol so it runs at startup (clang-cl/MSVC, x64 has no leading underscore)
-    #  pragma comment(linker, "/include:mw05_video_manual_ctor_")
-    static void __cdecl mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
-#else
-    // DISABLED: Static constructor causes crash during global construction
-    // RegisterMw05VideoManualHooks() is now called manually in main() after memory is initialized
-    // __attribute__((constructor)) static void mw05_video_manual_ctor() { RegisterMw05VideoManualHooks(); }
-#endif
+// Register with InitManager (priority 100 = default, runs after core systems)
+REGISTER_INIT_CALLBACK("VideoHooks", []() {
+    RegisterMw05VideoManualHooks();
+});
     // NOTE: All function declarations moved to mw05_trace_shims.cpp
 
 

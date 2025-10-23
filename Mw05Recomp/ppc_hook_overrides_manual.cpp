@@ -5,6 +5,7 @@
 #include <kernel/trace.h>
 #include <cpu/ppc_context.h>
 #include <ppc/ppc_recomp_shared.h>
+#include <kernel/init_manager.h>
 
 // Decls for GPU/scheduler trace shims (defined in gpu/mw05_trace_shims.cpp)
 // Stub for NULL vtable methods - these are optional vtable methods that some objects don't implement
@@ -102,20 +103,8 @@ static void RegisterHookOverridesManualOnce() {
     if (!s_done) { RegisterHookOverridesManual(); s_done = true; }
 }
 
-#if defined(_MSC_VER)
-#  pragma section(".CRT$XCU",read)
-    static void __cdecl ppc_hook_overrides_manual_ctor();
-    __declspec(allocate(".CRT$XCU")) void (*ppc_hook_overrides_manual_ctor_)(void) = ppc_hook_overrides_manual_ctor;
-    static void __cdecl ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
-#else
-    // DISABLED: Static constructor causes crash during global construction
-    // RegisterHookOverridesManualOnce() is now called manually in main() after memory is initialized
-    // __attribute__((constructor)) static void ppc_hook_overrides_manual_ctor() { RegisterHookOverridesManualOnce(); }
-#endif
-
-// Fallback: a global object to trigger registration via C++ static initialization
-struct ManualHookInit {
-    ManualHookInit() { RegisterHookOverridesManualOnce(); }
-};
-static ManualHookInit g_manual_hook_init;
+// Register with InitManager (priority 100 = default, runs after core systems)
+REGISTER_INIT_CALLBACK("HookOverrides", []() {
+    RegisterHookOverridesManualOnce();
+});
 

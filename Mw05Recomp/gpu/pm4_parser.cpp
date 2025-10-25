@@ -12,10 +12,12 @@
 #include <fstream>
 #include <filesystem>
 
-extern "C" void Mw05RunHostDefaultVdIsrNudge(const char* tag);
-
-extern "C" void Mw05DebugKickClear();
-extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+extern "C"
+{
+    void Mw05RunHostDefaultVdIsrNudge(const char* tag);
+    void Mw05DebugKickClear();
+    void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+}
 
 // Forward decls for helpers implemented later in this file
 void PM4_DumpOpcodeHistogram();
@@ -100,9 +102,8 @@ extern "C" {
     void Mw05HostSetScissor(int32_t left, int32_t top, int32_t right, int32_t bottom);
     void Mw05HostApplyColorSurface(uint32_t rbSurfaceInfo, uint32_t rbColorInfo);
     void Mw05HostApplyDepthSurface(uint32_t rbSurfaceInfo, uint32_t rbDepthInfo);
+    void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount);
 }
-extern "C" void Mw05HostDrawIndexed(uint32_t primitiveType, int32_t baseVertexIndex, uint32_t startIndex, uint32_t primCount);
-
 
 static uint32_t s_rb_surface_info = 0;
 static uint32_t s_rb_color_info = 0;

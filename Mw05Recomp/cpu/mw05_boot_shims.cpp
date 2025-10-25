@@ -25,13 +25,13 @@ static inline void ResetSchedulerTracking() {
     g_lastSchedulerTimeoutEA.store(0, std::memory_order_release);
 }
 
+PPC_FUNC_IMPL(__imp__sub_8262F3F0);
+PPC_FUNC_IMPL(__imp__sub_828134E0);
+PPC_FUNC_IMPL(__imp__sub_823AF590);  // Graphics init function
+PPC_FUNC_IMPL(__imp__sub_8215BC78);  // Memory allocator free function
+
 extern "C"
 {
-    void __imp__sub_8262F3F0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_828134E0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_823AF590(PPCContext& ctx, uint8_t* base);  // Graphics init function
-    void __imp__sub_8215BC78(PPCContext& ctx, uint8_t* base);  // Memory allocator free function
-
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
     }
@@ -53,7 +53,6 @@ extern "C"
         KernelTraceHostOp("HOST.HostSchedulerWake");
     }
 }
-
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -186,7 +185,7 @@ PPC_FUNC(sub_8262F330)
 }
 
 // sub_8262F3F0: sibling helper of the same pattern
-void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
+PPC_FUNC(sub_8262F3F0) {
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_8262F3F0");
     if(FastBootEnabled()) {
@@ -494,11 +493,24 @@ PPC_FUNC(sub_828134E0)
     }
     fflush(stderr);
 
+    fprintf(stderr, "[WORKER-FUNC] About to call SetPPCContext\n");
+    fflush(stderr);
+
     // Make ctx visible to the watched-store hook (so it can log lr)
     SetPPCContext(ctx);
 
+    fprintf(stderr, "[WORKER-FUNC] SetPPCContext returned, about to call KernelTraceHostOp\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[WORKER-FUNC] Calling KernelTraceHostOp...\n");
+    fflush(stderr);
+
     // Arm the watch **before** the loop/producer touches the block
     KernelTraceHostOp("HOST.sub_828134E0.enter");
+
+    fprintf(stderr, "[WORKER-FUNC] KernelTraceHostOp returned\n");
+    fflush(stderr);
+
     KernelTraceHostOpF("HOST.sub_828134E0.regs r29=%08X r30=%08X r31=%08X lr=%08llX",
                        ctx.r29.u32, ctx.r30.u32, ctx.r31.u32, ctx.lr);
 
@@ -533,15 +545,19 @@ PPC_FUNC(sub_828134E0)
         KernelTraceHostOp("HOST.sub_828134E0.watch deferred (block==0)");
     }
 
+    fprintf(stderr, "[WORKER-FUNC] About to call __imp__sub_828134E0\n");
+    fflush(stderr);
+
     __imp__sub_828134E0(ctx, base);
 
-    KernelTraceHostOpF("HOST.sub_828134E0.exit lr=%08llX", ctx.lr);
-}
+    fprintf(stderr, "[WORKER-FUNC] __imp__sub_828134E0 returned\n");
+    fflush(stderr);
 
-// NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
-// It saves/restores qword_828F1F98 to prevent corruption
-// NOTE: sub_82630378 wrapper is also in mw05_trace_threads.cpp - wait function wrapper
-// NOTE: sub_82598A20 wrapper is in mw05_trace_shims.cpp - rendering function that calls VdSwap
+    KernelTraceHostOpF("HOST.sub_828134E0.exit lr=%08llX", ctx.lr);
+
+    fprintf(stderr, "[WORKER-FUNC] sub_828134E0 wrapper exiting\n");
+    fflush(stderr);
+}
 
 // CRITICAL FIX: Wrapper for sub_8215BC78 (memory allocator free function)
 // This function fills freed memory with 0xEE pattern, but it has a bug where it tries to
@@ -565,8 +581,8 @@ PPC_FUNC(sub_828134E0)
 // NOTE: Using PPC_FUNC_IMPL pattern instead of PPC_FUNC to ensure this wrapper is called
 // for BOTH direct calls (bl) and indirect calls (function pointer).
 //
-PPC_FUNC_IMPL(__imp__sub_8215BC78);
 PPC_FUNC(sub_8215BC78) {
+    SetPPCContext(ctx);
     // Check if the freed block pointer (r4) is NULL or invalid
     uint32_t freed_block_ptr = ctx.r4.u32;
 

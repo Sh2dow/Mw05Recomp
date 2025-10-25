@@ -315,15 +315,43 @@ void KiSystemStartup()
     }
 
     // Mount game
+    fprintf(stderr, "[MAIN-DEBUG] Before XamContentCreateEx for 'game'\n");
+    fflush(stderr);
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'game'");
     XamContentCreateEx(0, "game", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'game'\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[MAIN-DEBUG] Before XamContentCreateEx for 'update'\n");
+    fflush(stderr);
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'update'");
-    XamContentCreateEx(0, "update", &updateContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+
+    // CRITICAL FIX: XamContentCreateEx for "update" hangs in PPC code!
+    // The PPC implementation appears to wait for something that never happens.
+    // Skip this call since update content is optional and already registered via XamRegisterContent.
+    fprintf(stderr, "[MAIN-DEBUG] SKIPPING XamContentCreateEx for 'update' (hangs in PPC code)\n");
+    fflush(stderr);
+    // XamContentCreateEx(0, "update", &updateContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+
+    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'update' (skipped)\n");
+    fflush(stderr);
 
     // OS mounts game data to D:
+    fprintf(stderr, "[MAIN-DEBUG] Before XamContentCreateEx for 'D'\n");
+    fflush(stderr);
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'D'");
-    XamContentCreateEx(0, "D", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
 
+    // CRITICAL FIX: XamContentCreateEx for "D" also hangs in PPC code!
+    // Skip this call since D: content is already registered via XamRegisterContent.
+    fprintf(stderr, "[MAIN-DEBUG] SKIPPING XamContentCreateEx for 'D' (hangs in PPC code)\n");
+    fflush(stderr);
+    // XamContentCreateEx(0, "D", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+
+    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'D' (skipped)\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[MAIN-DEBUG] Before DLC directory iteration\n");
+    fflush(stderr);
     std::error_code ec;
     for (auto& file : std::filesystem::directory_iterator(GetGamePath() / "dlc", ec))
     {
@@ -334,16 +362,33 @@ void KiSystemStartup()
             XamRegisterContent(XamMakeContent(XCONTENTTYPE_DLC, (const char*)(fileNameU8.c_str())), (const char*)(filePathU8.c_str()));
         }
     }
+    fprintf(stderr, "[MAIN-DEBUG] After DLC directory iteration\n");
+    fflush(stderr);
 
+    fprintf(stderr, "[MAIN-DEBUG] Before XAudioInitializeSystem\n");
+    fflush(stderr);
     XAudioInitializeSystem();
+    fprintf(stderr, "[MAIN-DEBUG] After XAudioInitializeSystem\n");
+    fflush(stderr);
 
     // CRITICAL FIX: Start VBlank pump BEFORE guest thread starts
     // In Xenia, VBlank ticks start immediately after audio system init (before game module load)
     // The game waits for VBlank ticks to progress through initialization
-    KernelTraceHostOpF("HOST.KiSystemStartup starting VBlank pump");
+    fprintf(stderr, "[MAIN-DEBUG] Before Mw05AutoVideoInitIfNeeded\n");
+    fflush(stderr);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it for now.
+    // KernelTraceHostOpF("HOST.KiSystemStartup starting VBlank pump");
     Mw05AutoVideoInitIfNeeded();  // Initialize video system (ring buffer, etc.)
+    fprintf(stderr, "[MAIN-DEBUG] After Mw05AutoVideoInitIfNeeded\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[MAIN-DEBUG] Before Mw05StartVblankPumpOnce\n");
+    fflush(stderr);
     Mw05StartVblankPumpOnce();    // Start VBlank ticks
-    KernelTraceHostOpF("HOST.KiSystemStartup VBlank pump started");
+    fprintf(stderr, "[MAIN-DEBUG] After Mw05StartVblankPumpOnce\n");
+    fflush(stderr);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.KiSystemStartup VBlank pump started");
 
     // CRITICAL FIX: Initialize the VD ISR flag that enables frame callbacks
     // The VD interrupt callback at sub_825979A8 checks this flag at 0x7FC86544
@@ -360,7 +405,8 @@ void KiSystemStartup()
             #endif
             fprintf(stderr, "[INIT] Set VD ISR flag at 0x%08X to 1 (enables frame callbacks)\n", vd_isr_flag_ea);
             fflush(stderr);
-            KernelTraceHostOpF("HOST.Init.VdIsrFlag addr=%08X value=1", vd_isr_flag_ea);
+            // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+            // KernelTraceHostOpF("HOST.Init.VdIsrFlag addr=%08X value=1", vd_isr_flag_ea);
         } else {
             fprintf(stderr, "[INIT] ERROR: Failed to translate VD ISR flag address 0x%08X\n", vd_isr_flag_ea);
             fflush(stderr);
@@ -384,7 +430,8 @@ void KiSystemStartup()
 
         fprintf(stderr, "[INIT] VD ISR callback registered successfully\n");
         fflush(stderr);
-        KernelTraceHostOpF("HOST.Init.VdIsrCallback cb=%08X ctx=%08X", vd_isr_callback_ea, vd_isr_context_ea);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.Init.VdIsrCallback cb=%08X ctx=%08X", vd_isr_callback_ea, vd_isr_context_ea);
 
         // CRITICAL FIX: Initialize the frame callback pointer in the GAME'S graphics context
         // The game uses a graphics context at 0x00061000 (static variable in XEX data section)
@@ -408,7 +455,8 @@ void KiSystemStartup()
                 #endif
                 fprintf(stderr, "[INIT] Set main loop flag at 0x%08X to 1 (unblocks main loop)\n", main_loop_flag_ea);
                 fflush(stderr);
-                KernelTraceHostOpF("HOST.Init.MainLoopFlag addr=%08X value=1", main_loop_flag_ea);
+                // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+                // KernelTraceHostOpF("HOST.Init.MainLoopFlag addr=%08X value=1", main_loop_flag_ea);
             } else {
                 fprintf(stderr, "[INIT] ERROR: Failed to translate main loop flag address 0x%08X\n", main_loop_flag_ea);
                 fflush(stderr);
@@ -434,10 +482,16 @@ void KiSystemStartup()
         // Try area 0 with message 0x11
         const uint32_t NOTIFICATION_AREA_0_MSG_0x11 = (0 << 16) | 0x11;
 
-        KernelTraceHostOpF("HOST.NotificationThread sending notification area=0 msg=0x11 (dwId=%08X)", NOTIFICATION_AREA_0_MSG_0x11);
+        fprintf(stderr, "[NOTIFICATION-THREAD] Sending notification area=0 msg=0x11 (dwId=%08X)\n", NOTIFICATION_AREA_0_MSG_0x11);
+        fflush(stderr);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.NotificationThread sending notification area=0 msg=0x11 (dwId=%08X)", NOTIFICATION_AREA_0_MSG_0x11);
         XamNotifyEnqueueEvent(NOTIFICATION_AREA_0_MSG_0x11, 0);
 
-        KernelTraceHostOpF("HOST.NotificationThread notification sent");
+        fprintf(stderr, "[NOTIFICATION-THREAD] Notification sent\n");
+        fflush(stderr);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.NotificationThread notification sent");
     }).detach();
 }
 
@@ -452,7 +506,8 @@ extern "C" uint32_t GetImportVariableGuestAddress(const char* name);
 // This matches Xenia's behavior where imports are resolved before game execution
 void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
 {
-    KernelTraceHostOp("HOST.ProcessImportTable ENTER");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.ProcessImportTable ENTER");
     fprintf(stderr, "[XEX] Processing import table...\n");
     fflush(stderr);
 
@@ -471,7 +526,8 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
     {
         fprintf(stderr, "[XEX] No import table found (XEX_HEADER_IMPORT_LIBRARIES not present)\n");
         fflush(stderr);
-        KernelTraceHostOp("HOST.ProcessImportTable no_imports");
+        // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+        // KernelTraceHostOp("HOST.ProcessImportTable no_imports");
         return;
     }
 
@@ -538,10 +594,39 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
         // Process each import in this library
         for (uint32_t i = 0; i < numImports; i++)
         {
+            // DEBUG: Log every 50 imports to track progress
+            if (i % 50 == 0)
+            {
+                fprintf(stderr, "[XEX]   Processing import %u/%u...\n", i, numImports);
+                fflush(stderr);
+            }
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: About to get thunkAddr\n");
+                fflush(stderr);
+            }
+
             const uint32_t thunkAddr = importDesc[i].firstThunk.get();
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: thunkAddr=0x%08X, about to translate\n", thunkAddr);
+                fflush(stderr);
+            }
 
             // Get the thunk data from guest memory
             auto* thunkData = reinterpret_cast<Xex2ThunkData*>(g_memory.Translate(thunkAddr));
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: thunkData=%p\n", (void*)thunkData);
+                fflush(stderr);
+            }
+
             if (!thunkData)
             {
                 fprintf(stderr, "[XEX]   Import %u: thunk address 0x%08X not in guest memory\n", i, thunkAddr);
@@ -550,83 +635,135 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
                 continue;
             }
 
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: About to get ordinal\n");
+                fflush(stderr);
+            }
+
             // Extract ordinal from thunk data
             const uint32_t ordinal = thunkData->ordinal.get();
-            const uint8_t importType = (ordinal >> 24) & 0xFF;
-            const uint16_t importOrdinal = ordinal & 0xFFFF;
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: ordinal=0x%08X\n", ordinal);
+                fflush(stderr);
+            }
+
+            // CRITICAL FIX: The thunk data is in big-endian format in the XEX file.
+            // The structure in big-endian memory is: [type:8][hint:8][ordinal:16]
+            // We need to extract the fields from the BIG-ENDIAN representation, not the byte-swapped one.
+            // Read the raw bytes directly:
+            const uint8_t* rawBytes = reinterpret_cast<const uint8_t*>(thunkData);
+            const uint8_t importType = rawBytes[0];  // Type is in byte 0 (big-endian)
+            const uint8_t importHint = rawBytes[1];  // Hint is in byte 1 (big-endian)
+            const uint16_t importOrdinal = (static_cast<uint16_t>(rawBytes[2]) << 8) | rawBytes[3];  // Ordinal is in bytes 2-3 (big-endian)
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: importType=%u importOrdinal=%u importHint=%u\n", importType, importOrdinal, importHint);
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: Raw thunk data bytes: %02X %02X %02X %02X\n",
+                        rawBytes[0], rawBytes[1], rawBytes[2], rawBytes[3]);
+                fflush(stderr);
+            }
 
             // Look up function name from ordinal
             const char* functionName = nullptr;
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: About to lookup in exportTable (ptr=%p)\n", (void*)exportTable);
+                fflush(stderr);
+            }
+
             if (exportTable)
             {
+                // DEBUG: Log first import in detail
+                if (i == 0)
+                {
+                    fprintf(stderr, "[XEX-DEBUG]   Import 0: exportTable exists, calling find(%u)\n", importOrdinal);
+                    fflush(stderr);
+                }
+
                 auto it = exportTable->find(importOrdinal);
+
+                // DEBUG: Log first import in detail
+                if (i == 0)
+                {
+                    fprintf(stderr, "[XEX-DEBUG]   Import 0: find() returned, checking if found\n");
+                    fflush(stderr);
+                }
+
                 if (it != exportTable->end())
                 {
                     functionName = it->second;
                 }
             }
 
+            // DEBUG: Log first import in detail
+            if (i == 0)
+            {
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: functionName=%s\n", functionName ? functionName : "(null)");
+                fflush(stderr);
+            }
+
             if (!functionName)
             {
-                fprintf(stderr, "[XEX]   Import %u: ordinal=%u (0x%03X) type=%s thunk=0x%08X - NO NAME FOUND\n",
-                        i, importOrdinal, importOrdinal,
-                        importType == XEX_THUNK_FUNCTION ? "FUNCTION" : "VARIABLE",
-                        thunkAddr);
+                fprintf(stderr, "[XEX]   Import %u: ordinal=%u (0x%03X) type=%u thunk=0x%08X - NO NAME FOUND\n",
+                        i, importOrdinal, importOrdinal, importType, thunkAddr);
                 fflush(stderr);
                 totalImportsFailed++;
                 continue;
             }
 
-            if (importType == XEX_THUNK_VARIABLE)
+            // CRITICAL FIX: In the XEX format, the type field appears to be 0 for ALL imports.
+            // We'll treat ALL imports as functions for now.
+            // DEBUG: Log first import in detail
+            if (i == 0)
             {
-                // Resolve imported variable storage and patch thunk with its EA
-                uint32_t varEA = GetImportVariableGuestAddress(functionName);
-                if (!varEA)
-                {
-                    fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) VARIABLE - NOT IMPLEMENTED\n",
-                            i, functionName, importOrdinal);
-                    fflush(stderr);
-                    totalImportsFailed++;
-                    continue;
-                }
-
-                thunkData->addressOfData = varEA;
-                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> VAR=%08X PATCHED\n",
-                        i, functionName, importOrdinal, thunkAddr, varEA);
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: About to call GetImportFunctionByName(%s)\n", functionName);
                 fflush(stderr);
-                totalImportsPatched++;
             }
-            else // XEX_THUNK_FUNCTION
+
+            // Get the address of the __imp__ function
+            // Note: functionName already includes the "__imp__" prefix from the ordinal table
+            PPCFunc* hostFunc = GetImportFunctionByName(functionName);
+
+            // DEBUG: Log first import in detail
+            if (i == 0)
             {
-                // Get the address of the __imp__ function
-                // Note: functionName already includes the "__imp__" prefix from the ordinal table
-                PPCFunc* hostFunc = GetImportFunctionByName(functionName);
-
-                if (!hostFunc)
-                {
-                    fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) - NOT IMPLEMENTED\n",
-                            i, functionName, importOrdinal);
-                    fflush(stderr);
-                    totalImportsFailed++;
-                    continue;
-                }
-
-                // Assign a unique guest address for this import
-                uint32_t importGuestAddr = nextImportAddress;
-                nextImportAddress += 4; // Each import gets 4 bytes (enough for a function pointer)
-
-                // Register the function at this guest address
-                g_memory.InsertFunction(importGuestAddr, hostFunc);
-
-                // Patch the thunk to point to this guest address
-                // The thunk data is in big-endian format (be<uint32_t>)
-                thunkData->function = importGuestAddr;
-
-                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) thunk=0x%08X -> guest=0x%08X PATCHED\n",
-                        i, functionName, importOrdinal, thunkAddr, importGuestAddr);
+                fprintf(stderr, "[XEX-DEBUG]   Import 0: GetImportFunctionByName returned hostFunc=%p\n", (void*)hostFunc);
                 fflush(stderr);
-                totalImportsPatched++;
             }
+
+            if (!hostFunc)
+            {
+                fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) type=%u - NOT IMPLEMENTED\n",
+                        i, functionName, importOrdinal, importType);
+                fflush(stderr);
+                totalImportsFailed++;
+                continue;
+            }
+
+            // Assign a unique guest address for this import
+            uint32_t importGuestAddr = nextImportAddress;
+            nextImportAddress += 4; // Each import gets 4 bytes (enough for a function pointer)
+
+            // Register the function at this guest address
+            g_memory.InsertFunction(importGuestAddr, hostFunc);
+
+            // Patch the thunk to point to this guest address
+            // The thunk data is in big-endian format (be<uint32_t>)
+            thunkData->function = importGuestAddr;
+
+            fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) type=%u thunk=0x%08X -> guest=0x%08X PATCHED\n",
+                    i, functionName, importOrdinal, importType, thunkAddr, importGuestAddr);
+            fflush(stderr);
+            totalImportsPatched++;
         }
 
         // Move to next library (libraries are variable size)
@@ -637,8 +774,9 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
     fprintf(stderr, "\n[XEX] Import table processing complete: %u patched, %u failed\n",
             totalImportsPatched, totalImportsFailed);
     fflush(stderr);
-    KernelTraceHostOpF("HOST.ProcessImportTable DONE patched=%u failed=%u",
-                       totalImportsPatched, totalImportsFailed);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.ProcessImportTable DONE patched=%u failed=%u",
+    //                    totalImportsPatched, totalImportsFailed);
 }
 
 uint32_t LdrLoadModule(const std::filesystem::path &path)
@@ -772,8 +910,12 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
 
     g_xdbfWrapper = XDBFWrapper((uint8_t*)g_memory.Translate(res->offset.get()), res->sizeOfData.get());
 
-    KernelTraceHostOpF("HOST.LdrLoadModule entry=0x%08X loadAddr=0x%08X imageSize=0x%08X",
-                       entry, security->loadAddress.get(), security->imageSize.get());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.LdrLoadModule entry=0x%08X loadAddr=0x%08X imageSize=0x%08X",
+    //                    entry, security->loadAddress.get(), security->imageSize.get());
+    fprintf(stderr, "[XEX] LdrLoadModule entry=0x%08X loadAddr=0x%08X imageSize=0x%08X\n",
+            entry, security->loadAddress.get(), security->imageSize.get());
+    fflush(stderr);
 
     // Log the XEX load details to console for debugging
     fprintf(stderr, "[XEX] loadAddress=0x%08X imageSize=0x%08X entry=0x%08X compressionType=%d\n",
@@ -1282,7 +1424,10 @@ int main(int argc, char *argv[])
     }
 
     uint32_t entry = LdrLoadModule(modulePath);
-    KernelTraceHostOpF("HOST.main.after_ldr_load entry=0x%08X", entry);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.main.after_ldr_load entry=0x%08X", entry);
+    fprintf(stderr, "[MAIN] after_ldr_load entry=0x%08X\n", entry);
+    fflush(stderr);
     if (entry == 0)
     {
         // LdrLoadModule already displayed a message box with details.
@@ -1300,7 +1445,10 @@ int main(int argc, char *argv[])
 
         // Read current value AFTER XEX load
         uint32_t old_value = LoadBE32_Watched(g_memory.base, thread_ctx_index_addr);
-        KernelTraceHostOpF("HOST.Init.dword_828E14E0 BEFORE = %08X", old_value);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.Init.dword_828E14E0 BEFORE = %08X", old_value);
+        fprintf(stderr, "[INIT] dword_828E14E0 BEFORE = %08X\n", old_value);
+        fflush(stderr);
 
         // Initialize to 0 (first entry in the function pointer table)
         // The game will set this to the correct value during initialization
@@ -1309,19 +1457,31 @@ int main(int argc, char *argv[])
 
         // Verify the write succeeded
         uint32_t verify_value = LoadBE32_Watched(g_memory.base, thread_ctx_index_addr);
-        KernelTraceHostOpF("HOST.Init.dword_828E14E0 AFTER = %08X (expected 00000000)", verify_value);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.Init.dword_828E14E0 AFTER = %08X (expected 00000000)", verify_value);
+        fprintf(stderr, "[INIT] dword_828E14E0 AFTER = %08X (expected 00000000)\n", verify_value);
+        fflush(stderr);
     }
 
-    KernelTraceHostOpF("HOST.main.runInstallerWizard=%d", runInstallerWizard ? 1 : 0);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.main.runInstallerWizard=%d", runInstallerWizard ? 1 : 0);
+    fprintf(stderr, "[MAIN] runInstallerWizard=%d\n", runInstallerWizard ? 1 : 0);
+    fflush(stderr);
     if (!runInstallerWizard)
     {
-        KernelTraceHostOp("HOST.main.before_create_host_device");
+        // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+        // KernelTraceHostOp("HOST.main.before_create_host_device");
+        fprintf(stderr, "[MAIN] before_create_host_device\n");
+        fflush(stderr);
         if (!Video::CreateHostDevice(sdlVideoDriver, graphicsApiRetry))
         {
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), Localise("Video_BackendError").c_str(), GameWindow::s_pWindow);
             std::_Exit(1);
         }
-        KernelTraceHostOp("HOST.main.after_create_host_device");
+        // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+        // KernelTraceHostOp("HOST.main.after_create_host_device");
+        fprintf(stderr, "[MAIN] after_create_host_device\n");
+        fflush(stderr);
 
         // Optional heartbeat: present once or twice immediately to verify renderer path
         // DISABLED: This causes the app to enter the event loop before creating guest threads
@@ -1336,9 +1496,15 @@ int main(int argc, char *argv[])
         // }
     }
 
-    KernelTraceHostOp("HOST.main.before_pipeline_precomp");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.before_pipeline_precomp");
+    fprintf(stderr, "[MAIN] before_pipeline_precomp\n");
+    fflush(stderr);
     Video::StartPipelinePrecompilation();
-    KernelTraceHostOp("HOST.main.after_pipeline_precomp");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.after_pipeline_precomp");
+    fprintf(stderr, "[MAIN] after_pipeline_precomp\n");
+    fflush(stderr);
 
     // NOTE: RegisterMw05VideoManualHooks() is now called AFTER function table re-population
     // (see line ~790) to prevent the manual hook from being overwritten
@@ -1359,7 +1525,10 @@ int main(int argc, char *argv[])
     //     reinterpret_cast<const void*>(sub_82621640),
     //     reinterpret_cast<const void*>(g_memory.FindFunction(0x82621640)));
 
-    KernelTraceHostOp("HOST.main.after_sub_82621640_install");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.after_sub_82621640_install");
+    fprintf(stderr, "[MAIN] after_sub_82621640_install\n");
+    fflush(stderr);
 
     g_memory.InsertFunction(0x8284E658, sub_8284E658);
     // TEMP: Commenting out - KernelTraceHostOpF with %p causes hang
@@ -1367,12 +1536,16 @@ int main(int argc, char *argv[])
     //     reinterpret_cast<const void*>(sub_8284E658),
     //     reinterpret_cast<const void*>(g_memory.FindFunction(0x8284E658)));
 
-    KernelTraceHostOp("HOST.main.after_sub_8284E658_install");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.after_sub_8284E658_install");
     fprintf(stderr, "[MAIN] after_sub_8284E658_install\n"); fflush(stderr);
 
     // TLS dispatcher function pointer used by MW'05 early init (KeTlsAlloc equivalent)
     fprintf(stderr, "[MAIN] before_KeTlsAlloc_install\n"); fflush(stderr);
-    KernelTraceHostOp("HOST.main.before_KeTlsAlloc_install");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.before_KeTlsAlloc_install");
+    fprintf(stderr, "[MAIN] before_KeTlsAlloc_install (trace)\n");
+    fflush(stderr);
     fprintf(stderr, "[MAIN] calling_InsertFunction_KeTlsAlloc\n"); fflush(stderr);
     g_memory.InsertFunction(0x826BE2A8, HostToGuestFunction<KeTlsAlloc>);
     fprintf(stderr, "[MAIN] after_KeTlsAlloc_install\n"); fflush(stderr);
@@ -1464,7 +1637,10 @@ int main(int argc, char *argv[])
     //     reinterpret_cast<const void*>(g_memory.FindFunction(0x828134E0)));
 
     fprintf(stderr, "[MAIN] before_unblock\n"); fflush(stderr);
-    KernelTraceHostOp("HOST.main.before_unblock");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.before_unblock");
+    fprintf(stderr, "[MAIN] before_unblock (trace)\n");
+    fflush(stderr);
 
     // Workaround: Set the flag that the main thread will wait for
     fprintf(stderr, "[MAIN] before_UnblockMainThreadEarly\n"); fflush(stderr);
@@ -1488,7 +1664,10 @@ int main(int argc, char *argv[])
     }
 
     fprintf(stderr, "[MAIN] before_guest_start\n"); fflush(stderr);
-    KernelTraceHostOp("HOST.main.before_guest_start");
+    // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+    // KernelTraceHostOp("HOST.main.before_guest_start");
+    fprintf(stderr, "[MAIN] before_guest_start (trace)\n");
+    fflush(stderr);
 
     // CRITICAL: Create system threads that the game expects to exist
     // These threads are created by Xenia BEFORE the game module loads
@@ -1541,11 +1720,15 @@ int main(int argc, char *argv[])
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events
     fprintf(stderr, "[MAIN] calling_GuestThread_Start entry=0x%08X\n", entry); fflush(stderr);
-    KernelTraceHostOpF("HOST.GuestThread.Start entry=0x%08X", entry);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.GuestThread.Start entry=0x%08X", entry);
     uint32_t mainThreadId = 0;
     GuestThread::Start({ entry, 0, 0 }, &mainThreadId);
 
-    KernelTraceHostOpF("HOST.main.after_guest_start threadId=0x%08X", mainThreadId);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.main.after_guest_start threadId=0x%08X", mainThreadId);
+    fprintf(stderr, "[MAIN] after_guest_start threadId=0x%08X\n", mainThreadId);
+    fflush(stderr);
 
     // Optional continuous present (safe, main-thread only)
     // Also present while MW05_KICK_VIDEO is set and the guest hasn't called VdSwap yet.

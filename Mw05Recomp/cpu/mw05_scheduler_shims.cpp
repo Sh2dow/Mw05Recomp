@@ -13,13 +13,15 @@
 #include <windows.h>
 #endif
 
+
+PPC_FUNC_IMPL(__imp__sub_82621640);
+PPC_FUNC_IMPL(__imp__sub_8284E658);
+
 extern "C"
 {
     uint32_t Mw05PeekSchedulerBlockEA();
     uint32_t Mw05GetSchedulerHandleEA();
     uint32_t Mw05GetSchedulerTimeoutEA();
-    void __imp__sub_82621640(PPCContext &ctx, uint8_t *base);
-    void __imp__sub_8284E658(PPCContext &ctx, uint8_t *base);
     void HostSchedulerWake(PPCContext &ctx, uint8_t *base);
 }
 

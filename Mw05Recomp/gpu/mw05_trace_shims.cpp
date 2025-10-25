@@ -27,19 +27,24 @@ extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
   #define _KPROCESSOR_MODE_DEFINED
 #endif
 
-// Forward declaration for KeDelayExecutionThread
-extern "C" NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE Mode, BOOLEAN Alertable, PLARGE_INTEGER IntervalGuest);
-
-// Forward declarations for GPU writeback access functions
-extern "C" uint32_t GetRbWriteBackPtr();
-extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr();
-extern "C" uint32_t GetRbLen();
-
 // Forward declarations for diagnostic draw testing
 struct GuestDevice;  // Forward declaration
-extern "C" void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount);
-extern "C" void Mw05DebugKickClear();
-extern "C" GuestDevice* Mw05GetGuestDevicePtr();
+
+
+// Forward declarations for GPU writeback access functions
+extern "C"
+{
+    // Forward declaration for KeDelayExecutionThread
+    NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE Mode, BOOLEAN Alertable, PLARGE_INTEGER IntervalGuest);
+    
+    uint32_t GetRbWriteBackPtr();
+    uint32_t GetVdSystemCommandBufferGpuIdAddr();
+    uint32_t GetRbLen();
+
+    void Mw05HostDraw(uint32_t primitiveType, uint32_t startVertex, uint32_t primitiveCount);
+    void Mw05DebugKickClear();
+    GuestDevice* Mw05GetGuestDevicePtr();
+}
 
 // Forward declaration for Video::Present()
 namespace Video { void Present(); }
@@ -319,16 +324,10 @@ static inline void ProcessMW05Queue(uint32_t baseEA) {
     }
 }
 
-// Extern "C" wrapper to allow calling from imports.cpp
-extern "C" void Mw05ProcessSchedulerQueue(uint32_t baseEA) {
-    ProcessMW05Queue(baseEA);
-}
-
 // Track last-seen scheduler/context pointer to optionally nudge present-wrapper once
 static std::atomic<uint32_t> s_lastSchedR3{0};
 static std::atomic<bool> s_schedR3Logged{false};
 static std::atomic<uint32_t> s_schedR3Seen{0};
-extern "C" uint32_t Mw05Trace_SchedR3SeenCount() { return s_schedR3Seen.load(std::memory_order_acquire); }
 
 static inline void MaybeLogSchedCapture(uint32_t r3) {
     if (r3 >= 0x1000 && r3 < PPC_MEMORY_SIZE) {
@@ -337,36 +336,44 @@ static inline void MaybeLogSchedCapture(uint32_t r3) {
         }
     }
 }
-extern "C" uint32_t Mw05Trace_LastSchedR3() { return s_lastSchedR3.load(std::memory_order_acquire); }
-extern "C" void Mw05Trace_SeedSchedR3_NoLog(uint32_t r3) {
-    if (r3 >= 0x1000 && r3 < PPC_MEMORY_SIZE) {
-        s_lastSchedR3.store(r3, std::memory_order_release);
-        s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
+
+extern "C" 
+{
+    uint32_t VdGetSystemCommandBuffer(void* outCmdBufPtr, void* outValue);
+
+    void Mw05ProcessSchedulerQueue(uint32_t baseEA) {
+        ProcessMW05Queue(baseEA);
     }
-}
 
-extern "C" void Mw05Trace_ConsiderSchedR3(uint32_t r3) {
-    if (r3 >= 0x1000 && r3 < PPC_MEMORY_SIZE) {
-        MaybeLogSchedCapture(r3);
-        s_lastSchedR3.store(r3, std::memory_order_release);
-        s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
+    uint32_t Mw05Trace_SchedR3SeenCount() { return s_schedR3Seen.load(std::memory_order_acquire); }
+    uint32_t Mw05Trace_LastSchedR3() { return s_lastSchedR3.load(std::memory_order_acquire); }
+    
+    void Mw05Trace_SeedSchedR3_NoLog(uint32_t r3) 
+    {
+        if (r3 >= 0x1000 && r3 < PPC_MEMORY_SIZE) 
+        {
+            s_lastSchedR3.store(r3, std::memory_order_release);
+            s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
+        }
     }
-}
 
+    void Mw05Trace_ConsiderSchedR3(uint32_t r3) 
+    {
+        if (r3 >= 0x1000 && r3 < PPC_MEMORY_SIZE) 
+        {
+            MaybeLogSchedCapture(r3);
+            s_lastSchedR3.store(r3, std::memory_order_release);
+            s_schedR3Seen.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
 
-extern "C" {
     // Forward decls of the recompiled originals
     void __imp__sub_82595FC8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825972B0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A54F0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A6DF0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A65A8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825986F8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825987E0(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825988B0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A7A40(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A7B78(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A74B8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7DE8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7E60(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7EA0(PPCContext& ctx, uint8_t* base);
@@ -385,7 +392,6 @@ extern "C" {
 
 
     void __imp__sub_825A7208(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_825A74B8(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7F10(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A7F88(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825A8040(PPCContext& ctx, uint8_t* base);
@@ -397,15 +403,18 @@ extern "C" {
     void __imp__sub_82812E20(PPCContext& ctx, uint8_t* base);
     void __imp__sub_82596978(PPCContext& ctx, uint8_t* base);
     void __imp__sub_825979A8(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_82595FC8(PPCContext& ctx, uint8_t* base);
 
     void __imp__sub_825A97B8(PPCContext& ctx, uint8_t* base);
 
     void __imp__sub_82441CF0(PPCContext& ctx, uint8_t* base);
 
+    // NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
+    // It saves/restores qword_828F1F98 to prevent corruption
+    // NOTE: sub_82630378 wrapper is also in mw05_trace_threads.cpp - wait function wrapper
+    // NOTE: sub_82598A20 wrapper is in mw05_trace_shims.cpp - rendering function that calls VdSwap
     void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
-
 }
+
 
 #define SHIM(name) \
     void MW05Shim_##name(PPCContext& ctx, uint8_t* base) { \
@@ -623,7 +632,6 @@ PPC_FUNC(sub_8262F2A0)
         fflush(stderr);
     }
 }
-// NOTE: sub_8262F330 is defined in mw05_boot_shims.cpp with fast boot logic
 // Convert MW05Shim_sub_823BC638 to PPC_FUNC_IMPL pattern
 PPC_FUNC_IMPL(__imp__sub_823BC638);
 PPC_FUNC(sub_823BC638) {
@@ -655,7 +663,6 @@ PPC_FUNC(sub_82596978) {
     KernelTraceHostOpF("sub_82596978.lr=%08llX r3=%08X r4=%08X r5=%08X", (unsigned long long)ctx.lr, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     DumpEAWindow("82596978.r3", ctx.r3.u32);
     DumpEAWindow("82596978.r4", ctx.r4.u32);
-    SetPPCContext(ctx);
     SetPPCContext(ctx);
 
     __imp__sub_82596978(ctx, base);
@@ -856,7 +863,6 @@ PPC_FUNC(sub_825979A8) {
     // }
     // fflush(stderr);
 
-    SetPPCContext(ctx);
     SetPPCContext(ctx);
 
     // CRITICAL DEBUG: Log what the GUEST callback will see when it reads the flag and present function pointer
@@ -1140,9 +1146,6 @@ PPC_FUNC(sub_825972B0) {
     }
 
 }
-extern "C" uint32_t VdGetSystemCommandBuffer(void* outCmdBufPtr, void* outValue);
-
-
 
 extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA) {
     auto looks_ptr = [](uint32_t ea) { return ea >= 0x1000 && ea < PPC_MEMORY_SIZE; };
@@ -1397,10 +1400,6 @@ PPC_FUNC(sub_82598A20) {
     }
 }
 
-
-
-// Declare the original recompiled functions
-PPC_FUNC_IMPL(__imp__sub_825960B8);
 // NOTE: sub_825968B0 override moved to ppc_manual_overrides_symbols.cpp
 PPC_FUNC_IMPL(__imp__sub_8214B490);
 
@@ -1433,13 +1432,9 @@ PPC_FUNC(sub_8214B490) {
 
     // Parameters are valid, call the original function
     SetPPCContext(ctx);
-    SetPPCContext(ctx);
 
     __imp__sub_8214B490(ctx, base);
 }
-
-// NOTE: sub_825960B8 override moved to ppc_manual_overrides_symbols.cpp to avoid duplicate symbol
-// NOTE: sub_825968B0 override moved to ppc_manual_overrides_symbols.cpp to avoid duplicate symbol
 
 // Convert MW05Shim_sub_82596E40 to PPC_FUNC_IMPL pattern
 PPC_FUNC_IMPL(__imp__sub_82596E40);

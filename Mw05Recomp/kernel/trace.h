@@ -223,7 +223,8 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     static bool banner_logged = false;
     if (!banner_logged) {
         banner_logged = true;
-        KernelTraceHostOp("HOST.watch.store override ACTIVE");
+        // CRITICAL FIX: KernelTraceHostOp hangs in natural path! Skip it.
+        // KernelTraceHostOp("HOST.watch.store override ACTIVE");
     }
 
     // CRITICAL FIX: BLOCK writes to o1heap instance structure ONLY from game's memset function

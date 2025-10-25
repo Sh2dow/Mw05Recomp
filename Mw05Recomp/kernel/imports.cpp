@@ -44,15 +44,20 @@ PPC_FUNC_IMPL(__imp__sub_821B7C28);
 PPC_FUNC_IMPL(__imp__sub_821BB4D0);
 
 // Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
-extern "C" uint32_t Mw05Trace_LastSchedR3();
-extern "C" uint32_t Mw05Trace_SchedR3SeenCount();
-
-// Graphics context helper: get the heap-allocated graphics context address
-extern "C" uint32_t Mw05GetGraphicsContextAddress();
-
-// Diagnostic forward decl for MW05 micro-interpreter
-extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
-
+extern "C" 
+{
+    uint32_t Mw05Trace_LastSchedR3();
+    uint32_t Mw05Trace_SchedR3SeenCount();
+    
+    // Graphics context helper: get the heap-allocated graphics context address
+    uint32_t Mw05GetGraphicsContextAddress();
+    
+    // Diagnostic forward decl for MW05 micro-interpreter
+    void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+    
+    // Memory helper: get the guest base pointer
+    uint8_t* MmGetGuestBase();
+}
 
 #include "kernel/event.h"
 #include "kernel/semaphore.h"
@@ -82,8 +87,6 @@ static inline void EnsureGuestContextForThisThread(const char* tag = nullptr) {
     }
 }
 
-
-
 static std::atomic<uint32_t> g_keSetEventGeneration;
 static std::atomic<uint32_t> g_vdInterruptEventEA{0};
 static std::atomic<bool> g_vdInterruptPending{false};
@@ -100,30 +103,30 @@ static std::atomic<uint32_t> g_vblankTicks{0};
 
 static std::atomic<uint64_t> g_lastPresentMs{0};
 
-extern "C" void Mw05NoteHostPresent(uint64_t ms)
+extern "C" 
 {
-    g_lastPresentMs.store(ms, std::memory_order_release);
-}
+    void Mw05NoteHostPresent(uint64_t ms)
+    {
+        g_lastPresentMs.store(ms, std::memory_order_release);
+    }
+    
+    
+    bool Mw05SawRealVdSwap() { return g_sawRealVdSwap.load(std::memory_order_acquire); }
 
+    bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
 
-extern "C"
-{
-	bool Mw05SawRealVdSwap() { return g_sawRealVdSwap.load(std::memory_order_acquire); }
+    uint32_t Mw05ConsumeSchedulerBlockEA();
+    uint32_t Mw05GetSchedulerHandleEA();
+    uint32_t Mw05GetSchedulerTimeoutEA();
+    void Mw05ForceVdInitOnce();
+    void Mw05LogIsrIfRegisteredOnce();
+    void VdInitializeEngines(uint32_t callback_ea = 0, uint32_t arg1 = 0, uint32_t arg2 = 0, uint32_t arg3 = 0, uint32_t arg4 = 0);
 
-	bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
-
-	uint32_t Mw05ConsumeSchedulerBlockEA();
-	uint32_t Mw05GetSchedulerHandleEA();
-	uint32_t Mw05GetSchedulerTimeoutEA();
-	void Mw05ForceVdInitOnce();
-	void Mw05LogIsrIfRegisteredOnce();
-	void VdInitializeEngines(uint32_t callback_ea = 0, uint32_t arg1 = 0, uint32_t arg2 = 0, uint32_t arg3 = 0, uint32_t arg4 = 0);
-
-// Global variables for VdInitializeEngines callback workaround
-uint32_t g_vd_init_callback_ea = 0;
-uint32_t g_vd_init_callback_arg1 = 0;
-uint32_t g_vd_init_callback_arg2 = 0;
-uint32_t g_vd_init_callback_arg3 = 0;
+    // Global variables for VdInitializeEngines callback workaround
+    uint32_t g_vd_init_callback_ea = 0;
+    uint32_t g_vd_init_callback_arg1 = 0;
+    uint32_t g_vd_init_callback_arg2 = 0;
+    uint32_t g_vd_init_callback_arg3 = 0;
 
     bool Mw05FastBootEnabled() {
         static const bool enabled = []() -> bool {
@@ -155,9 +158,7 @@ uint32_t g_vd_init_callback_arg3 = 0;
     void VdCallGraphicsNotificationRoutines(uint32_t source);
     void Mw05MarkGuestSwappedOnce();
     bool Mw05AnyPresentSeen();
-
 }
-
 // Forward decl: MW05 PM4 builder shim entry (defined in mw05_trace_shims.cpp) - removed
 
 
@@ -618,37 +619,89 @@ static inline bool Mw05AutoVideoEnabled() {
 }
 
 void Mw05AutoVideoInitIfNeeded() {
-    // One-time optional forced registration via env var
-    Mw05MaybeForceRegisterVdEventFromEnv();
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Mw05AutoVideoInitIfNeeded ENTER\n");
+    fflush(stderr);
 
-    if (!Mw05AutoVideoEnabled()) return;
-    bool expected = false;
-    if (!g_autoVideoDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    // One-time optional forced registration via env var
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before Mw05MaybeForceRegisterVdEventFromEnv\n");
+    fflush(stderr);
+    Mw05MaybeForceRegisterVdEventFromEnv();
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After Mw05MaybeForceRegisterVdEventFromEnv\n");
+    fflush(stderr);
+
+    if (!Mw05AutoVideoEnabled()) {
+        fprintf(stderr, "[AUTO-VIDEO-DEBUG] AutoVideo disabled, returning\n");
+        fflush(stderr);
         return;
+    }
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] AutoVideo enabled\n");
+    fflush(stderr);
+
+    bool expected = false;
+    if (!g_autoVideoDone.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        fprintf(stderr, "[AUTO-VIDEO-DEBUG] Already done, returning\n");
+        fflush(stderr);
+        return;
+    }
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] First time, continuing\n");
+    fflush(stderr);
 
     // If a ring and write-back already exist, skip.
     if (g_RbLen.load(std::memory_order_relaxed) != 0 &&
         g_RbWriteBackPtr.load(std::memory_order_relaxed) != 0) {
+        fprintf(stderr, "[AUTO-VIDEO-DEBUG] Ring buffer already exists, returning\n");
+        fflush(stderr);
         return;
     }
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Ring buffer doesn't exist, creating\n");
+    fflush(stderr);
 
     // Ensure a system command buffer exists for callers that query it later.
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before VdGetSystemCommandBuffer\n");
+    fflush(stderr);
     VdGetSystemCommandBuffer(nullptr, nullptr);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After VdGetSystemCommandBuffer\n");
+    fflush(stderr);
 
     const uint32_t len_log2 = 16; // 64 KiB ring (closer to MW05 expectations)
     const uint32_t size_bytes = 1u << len_log2;
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before g_userHeap.Alloc(ring)\n");
+    fflush(stderr);
     void* ring_host = g_userHeap.Alloc(size_bytes);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After g_userHeap.Alloc(ring) = %p\n", ring_host);
+    fflush(stderr);
     if (!ring_host) return;
     const uint32_t ring_guest = g_memory.MapVirtual(ring_host);
 
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before g_userHeap.Alloc(wb)\n");
+    fflush(stderr);
     void* wb_host = g_userHeap.Alloc(64);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After g_userHeap.Alloc(wb) = %p\n", wb_host);
+    fflush(stderr);
     if (!wb_host) return;
     const uint32_t wb_guest = g_memory.MapVirtual(wb_host);
 
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before VdInitializeRingBuffer\n");
+    fflush(stderr);
     KernelTraceHostOpF("HOST.AutoVideo.Init ring=%08X len_log2=%u wb=%08X", ring_guest, len_log2, wb_guest);
     VdInitializeRingBuffer(ring_guest, len_log2);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After VdInitializeRingBuffer\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before VdEnableRingBufferRPtrWriteBack\n");
+    fflush(stderr);
     VdEnableRingBufferRPtrWriteBack(wb_guest);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After VdEnableRingBufferRPtrWriteBack\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Before VdSetSystemCommandBufferGpuIdentifierAddress\n");
+    fflush(stderr);
     VdSetSystemCommandBufferGpuIdentifierAddress(wb_guest + 8);
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] After VdSetSystemCommandBufferGpuIdentifierAddress\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[AUTO-VIDEO-DEBUG] Mw05AutoVideoInitIfNeeded RETURN\n");
+    fflush(stderr);
 }
 
 inline static void DumpRawHeader16(uint32_t ea) {
@@ -2427,6 +2480,13 @@ void Mw05StartVblankPumpOnce() {
             {
                 extern void Mw05ForceCallCreateDeviceIfRequested();
                 Mw05ForceCallCreateDeviceIfRequested();
+            }
+
+            // CRITICAL FIX: Force-call sub_825AAE58 to create the main render thread
+            // After CreateDevice succeeds, we need to call sub_825AAE58 which creates thread 0x825AA970
+            {
+                extern void Mw05ForceCallCreateRenderThreadIfRequested();
+                Mw05ForceCallCreateRenderThreadIfRequested();
             }
 
             // CRITICAL DEBUG: Log before ring buffer section
@@ -6433,32 +6493,54 @@ static constexpr uint32_t kSysCmdBufFixedAddr = 0x00F00000;  // Place at 15 MB (
 
 static void EnsureSystemCommandBuffer()
 {
+    fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] EnsureSystemCommandBuffer ENTER\n");
+    fflush(stderr);
     if (g_SysCmdBufGuest == 0)
     {
+        fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] Creating new system command buffer\n");
+        fflush(stderr);
         // Use fixed address instead of heap allocation to avoid corrupting o1heap metadata
         g_SysCmdBufGuest = kSysCmdBufFixedAddr;
         g_SysCmdBufHost = g_memory.Translate(g_SysCmdBufGuest);
         g_VdSystemCommandBuffer.store(g_SysCmdBufGuest);
 
+        fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] Before memset\n");
+        fflush(stderr);
         // Zero the buffer
         if (g_SysCmdBufHost) {
             memset(g_SysCmdBufHost, 0, kSysCmdBufSize);
         }
+        fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] After memset\n");
+        fflush(stderr);
 
+        fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] Before PM4_ScanLinear\n");
+        fflush(stderr);
         // Immediate visibility: scan once upon allocation to detect early PM4 usage.
-        KernelTraceHostOpF("HOST.PM4.SysBufScan.ensure buf=%08X bytes=%u (FIXED ADDRESS)", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.PM4.SysBufScan.ensure buf=%08X bytes=%u (FIXED ADDRESS)", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
         extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
         PM4_ScanLinear(g_SysCmdBufGuest, kSysCmdBufSize);
+        fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] After PM4_ScanLinear\n");
+        fflush(stderr);
     }
+    fprintf(stderr, "[ENSURE-SYSCMD-DEBUG] EnsureSystemCommandBuffer RETURN\n");
+    fflush(stderr);
 }
 
 uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
-    KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.enter outPtr=%p outVal=%p", (void*)outCmdBufPtr, (void*)outValue);
-    if (auto* ctx = GetPPCContext()) {
-        KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.caller lr=%08X", (uint32_t)ctx->lr);
-    }
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] VdGetSystemCommandBuffer ENTER\n");
+    fflush(stderr);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.enter outPtr=%p outVal=%p", (void*)outCmdBufPtr, (void*)outValue);
+    // if (auto* ctx = GetPPCContext()) {
+    //     KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.caller lr=%08X", (uint32_t)ctx->lr);
+    // }
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] Before EnsureSystemCommandBuffer\n");
+    fflush(stderr);
     EnsureSystemCommandBuffer();
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] After EnsureSystemCommandBuffer\n");
+    fflush(stderr);
     // Optional: seed a small header in the System Command Buffer so titles that
     // expect a preinitialized descriptor (size/ticket) will proceed to write PM4.
     static const bool s_sysbuf_seed_hdr = [](){
@@ -6531,7 +6613,11 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
         }
     }
 
-    KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.res buf=%08X val=%08X", g_SysCmdBufGuest, g_SysCmdBufValue.load(std::memory_order_acquire));
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] Before result logging\n");
+    fflush(stderr);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.VdGetSystemCommandBuffer.res buf=%08X val=%08X", g_SysCmdBufGuest, g_SysCmdBufValue.load(std::memory_order_acquire));
+
     // Optional: dump a small window of the system command buffer on each query
     static const bool s_sysbuf_dump_on_get = [](){
         if (const char* v = std::getenv("MW05_PM4_SYSBUF_DUMP_ON_GET"))
@@ -6548,27 +6634,38 @@ uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outV
             #else
                 uint32_t le = __builtin_bswap32(p[i]);
             #endif
-                if (i == 0) {
-                    KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X (first)", base + i * 4, le);
-                } else {
-                    KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X", base + i * 4, le);
-                }
+                // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+                // if (i == 0) {
+                //     KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X (first)", base + i * 4, le);
+                // } else {
+                //     KernelTraceHostOpF("HOST.PM4.SysBufDump %08X: %08X", base + i * 4, le);
+                // }
             }
         }
     }
 
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] Before one-time scan\n");
+    fflush(stderr);
     // One-time opportunistic scan of the system command buffer so we can see if the
     // title pushes PM4 here before the ring is initialized. This only logs and is safe.
     {
         static bool s_scannedOnce = false;
         if (!s_scannedOnce && g_SysCmdBufGuest != 0) {
-            KernelTraceHostOpF("HOST.PM4.SysBufScan.trigger buf=%08X bytes=%u", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
+            fprintf(stderr, "[VD-SYSCMD-DEBUG] Triggering one-time PM4 scan\n");
+            fflush(stderr);
+            // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+            // KernelTraceHostOpF("HOST.PM4.SysBufScan.trigger buf=%08X bytes=%u", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
             extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
             PM4_ScanLinear(g_SysCmdBufGuest, kSysCmdBufSize);
-            KernelTraceHostOpF("HOST.PM4.SysBufScan.done");
+            fprintf(stderr, "[VD-SYSCMD-DEBUG] One-time PM4 scan done\n");
+            fflush(stderr);
+            // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+            // KernelTraceHostOpF("HOST.PM4.SysBufScan.done");
             s_scannedOnce = true;
         }
     }
+    fprintf(stderr, "[VD-SYSCMD-DEBUG] After one-time scan\n");
+    fflush(stderr);
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[vd] GetSystemCommandBuffer -> 0x%08X\n", g_SysCmdBufGuest);
         fflush(stdout);
@@ -7255,12 +7352,14 @@ static void Mw05ForceCallCreateDeviceIfRequested() {
     // From analysis: CreateDevice(gfx_ctx, ...) initializes the device and sets gfx_ctx+4
     EnsureGuestContextForThisThread("ForceCallCreateDevice");
 
+    // Get the guest base pointer
+    uint8_t* base = MmGetGuestBase();
+
     #if defined(_WIN32)
     __try {
     #endif
         // Forward declaration of the CreateDevice function
         extern void sub_82598230(PPCContext& ctx, uint8_t* base);
-        extern uint8_t* g_xexBase;
 
         // Set up PPC context for the call
         PPCContext* ctx = GetPPCContext();
@@ -7279,7 +7378,7 @@ static void Mw05ForceCallCreateDeviceIfRequested() {
         fflush(stderr);
 
         // Call CreateDevice
-        sub_82598230(*ctx, g_xexBase);
+        sub_82598230(*ctx, base);
 
         fprintf(stderr, "[CREATEDEVICE-FORCE] sub_82598230 returned r3=0x%08X (0=success)\n", ctx->r3.u32);
         fflush(stderr);
@@ -7299,6 +7398,108 @@ static void Mw05ForceCallCreateDeviceIfRequested() {
         fprintf(stderr, "[CREATEDEVICE-FORCE] CreateDevice crashed with exception 0x%08X\n", (unsigned)GetExceptionCode());
         fflush(stderr);
         KernelTraceHostOp("HOST.CreateDevice.force_call.exception");
+    }
+    #endif
+}
+
+// Force-call sub_825AAE58 to create the main render thread (0x825AA970)
+// This function is called AFTER CreateDevice in the natural flow (sub_825A8698)
+// But since sub_825A8698 is never called, we need to force-call sub_825AAE58 directly
+static void Mw05ForceCallCreateRenderThreadIfRequested() {
+    const char* en = std::getenv("MW05_FORCE_CALL_CREATE_RENDER_THREAD");
+    if (!en || (en[0]=='0' && en[1]=='\0')) {
+        return;
+    }
+
+    // Check if we should delay the call until after CreateDevice succeeds
+    static const uint32_t s_call_delay_ticks = [](){
+        if (const char* v = std::getenv("MW05_FORCE_CREATE_RENDER_THREAD_DELAY_TICKS"))
+            return (uint32_t)std::strtoul(v, nullptr, 10);
+        return 500u; // default: wait 500 ticks (~8.33 seconds at 60 Hz) - after CreateDevice at 400
+    }();
+
+    const uint32_t current_tick = g_vblankTicks.load(std::memory_order_acquire);
+    if (current_tick < s_call_delay_ticks) {
+        return;
+    }
+
+    // Check if already called (one-time call)
+    static std::atomic<bool> s_called{false};
+    bool expected = false;
+    if (!s_called.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;  // Already called
+    }
+
+    fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] Force-calling sub_825AAE58 at tick=%u\n", current_tick);
+    fflush(stderr);
+
+    // Get the graphics context address
+    uint32_t gfx_ctx = g_graphics_context_ea;
+    if (gfx_ctx == 0) {
+        fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] ERROR: Graphics context not allocated!\n");
+        fflush(stderr);
+        return;
+    }
+
+    // Call sub_825AAE58 with the graphics context as parameter
+    // From disassembly: sub_825AAE58 is called from sub_825A8698 after CreateDevice
+    // It creates the render thread at 0x825AA970
+    EnsureGuestContextForThisThread("ForceCallCreateRenderThread");
+
+    // Get the guest base pointer
+    uint8_t* base = MmGetGuestBase();
+
+    #if defined(_WIN32)
+    __try {
+    #endif
+        // Forward declaration of the sub_825AAE58 function
+        extern void sub_825AAE58(PPCContext& ctx, uint8_t* base);
+
+        // Set up PPC context for the call
+        PPCContext* ctx = GetPPCContext();
+        if (!ctx) {
+            fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] ERROR: Failed to get PPC context!\n");
+            fflush(stderr);
+            return;
+        }
+
+        // Set r3 to the graphics context address (parameter for sub_825AAE58)
+        ctx->r3.u32 = gfx_ctx;
+
+        // CRITICAL DEBUG: Check the value at offset +20576 (0x5060)
+        // sub_825AAE58 checks if (*(a1 + 20576) & 0x100) != 0 and returns early if true
+        void* check_ptr = g_memory.Translate(gfx_ctx + 20576);
+        if (check_ptr) {
+            uint32_t check_val = __builtin_bswap32(*(uint32_t*)check_ptr);
+            fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] CRITICAL: *(gfx_ctx+20576) = 0x%08X (bit 0x100 = %s)\n",
+                    check_val, (check_val & 0x100) ? "SET (will skip thread creation!)" : "NOT SET (OK)");
+            fflush(stderr);
+        }
+
+        fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] Calling sub_825AAE58 with r3=0x%08X\n", ctx->r3.u32);
+        fflush(stderr);
+
+        // Call sub_825AAE58
+        sub_825AAE58(*ctx, base);
+
+        fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] sub_825AAE58 returned r3=0x%08X\n", ctx->r3.u32);
+        fflush(stderr);
+
+        if (ctx->r3.u32 == 0 || ctx->r3.u32 == 1) {
+            fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] sub_825AAE58 succeeded! Render thread should now be created.\n");
+            fflush(stderr);
+            KernelTraceHostOp("HOST.sub_825AAE58.force_call.success");
+        } else {
+            fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] sub_825AAE58 returned unexpected value 0x%08X\n", ctx->r3.u32);
+            fflush(stderr);
+            KernelTraceHostOp("HOST.sub_825AAE58.force_call.unexpected");
+        }
+
+    #if defined(_WIN32)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[CREATE-RENDER-THREAD-FORCE] sub_825AAE58 crashed with exception 0x%08X\n", (unsigned)GetExceptionCode());
+        fflush(stderr);
+        KernelTraceHostOp("HOST.sub_825AAE58.force_call.exception");
     }
     #endif
 }
@@ -9306,34 +9507,39 @@ uint32_t NtReleaseSemaphore(Semaphore* Handle, uint32_t ReleaseCount, int32_t* P
 // Timer functions
 uint32_t NtCreateTimer(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttributes, uint32_t TimerType)
 {
+    fprintf(stderr, "[NtCreateTimer] CALLED: TimerType=%u\n", TimerType);
+    fflush(stderr);
+
     if (!Handle)
         return STATUS_INVALID_PARAMETER;
 
     // TimerType: 0 = NotificationTimer (manual reset), 1 = SynchronizationTimer (auto reset)
     bool manualReset = (TimerType == 0);
     *Handle = GetKernelHandle(CreateKernelObject<Timer>(manualReset));
+
+    fprintf(stderr, "[NtCreateTimer] Created timer handle=0x%08X manualReset=%d\n", (uint32_t)*Handle, manualReset);
+    fflush(stderr);
+
     return STATUS_SUCCESS;
 }
 
 uint32_t NtSetTimerEx(Timer* Handle, be<int64_t>* DueTime, uint32_t Period, uint32_t ApcRoutine, uint32_t ApcContext, uint32_t Resume, uint32_t PreviousState, be<uint32_t>* State)
 {
-    // CRITICAL FIX: MW05 uses NtSetTimerEx in a special mode where Handle=NULL
-    // In this mode, DueTime points to a qword that should be decremented over time
-    // The game initializes qword_828F1F98 to -100000 and expects it to be decremented to 0
-    // When the qword reaches 0, the worker thread exits
+    // NtSetTimerEx sets a timer to fire at a specific time or after a specific interval
+    // DueTime: Pointer to a 64-bit value specifying when the timer should fire
+    //   - Negative values: relative time (in 100-nanosecond units)
+    //   - Positive values: absolute time
+    // Period: If non-zero, the timer is periodic and fires every Period milliseconds
+    // The game uses this to create a periodic timer that fires repeatedly
 
     if (!Handle) {
-        // Special mode: DueTime is a pointer to a qword that should be decremented
-        // For now, just leave the qword as-is (don't decrement it)
-        // The game will check the qword value and decide whether to continue or exit
-        // Since we want the worker thread to keep running, we should NOT decrement the qword to 0
-
-        // Return success without doing anything
-        // This preserves the qword value that was set by the game
+        // Handle is NULL - nothing to do
         return STATUS_SUCCESS;
     }
 
-    // Normal mode: Handle is valid, set the timer
+    // Signal the timer immediately
+    // The game expects the timer to fire periodically, so we just signal it
+    // The worker thread will wake up, process work items, and call NtSetTimerEx again
     Handle->Set();
 
     if (State)

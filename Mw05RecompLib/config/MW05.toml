@@ -24130,7 +24130,8 @@ functions = [
 ]
 
 invalid_instructions = [
-    { data = 0x00000000, size = 4 }, # Padding (0x00000000 bytes) - skip these everywhere
+    # CRITICAL: DO NOT skip all zeros! This breaks initialization code that stores 0 values!
+    # { data = 0x00000000, size = 4 }, # Padding (0x00000000 bytes) - skip these everywhere
     { data = 0x82621640, size = 96 },
     { data = 0x825968B0, size = 200 }, # sub_825968B0 - replaced by PPC_FUNC in mw05_trace_shims.cpp
     { data = 0x8215C8B4, size = 4 }, # Padding in sub_8215C838

@@ -139,16 +139,22 @@ def main():
     env["MW05_SCHED_R3_EA"] = "0x00260370"
     env["MW05_FPW_KICK_PM4"] = "1"
 
-    # CRITICAL FIX: Force-call CreateDevice to bypass blocked state machine
-    # The game is stuck in TitleState loop and never calls CreateDevice naturally
-    # This unblocks render thread creation and allows the game to progress
-    env["MW05_FORCE_CALL_CREATEDEVICE"] = "1"
-    env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "100"  # Wait ~1.67 seconds for graphics init
+    # DISABLE force-call workarounds - let the game initialize naturally via worker threads!
+    # The worker threads (created by MW05_FORCE_RENDER_THREADS=1) will call the initialization chain:
+    # Thread 0x828508A8 -> callback 0x8261A558 -> work_func 0x82441E58 -> sub_823B0190 -> sub_823AF590 -> ... -> sub_825A16A0
+    env["MW05_FORCE_CALL_CREATEDEVICE"] = "0"
+    env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "400"  # Not used when disabled
 
-    # DISABLE force-creation of render threads - let game create them naturally after CreateDevice
-    # Force-creating threads before their contexts are initialized causes them to exit immediately
-    env["MW05_FORCE_RENDER_THREADS"] = "0"
-    env["MW05_FORCE_RENDER_THREAD"] = "0"
+    env["MW05_FORCE_CALL_CREATE_RENDER_THREAD"] = "0"
+    env["MW05_FORCE_CREATE_RENDER_THREAD_DELAY_TICKS"] = "500"  # Not used when disabled
+
+    # CRITICAL FIX: Force-initialize the callback parameter structure and create worker threads!
+    # The worker threads call work_func (0x82441E58) which initializes the entire game!
+    # Without this, sub_823B0190 -> sub_823AF590 -> sub_82216088 -> ... -> sub_825A16A0 is NEVER called!
+    # This is why offset+20576 remains 0x00000000 instead of 0x04000001!
+    env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "1"  # Initialize callback parameter structure
+    env["MW05_FORCE_RENDER_THREADS"] = "0"  # Disable the render thread creation (wrong threads)
+    env["MW05_FORCE_RENDER_THREAD"] = "0"  # Keep this disabled - it's for a different thread
 
     # Signal the VD interrupt event to wake up the render thread
     env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"

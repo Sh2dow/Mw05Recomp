@@ -35,14 +35,12 @@
         DeepProbeObjectPaths("r6", (CTX).r6.u32); \
     }} while (0)
 
-extern "C" {
-    void __imp__sub_8215BDD8(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8215C080(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8215C0F0(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8215C168(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_8215BC08(PPCContext& ctx, uint8_t* base);
-    void __imp__sub_826BE660(PPCContext& ctx, uint8_t* base);
-}
+PPC_FUNC_IMPL(__imp__sub_8215BDD8);
+PPC_FUNC_IMPL(__imp__sub_8215C080);
+PPC_FUNC_IMPL(__imp__sub_8215C0F0);
+PPC_FUNC_IMPL(__imp__sub_8215C168);
+PPC_FUNC_IMPL(__imp__sub_8215BC08);
+PPC_FUNC_IMPL(__imp__sub_826BE660);
 
 namespace {
     inline bool GuestRangeValid(uint32_t ea, size_t bytes = 4) {

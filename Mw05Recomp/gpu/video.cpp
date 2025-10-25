@@ -5,6 +5,8 @@
 #include "imgui/imgui_snapshot.h"
 #endif
 
+#include <cstdlib> // getenv for MW05_* env toggles
+
 #include <app.h>
 #include <bc_diff.h>
 #include <cpu/guest_thread.h>
@@ -40,25 +42,23 @@
 #include <os/process.h>
 #include "pm4_parser.h"
 
+#include <ppc/ppc_context.h>
+#include <kernel/memory.h>
+
 #if defined(ASYNC_PSO_DEBUG) || defined(PSO_CACHING)
 #include <magic_enum/magic_enum.hpp>
 #endif
-extern "C" void Mw05NoteHostPresent(uint64_t ms);
 
-
-#include <cstdlib> // getenv for MW05_* env toggles
 
 extern "C"
 {
+    void Mw05NoteHostPresent(uint64_t ms);
     uint32_t Mw05GetHostDefaultVdIsrMagic();
     void Mw05RunHostDefaultVdIsrNudge(const char* tag);
-}
-#include <ppc/ppc_context.h>
-#include <kernel/memory.h>
-// NOTE: MW05Shim_sub_* functions are now defined in mw05_trace_shims.cpp using PPC_FUNC_IMPL pattern
-extern "C" void __imp__sub_825972B0(PPCContext& ctx, uint8_t* base);
-
-extern "C" {
+    
+    // NOTE: MW05Shim_sub_* functions are now defined in mw05_trace_shims.cpp using PPC_FUNC_IMPL pattern
+    void __imp__sub_825972B0(PPCContext& ctx, uint8_t* base);
+    
     // Accessors exposed by kernel/imports for ring/syscmd buffers
     uint32_t Mw05GetRingBaseEA();
     uint32_t Mw05GetRingSizeBytes();
@@ -66,19 +66,17 @@ extern "C" {
     uint32_t Mw05GetSysBufSizeBytes();
     // System command buffer initialization
     uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue);
+
+    // Optional forced VD bring-up hooks (defined in kernel/imports.cpp)
+    void Mw05ForceVdInitOnce();
+    void Mw05LogIsrIfRegisteredOnce();
+
+    void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+    // Forward declare MW05 PM4 builder shim helpers so we can kick it if needed
+    uint32_t Mw05Trace_LastSchedR3();
+    void Mw05TryBuilderKickNoForward(uint32_t schedEA);
+
 }
-
-// Optional forced VD bring-up hooks (defined in kernel/imports.cpp)
-extern "C" void Mw05ForceVdInitOnce();
-extern "C" void Mw05LogIsrIfRegisteredOnce();
-
-extern "C" void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
-// Forward declare MW05 PM4 builder shim helpers so we can kick it if needed
-extern "C" uint32_t Mw05Trace_LastSchedR3();
-extern "C" void Mw05TryBuilderKickNoForward(uint32_t schedEA);
-
-
-
 
 #define MW05_RECOMP
 #include "../../tools/XenosRecomp/XenosRecomp/shader_common.h"
@@ -1868,16 +1866,37 @@ static void ApplyLowEndDefaults()
 
 bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
 {
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice ENTER: sdlVideoDriver=%s graphicsApiRetry=%d\n",
+            sdlVideoDriver ? sdlVideoDriver : "NULL", graphicsApiRetry);
+    fflush(stderr);
+
     for (uint32_t i = 0; i < 16; i++)
         g_inputSlots[i].index = i;
 
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: input slots initialized\n");
+    fflush(stderr);
+
     IMGUI_CHECKVERSION();
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: ImGui version checked\n");
+    fflush(stderr);
+
     ImGui::CreateContext();
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: ImGui context created\n");
+    fflush(stderr);
+
 #if MW05_ENABLE_IMPLOT
     ImPlot::CreateContext();
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: ImPlot context created\n");
+    fflush(stderr);
 #endif
 
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: calling GameWindow::Init\n");
+    fflush(stderr);
+
     GameWindow::Init(sdlVideoDriver);
+
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice: GameWindow::Init returned\n");
+    fflush(stderr);
 
     // Host trace: window created/initialized
     KernelTraceHostOp("HOST.GameWindow.init");
@@ -2309,6 +2328,9 @@ bool Video::CreateHostDevice(const char *sdlVideoDriver, bool graphicsApiRetry)
         blankTextureBarriers[i] = RenderTextureBarrier(g_blankTextures[i].get(), RenderTextureLayout::SHADER_READ);
 
     g_commandLists[g_frame]->barriers(RenderBarrierStage::NONE, blankTextureBarriers, std::size(blankTextureBarriers));
+
+    fprintf(stderr, "[VIDEO-DEBUG] CreateHostDevice RETURN: success=true\n");
+    fflush(stderr);
 
     return true;
 }
@@ -6874,14 +6896,7 @@ static void SetResolution(be<uint32_t>* device)
     device[47] = height == 0 ? 720 : height;
 }
 
-// The game does some weird stuff to render targets if they are above
-// 1024x1024 resolution, setting this bool at address 20 seems to avoid all that.
-PPC_FUNC(sub_82E9F048)
-{
-    PPC_STORE_U8(ctx.r4.u32 + 20, 1);
-    PPC_STORE_U32(ctx.r4.u32 + 44, PPC_LOAD_U32(ctx.r4.u32 + 8)); // Width
-    PPC_STORE_U32(ctx.r4.u32 + 48, PPC_LOAD_U32(ctx.r4.u32 + 12)); // Height
-}
+
 
 static GuestShader* g_movieVertexShader;
 static GuestShader* g_moviePixelShader;
@@ -8296,20 +8311,7 @@ void VideoConfigValueChangedCallback(IConfigDef* config)
         EnqueuePipelineTask(PipelineTaskType::RecompilePipelines, {});
 }
 
-// SWA::CCsdTexListMirage::SetFilter
-PPC_FUNC_IMPL(__imp__sub_825E4300);
-PPC_FUNC(sub_825E4300)
-{
-    g_csdFilterState = ctx.r5.u32 == 0 ? CsdFilterState::On : CsdFilterState::Off;
-    ctx.r5.u32 = 1;
-}
 
-// SWA::CCsdPlatformMirage::EndScene
-PPC_FUNC_IMPL(__imp__sub_825E2F78);
-PPC_FUNC(sub_825E2F78)
-{
-    g_csdFilterState = CsdFilterState::Unknown;
-}
 
 // Game shares surfaces with identical descriptions. We don't want to share shadow maps,
 // so we can set its format to a depth format that still resolves to the same type in recomp,
@@ -8395,156 +8397,18 @@ static void ConvertToDegenerateTriangles(uint16_t* indices, uint32_t indexCount,
     }
 }
 
-struct MeshResource
-{
-    uint8_t _pad4[0x4];
-    be<uint32_t> indexCount;
-    be<uint32_t> indices;
-};
 
-static std::vector<uint16_t*> g_newIndicesToFree;
-
-// Hedgehog::Mirage::CMeshData::Make
-PPC_FUNC_IMPL(__imp__sub_82E44AF8);
-PPC_FUNC(sub_82E44AF8)
-{
-    uint16_t* newIndicesToFree = nullptr;
-
-#ifdef MW05_ENABLE_SWA
-    auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
-    if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
-#else
-    if (g_triangleStripWorkaround)
-#endif
-    {
-        auto meshResource = reinterpret_cast<MeshResource*>(base + ctx.r4.u32);
-
-        if (meshResource->indexCount != 0)
-        {
-            uint16_t* newIndices;
-            uint32_t newIndexCount;
-
-            ConvertToDegenerateTriangles(
-                reinterpret_cast<uint16_t*>(base + meshResource->indices),
-                meshResource->indexCount,
-                newIndices,
-                newIndexCount);
-
-            meshResource->indexCount = newIndexCount;
-            meshResource->indices = static_cast<uint32_t>(reinterpret_cast<uint8_t*>(newIndices) - base);
-
-            if (PPC_LOAD_U32(0x83396E98) != NULL)
-            {
-                // If index buffers are getting merged, new indices need to survive until the merge happens.
-                g_newIndicesToFree.push_back(newIndices);
-            }
-            else
-            {
-                // Otherwise, we can free it immediately.
-                newIndicesToFree = newIndices;
-            }
-        }
-    }
-
-    if (newIndicesToFree != nullptr)
-        g_userHeap.Free(newIndicesToFree);
-}
-
-// Hedgehog::Mirage::CShareVertexBuffer::Reset
-PPC_FUNC_IMPL(__imp__sub_82E250D0);
-PPC_FUNC(sub_82E250D0)
-{
-    for (auto newIndicesToFree : g_newIndicesToFree)
-        g_userHeap.Free(newIndicesToFree);
-
-    g_newIndicesToFree.clear();
-}
-
-struct LightAndIndexBufferResourceV1
-{
-    uint8_t _pad4_v1[0x4];
-    be<uint32_t> indexCount;
-    be<uint32_t> indices;
-};
-
-// Hedgehog::Mirage::CLightAndIndexBufferData::MakeV1
-PPC_FUNC_IMPL(__imp__sub_82E3AFC8);
-PPC_FUNC(sub_82E3AFC8)
-{
-    uint16_t* newIndices = nullptr;
-
-#ifdef MW05_ENABLE_SWA
-    auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
-    if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
-#else
-    if (g_triangleStripWorkaround)
-#endif
-    {
-        auto lightAndIndexBufferResource = reinterpret_cast<LightAndIndexBufferResourceV1*>(base + ctx.r4.u32);
-
-        if (lightAndIndexBufferResource->indexCount != 0)
-        {
-            uint32_t newIndexCount;
-
-            ConvertToDegenerateTriangles(
-                reinterpret_cast<uint16_t*>(base + lightAndIndexBufferResource->indices),
-                lightAndIndexBufferResource->indexCount,
-                newIndices,
-                newIndexCount);
-
-            lightAndIndexBufferResource->indexCount = newIndexCount;
-            lightAndIndexBufferResource->indices = static_cast<uint32_t>(reinterpret_cast<uint8_t*>(newIndices) - base);
-        }
-    }
-
-    if (newIndices != nullptr)
-        g_userHeap.Free(newIndices);
-}
-
-struct LightAndIndexBufferResourceV5
-{
-    uint8_t _pad8_v5[0x8];
-    be<uint32_t> indexCount;
-    be<uint32_t> indices;
-};
-
-// Hedgehog::Mirage::CLightAndIndexBufferData::MakeV5
-PPC_FUNC_IMPL(__imp__sub_82E3B1C0);
-PPC_FUNC(sub_82E3B1C0)
-{
-    uint16_t* newIndices = nullptr;
-
-#ifdef MW05_ENABLE_SWA
-    auto databaseData = reinterpret_cast<Hedgehog::Database::CDatabaseData*>(base + ctx.r3.u32);
-    if (g_triangleStripWorkaround && !databaseData->IsMadeOne())
-#else
-    if (g_triangleStripWorkaround)
-#endif
-    {
-        auto lightAndIndexBufferResource = reinterpret_cast<LightAndIndexBufferResourceV5*>(base + ctx.r4.u32);
-
-        if (lightAndIndexBufferResource->indexCount != 0)
-        {
-            uint32_t newIndexCount;
-
-            ConvertToDegenerateTriangles(
-                reinterpret_cast<uint16_t*>(base + lightAndIndexBufferResource->indices),
-                lightAndIndexBufferResource->indexCount,
-                newIndices,
-                newIndexCount);
-
-            lightAndIndexBufferResource->indexCount = newIndexCount;
-            lightAndIndexBufferResource->indices = static_cast<uint32_t>(reinterpret_cast<uint8_t*>(newIndices) - base);
-        }
-    }
-
-    if (newIndices != nullptr)
-        g_userHeap.Free(newIndices);
-}
 
 
 // Pass-through wrapper for MW05 CreateDevice to execute original guest body
-struct PPCContext; extern "C" void __imp__sub_82598230(PPCContext&, uint8_t*);
+extern "C" 
+{
+    void __imp__sub_82598230(PPCContext&, uint8_t*);
+    void __imp__sub_82598A20(PPCContext&, uint8_t*);
+    void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
+    void __imp__sub_825979A8(PPCContext&, uint8_t*);
+}
+
 static void MW05_CreateDevicePass(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("HOST.sub_82598230.CreateDevice ENTER r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
     __imp__sub_82598230(ctx, base);
@@ -8557,7 +8421,6 @@ static void MW05_CreateDevicePass(PPCContext& ctx, uint8_t* base) {
         fflush(stderr);
     }
 }
-extern "C" void __imp__sub_82598A20(PPCContext&, uint8_t*);
 
 
 // Augment: log args when entering present wrapper to verify r3/r4
@@ -8567,16 +8430,12 @@ static void MW05_PresentPass_Logged(PPCContext& ctx, uint8_t* base) {
 }
 
 // Pass-through wrapper for MW05 present wrapper to allow original guest body to run
-struct PPCContext; // fwd decl
-extern "C" void __imp__sub_82598A20(PPCContext& ctx, uint8_t* base);
 static void MW05_PresentPass(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOp("HOST.sub_82598A20.pass_through");
     __imp__sub_82598A20(ctx, base);
 }
 
-
 // Log entry of the graphics notification callback used by VD (from Xenia log: cb=0x825979A8)
-extern "C" void __imp__sub_825979A8(PPCContext&, uint8_t*);
 static void MW05_GfxNotify_Logged(PPCContext& ctx, uint8_t* base) {
     KernelTraceHostOpF("HOST.sub_825979A8.enter r3=%08X r4=%08X r5=%08X", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
     __imp__sub_825979A8(ctx, base);
@@ -8585,33 +8444,11 @@ static void MW05_GfxNotify_Logged(PPCContext& ctx, uint8_t* base) {
 // Generic pass-through probes for MW05 to locate real video entry points in this XEX build
 // These log when hit and then tail-call the original guest bodies.
 // Once identified, we will swap them to proper CreateDevice/SetResolution/Present hooks.
-struct PPCContext; 
-extern "C" void __imp__sub_825E4300(PPCContext&, uint8_t*);
-static void MW05_Probe_sub_825E4300(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOp("HOST.VideoProbe.sub_825E4300");
-    __imp__sub_825E4300(ctx, base);
-}
-struct PPCContext; 
-extern "C" void sub_8258B558(PPCContext&, uint8_t*);
-static void MW05_Probe_sub_8258B558(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOp("HOST.VideoProbe.sub_8258B558");
-    sub_8258B558(ctx, base);
-}
-
-struct PPCContext; 
-extern "C" void sub_8250FC70(PPCContext&, uint8_t*);
-static void MW05_Probe_sub_8250FC70(PPCContext& ctx, uint8_t* base) {
-    KernelTraceHostOp("HOST.VideoProbe.sub_8250FC70");
-    sub_8250FC70(ctx, base);
-}
 
 // NOTE: All MW05Shim_sub_* functions have been converted to PPC_FUNC_IMPL pattern in mw05_trace_shims.cpp
 // No forward declarations or GUEST_FUNCTION_HOOK calls needed here anymore
 
 // Register probes for addresses that exist in this build's override table
-// GUEST_FUNCTION_HOOK(sub_825E4300, MW05_Probe_sub_825E4300);
-GUEST_FUNCTION_HOOK(sub_8258B558, MW05_Probe_sub_8258B558);
-GUEST_FUNCTION_HOOK(sub_8250FC70, MW05_Probe_sub_8250FC70);
 
 // - Initial video bring-up: allow original guest CreateDevice body to run (sets title state)
 //   Note: MW05 CreateDevice entrypoint for this XEX build is sub_82598230 (not 825A85E0 from earlier heuristics)
@@ -8619,47 +8456,22 @@ GUEST_FUNCTION_HOOK(sub_82598230, MW05_CreateDevicePass);
 // - Apply/set display mode and update cached display info
 GUEST_FUNCTION_HOOK(sub_825A8460, SetResolution);
 
-// MW05: Wire core render-state and draw hooks to backend implementations
-// These addresses come from tools/hooks_mw05.csv and are safe pass-throughs to
-// our engine; they will log via KernelTraceHostOp/GpuTraceHostCall only.
-GUEST_FUNCTION_HOOK(sub_82BDD9F0, SetRenderTarget);
-GUEST_FUNCTION_HOOK(sub_82BDDD38, SetDepthStencilSurface);
-GUEST_FUNCTION_HOOK(sub_82BFE4C8, Clear);
-GUEST_FUNCTION_HOOK(sub_82BDD8C0, SetViewport);
-GUEST_FUNCTION_HOOK(sub_82BE9818, SetTexture);
-GUEST_FUNCTION_HOOK(sub_82BDCFB0, SetScissorRect);
-GUEST_FUNCTION_HOOK(sub_82BE5900, DrawPrimitive);
-GUEST_FUNCTION_HOOK(sub_82BE5CF0, DrawIndexedPrimitive);
-GUEST_FUNCTION_HOOK(sub_82BE52F8, DrawPrimitiveUP);
-GUEST_FUNCTION_HOOK(sub_82BE0428, CreateVertexDeclaration);
-GUEST_FUNCTION_HOOK(sub_82BE02E0, SetVertexDeclaration);
-GUEST_FUNCTION_HOOK(sub_82BE1A80, CreateVertexShader);
-GUEST_FUNCTION_HOOK(sub_82BE0110, SetVertexShader);
-GUEST_FUNCTION_HOOK(sub_82BDD0F8, SetStreamSource);
-GUEST_FUNCTION_HOOK(sub_82BDD218, SetIndices);
-GUEST_FUNCTION_HOOK(sub_82BE1990, CreatePixelShader);
-GUEST_FUNCTION_HOOK(sub_82BDFE58, SetPixelShader);
-GUEST_FUNCTION_HOOK(sub_82C003B8, D3DXFillTexture);
-GUEST_FUNCTION_HOOK(sub_82C00910, D3DXFillVolumeTexture);
-
 
 // Ensure MW05 probe/video hooks are registered even if not present in PPCFuncMappings
-void RegisterMw05VideoManualHooks() 
+void RegisterMw05VideoManualHooks()
 {
     fprintf(stderr, "[VIDEO-CTOR] RegisterMw05VideoManualHooks() CALLED\n");
     fflush(stderr);
-    KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
-                       0x82598230, 0x82598A20, 0x825A8460);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
+    //                    0x82598230, 0x82598A20, 0x825A8460);
     // Probes used for discovery; these addresses might not be emitted by this XEX's recompiler table
-    g_memory.InsertFunction(0x825E4300, sub_825E4300);
     fprintf(stderr, "[VIDEO-CTOR] Registering 0x825979A8 (VD graphics callback)\n");
     fflush(stderr);
     g_memory.InsertFunction(0x825979A8, sub_825979A8); // VD graphics notify callback (log and forward)
     fprintf(stderr, "[VIDEO-CTOR] Registered 0x825979A8 successfully\n");
     fflush(stderr);
 
-    g_memory.InsertFunction(0x8258B558, sub_8258B558);
-    g_memory.InsertFunction(0x8250FC70, sub_8250FC70);
     // Additional candidate probes near present/renderer
     g_memory.InsertFunction(0x82598068, sub_82598068);
     g_memory.InsertFunction(0x825981A0, sub_825981A0);
@@ -8701,27 +8513,7 @@ void RegisterMw05VideoManualHooks()
     g_memory.InsertFunction(0x8262F330, sub_8262F330);
 
     // MW05 render/draw hooks: manually register addresses so GUEST_FUNCTION_HOOK macros take effect
-    // These addresses come from tools/hooks_mw05.csv and route to backend implementations
-    g_memory.InsertFunction(0x82BDD9F0, sub_82BDD9F0); // SetRenderTarget
-    g_memory.InsertFunction(0x82BDDD38, sub_82BDDD38); // SetDepthStencilSurface
-    g_memory.InsertFunction(0x82BFE4C8, sub_82BFE4C8); // Clear
-    g_memory.InsertFunction(0x82BDD8C0, sub_82BDD8C0); // SetViewport
-    g_memory.InsertFunction(0x82BE9818, sub_82BE9818); // SetTexture
-    g_memory.InsertFunction(0x82BDCFB0, sub_82BDCFB0); // SetScissorRect
-    g_memory.InsertFunction(0x82BE5900, sub_82BE5900); // DrawPrimitive
-    g_memory.InsertFunction(0x82BE5CF0, sub_82BE5CF0); // DrawIndexedPrimitive
-    g_memory.InsertFunction(0x82BE52F8, sub_82BE52F8); // DrawPrimitiveUP
-    g_memory.InsertFunction(0x82BE0428, sub_82BE0428); // CreateVertexDeclaration
-    g_memory.InsertFunction(0x82BE02E0, sub_82BE02E0); // SetVertexDeclaration
-    g_memory.InsertFunction(0x82BE1A80, sub_82BE1A80); // CreateVertexShader
-    g_memory.InsertFunction(0x82BE0110, sub_82BE0110); // SetVertexShader
-    g_memory.InsertFunction(0x82BDD0F8, sub_82BDD0F8); // SetStreamSource
-    g_memory.InsertFunction(0x82BDD218, sub_82BDD218); // SetIndices
-    g_memory.InsertFunction(0x82BE1990, sub_82BE1990); // CreatePixelShader
-    g_memory.InsertFunction(0x82BDFE58, sub_82BDFE58); // SetPixelShader
-    g_memory.InsertFunction(0x82C003B8, sub_82C003B8); // D3DXFillTexture
-    g_memory.InsertFunction(0x82C00910, sub_82C00910); // D3DXFillVolumeTexture
-
+    
 }
 // Register with InitManager (priority 100 = default, runs after core systems)
 REGISTER_INIT_CALLBACK("VideoHooks", []() {
@@ -8752,24 +8544,3 @@ REGISTER_INIT_CALLBACK("VideoHooks", []() {
 //
 // Temporary research shims moved to gpu/mw05_trace_shims.cpp
 // They log callsites and tail-call the original recompiled routines.
-
-// This is a buggy function that recreates framebuffers
-// if the inverse capture ratio is not 2.0, but the parameter
-// is completely unused and not stored, so it ends up
-// recreating framebuffers every single frame instead.
-GUEST_FUNCTION_STUB(sub_82BAAD38);
-
-GUEST_FUNCTION_STUB(sub_822C15D8);
-GUEST_FUNCTION_STUB(sub_822C1810);
-GUEST_FUNCTION_STUB(sub_82BD97A8);
-GUEST_FUNCTION_STUB(sub_82BD97E8);
-GUEST_FUNCTION_STUB(sub_82BDD370); // SetGammaRamp
-GUEST_FUNCTION_STUB(sub_82BE05B8);
-GUEST_FUNCTION_STUB(sub_82BE9C98);
-GUEST_FUNCTION_STUB(sub_82BEA308);
-GUEST_FUNCTION_STUB(sub_82CD5D68);
-GUEST_FUNCTION_STUB(sub_82BE9B28);
-GUEST_FUNCTION_STUB(sub_82BEA018);
-GUEST_FUNCTION_STUB(sub_82BEA7C0);
-GUEST_FUNCTION_STUB(sub_82BFFF88); // D3DXFilterTexture
-GUEST_FUNCTION_STUB(sub_82BD96D0);

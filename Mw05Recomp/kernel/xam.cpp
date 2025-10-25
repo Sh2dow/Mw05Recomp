@@ -127,14 +127,23 @@ void XamRootCreate(const std::string_view& root, const std::string_view& path)
 XamListener::XamListener()
 {
     gListeners.insert(this);
-    KernelTraceHostOpF("HOST.XamListener.constructor this=%p gListeners.size=%u", this, (unsigned int)gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamListener.constructor this=%p gListeners.size=%u", this, (unsigned int)gListeners.size());
+    fprintf(stderr, "[XAM] XamListener.constructor this=%p gListeners.size=%u\n", this, (unsigned int)gListeners.size());
+    fflush(stderr);
 }
 
 XamListener::~XamListener()
 {
-    KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u BEFORE erase", this, (unsigned int)gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u BEFORE erase", this, (unsigned int)gListeners.size());
+    fprintf(stderr, "[XAM] XamListener.destructor this=%p gListeners.size=%u BEFORE erase\n", this, (unsigned int)gListeners.size());
+    fflush(stderr);
     gListeners.erase(this);
-    KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u AFTER erase", this, (unsigned int)gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u AFTER erase", this, (unsigned int)gListeners.size());
+    fprintf(stderr, "[XAM] XamListener.destructor this=%p gListeners.size=%u AFTER erase\n", this, (unsigned int)gListeners.size());
+    fflush(stderr);
 }
 
 XCONTENT_DATA XamMakeContent(uint32_t type, const std::string_view& name)
@@ -169,19 +178,31 @@ void XamRegisterContent(uint32_t type, const std::string_view name, const std::s
 
 uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 {
-    KernelTraceHostOpF("HOST.XamNotifyCreateListener BEFORE CreateKernelObject areas=%016llX gListeners.size=%u",
-                      (unsigned long long)qwAreas, (unsigned int)gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamNotifyCreateListener BEFORE CreateKernelObject areas=%016llX gListeners.size=%u",
+    //                   (unsigned long long)qwAreas, (unsigned int)gListeners.size());
+    fprintf(stderr, "[XAM] XamNotifyCreateListener BEFORE CreateKernelObject areas=%016llX gListeners.size=%u\n",
+            (unsigned long long)qwAreas, (unsigned int)gListeners.size());
+    fflush(stderr);
 
     auto* listener = CreateKernelObject<XamListener>();
 
-    KernelTraceHostOpF("HOST.XamNotifyCreateListener AFTER CreateKernelObject listener=%p gListeners.size=%u",
-                      listener, (unsigned int)gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamNotifyCreateListener AFTER CreateKernelObject listener=%p gListeners.size=%u",
+    //                   listener, (unsigned int)gListeners.size());
+    fprintf(stderr, "[XAM] XamNotifyCreateListener AFTER CreateKernelObject listener=%p gListeners.size=%u\n",
+            listener, (unsigned int)gListeners.size());
+    fflush(stderr);
 
     listener->areas = qwAreas;
 
     // Trace and optionally enqueue a benign boot notification to kick title state machines
-    KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX handle=%08X",
-                      (unsigned long long)qwAreas, GetKernelHandle(listener));
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX handle=%08X",
+    //                   (unsigned long long)qwAreas, GetKernelHandle(listener));
+    fprintf(stderr, "[XAM] XamNotifyCreateListener areas=%016llX handle=%08X\n",
+            (unsigned long long)qwAreas, GetKernelHandle(listener));
+    fflush(stderr);
 
     // CRITICAL FIX: Send XN_SYS_SIGNINCHANGED (0x11) notification when listener is created
     // The game waits for this notification before progressing to file I/O and rendering
@@ -189,7 +210,10 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
         const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
         XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 0);  // param=0 (user index 0)
-        KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
+        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)\n");
+        fflush(stderr);
     }
 
     // MW05 FIX: Send profile-related notifications to unblock game initialization
@@ -197,7 +221,10 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     if (qwAreas & (1ull << 2)) {  // If listening to area 2 (storage notifications)
         const uint32_t XN_SYS_STORAGEDEVICESCHANGED = 0x14;  // area=0, message=20
         XamNotifyEnqueueEvent(XN_SYS_STORAGEDEVICESCHANGED, 0);
-        KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)");
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)");
+        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)\n");
+        fflush(stderr);
     }
 
     const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
@@ -209,7 +236,10 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
             if (qwAreas & (1ull << area)) {
                 const uint32_t msg = MSGID(area, 1);
                 XamNotifyEnqueueEvent(msg, 0);
-                KernelTraceHostOpF("HOST.XamNotifyCreateListener.fake.enqueue area=%u msg=%08X", area, msg);
+                // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+                // KernelTraceHostOpF("HOST.XamNotifyCreateListener.fake.enqueue area=%u msg=%08X", area, msg);
+                fprintf(stderr, "[XAM] XamNotifyCreateListener.fake.enqueue area=%u msg=%08X\n", area, msg);
+                fflush(stderr);
             }
         }
     }
@@ -219,8 +249,12 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 {
-    KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent id=%08X param=%08X area=%u msg=%u listeners=%zu",
-                      dwId, dwParam, MSG_AREA(dwId), MSG_NUMBER(dwId), gListeners.size());
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent id=%08X param=%08X area=%u msg=%u listeners=%zu",
+    //                   dwId, dwParam, MSG_AREA(dwId), MSG_NUMBER(dwId), gListeners.size());
+    fprintf(stderr, "[XAM] XamNotifyEnqueueEvent id=%08X param=%08X area=%u msg=%u listeners=%zu\n",
+            dwId, dwParam, MSG_AREA(dwId), MSG_NUMBER(dwId), gListeners.size());
+    fflush(stderr);
 
     int delivered_count = 0;
     for (const auto& listener : gListeners)
@@ -228,8 +262,12 @@ void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
         uint32_t area_bit = 1 << MSG_AREA(dwId);
         bool matches = (area_bit & listener->areas) != 0;
 
-        KernelTraceHostOpF("  listener areas=%016llX area_bit=%08X matches=%d",
-                          (unsigned long long)listener->areas, area_bit, matches);
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("  listener areas=%016llX area_bit=%08X matches=%d",
+        //                   (unsigned long long)listener->areas, area_bit, matches);
+        fprintf(stderr, "[XAM]   listener areas=%016llX area_bit=%08X matches=%d\n",
+                (unsigned long long)listener->areas, area_bit, matches);
+        fflush(stderr);
 
         if (!matches)
             continue;
@@ -237,10 +275,16 @@ void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
         listener->notifications.emplace_back(dwId, dwParam);
         delivered_count++;
 
-        KernelTraceHostOpF("  -> delivered to listener (queue_size now %zu)", listener->notifications.size());
+        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+        // KernelTraceHostOpF("  -> delivered to listener (queue_size now %zu)", listener->notifications.size());
+        fprintf(stderr, "[XAM]   -> delivered to listener (queue_size now %zu)\n", listener->notifications.size());
+        fflush(stderr);
     }
 
-    KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent delivered to %d listeners", delivered_count);
+    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    // KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent delivered to %d listeners", delivered_count);
+    fprintf(stderr, "[XAM] XamNotifyEnqueueEvent delivered to %d listeners\n", delivered_count);
+    fflush(stderr);
 }
 
 bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* pdwId, be<uint32_t>* pParam)

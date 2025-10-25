@@ -157,11 +157,6 @@ option(MW05_ENABLE_SWA "Enable SWA/Hedgehog API bindings" OFF)
 set(MW05_RECOMP_PATCHES_CXX_SOURCES
     "patches/inspire_patches.cpp"
 )
-if (MW05_ENABLE_SWA)
-    list(APPEND MW05_RECOMP_PATCHES_CXX_SOURCES
-        "patches/aspect_ratio_patches.cpp"
-    )
-endif()
 
 set(MW05_RECOMP_UI_CXX_SOURCES
     "ui/achievement_overlay.cpp"

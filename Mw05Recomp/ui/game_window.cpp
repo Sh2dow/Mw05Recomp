@@ -155,25 +155,38 @@ bool Window_OnSDLEvent(void*, SDL_Event* event)
 
 void GameWindow::Init(const char* sdlVideoDriver)
 {
+    fprintf(stderr, "[GAMEWINDOW] Init ENTER\n"); fflush(stderr);
+
 #ifdef __linux__
     SDL_SetHint("SDL_APP_ID", "io.github.hedge_dev.unleashedrecomp");
 #endif
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_InitSubSystem(SDL_INIT_VIDEO)\n"); fflush(stderr);
     // SDL3: SDL_VideoInit removed. Use hint + SDL_InitSubSystem.
     if (sdlVideoDriver && *sdlVideoDriver)
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, sdlVideoDriver);
     SDL_InitSubSystem(SDL_INIT_VIDEO);
+    fprintf(stderr, "[GAMEWINDOW] After SDL_InitSubSystem(SDL_INIT_VIDEO)\n"); fflush(stderr);
     // Verbose boot marker
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] SDL video subsystem initialized\n"); fflush(stdout);
     }
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_GetCurrentVideoDriver\n"); fflush(stderr);
     auto videoDriverName = SDL_GetCurrentVideoDriver();
+    fprintf(stderr, "[GAMEWINDOW] After SDL_GetCurrentVideoDriver videoDriverName=%s\n", videoDriverName ? videoDriverName : "NULL"); fflush(stderr);
 
-    if (videoDriverName)
-        LOGFN("SDL video driver: \"{}\"", videoDriverName);
+    fprintf(stderr, "[GAMEWINDOW] Before LOGFN\n"); fflush(stderr);
+    // CRITICAL FIX: LOGFN hangs in natural path (mutex deadlock)! Use fprintf instead.
+    if (videoDriverName) {
+        fprintf(stderr, "[GAMEWINDOW] SDL video driver: \"%s\"\n", videoDriverName);
+        fflush(stderr);
+    }
+    fprintf(stderr, "[GAMEWINDOW] After LOGFN\n"); fflush(stderr);
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_AddEventWatch\n"); fflush(stderr);
     SDL_AddEventWatch(Window_OnSDLEvent, s_pWindow);
+    fprintf(stderr, "[GAMEWINDOW] After SDL_AddEventWatch\n"); fflush(stderr);
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] SDL event watch registered\n"); fflush(stdout);
     }
@@ -193,45 +206,63 @@ void GameWindow::Init(const char* sdlVideoDriver)
     if (!IsPositionValid())
         GameWindow::ResetDimensions();
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_CreateWindow\n"); fflush(stderr);
     // SDL3: CreateWindow no longer takes x/y. Set position afterwards.
     s_pWindow = SDL_CreateWindow("Most Wanted Recompiled", s_width, s_height, GetWindowFlags());
+    fprintf(stderr, "[GAMEWINDOW] After SDL_CreateWindow s_pWindow=%p\n", s_pWindow); fflush(stderr);
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         int w=0,h=0; SDL_GetWindowSize(s_pWindow,&w,&h);
         printf("[boot] Window created %dx%d\n", w, h); fflush(stdout);
     }
 
-    if (!s_pWindow) {                                                                                                                                                                                                                                                                                                                                               
-        printf("[boot][error] SDL_CreateWindow failed: %s\n", SDL_GetError());                                                                                                                                                                                                                                                                                      
-        fflush(stdout);                                                                                                                                                                                                                                                                                                                                             
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), SDL_GetError(), nullptr);                                                                                                                                                                                                                                                            
-        std::_Exit(1);                                                                                                                                                                                                                                                                                                                                              
+    if (!s_pWindow) {
+        printf("[boot][error] SDL_CreateWindow failed: %s\n", SDL_GetError());
+        fflush(stdout);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GameWindow::GetTitle(), SDL_GetError(), nullptr);
+        std::_Exit(1);
     }
 
 #if defined(_WIN32)
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_GetWindowProperties\n"); fflush(stderr);
     // SDL3: fetch Win32 HWND from window properties for D3D12 backend
     SDL_PropertiesID props = SDL_GetWindowProperties(s_pWindow);
     void* hwndPtr = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     HWND hwnd = (HWND)hwndPtr;
     s_renderWindow = hwnd;
+    fprintf(stderr, "[GAMEWINDOW] After SDL_GetWindowProperties hwnd=%p\n", hwnd); fflush(stderr);
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
         printf("[boot] Win32 HWND=%p\n", hwnd); fflush(stdout);
     }
 #endif
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_SetWindowPosition\n"); fflush(stderr);
     if (s_pWindow) SDL_SetWindowPosition(s_pWindow, s_x, s_y);
+    fprintf(stderr, "[GAMEWINDOW] After SDL_SetWindowPosition\n"); fflush(stderr);
 
     if (IsFullscreen())
         SDL_HideCursor();
 
+    fprintf(stderr, "[GAMEWINDOW] Before SetDisplay\n"); fflush(stderr);
     SetDisplay(Config::Monitor);
+    fprintf(stderr, "[GAMEWINDOW] After SetDisplay\n"); fflush(stderr);
+    fprintf(stderr, "[GAMEWINDOW] Before SetIcon\n"); fflush(stderr);
     SetIcon();
+    fprintf(stderr, "[GAMEWINDOW] After SetIcon\n"); fflush(stderr);
+    fprintf(stderr, "[GAMEWINDOW] Before SetTitle\n"); fflush(stderr);
     SetTitle();
+    fprintf(stderr, "[GAMEWINDOW] After SetTitle\n"); fflush(stderr);
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_SetWindowMinimumSize\n"); fflush(stderr);
     SDL_SetWindowMinimumSize(s_pWindow, MIN_WIDTH, MIN_HEIGHT);
+    fprintf(stderr, "[GAMEWINDOW] After SDL_SetWindowMinimumSize\n"); fflush(stderr);
 
     // SDL3: use window properties instead of SDL_syswm.h (done elsewhere in your file)
+    fprintf(stderr, "[GAMEWINDOW] Before SetTitleBarColour\n"); fflush(stderr);
     SetTitleBarColour();
+    fprintf(stderr, "[GAMEWINDOW] After SetTitleBarColour\n"); fflush(stderr);
 
+    fprintf(stderr, "[GAMEWINDOW] Before SDL_ShowWindow\n"); fflush(stderr);
     SDL_ShowWindow(s_pWindow);
+    fprintf(stderr, "[GAMEWINDOW] After SDL_ShowWindow - Init COMPLETE\n"); fflush(stderr);
 }
 
 void GameWindow::Update()

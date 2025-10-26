@@ -25,13 +25,13 @@ static inline void ResetSchedulerTracking() {
     g_lastSchedulerTimeoutEA.store(0, std::memory_order_release);
 }
 
+// Forward declarations for PPC functions
 PPC_FUNC_IMPL(__imp__sub_8262F3F0);
-PPC_FUNC_IMPL(__imp__sub_828134E0);
 PPC_FUNC_IMPL(__imp__sub_823AF590);  // Graphics init function
-PPC_FUNC_IMPL(__imp__sub_8215BC78);  // Memory allocator free function
 
 extern "C"
 {
+
     uint32_t Mw05ConsumeSchedulerBlockEA() {
         return g_lastSchedulerBlockEA.exchange(0, std::memory_order_acq_rel);
     }
@@ -185,7 +185,7 @@ PPC_FUNC(sub_8262F330)
 }
 
 // sub_8262F3F0: sibling helper of the same pattern
-PPC_FUNC(sub_8262F3F0) {
+void sub_8262F3F0(PPCContext& ctx, uint8_t* base) {
     SetPPCContext(ctx);
     KernelTraceHostOp("HOST.sub_8262F3F0");
     if(FastBootEnabled()) {
@@ -444,6 +444,7 @@ PPC_FUNC(sub_826346A8)
     __imp__sub_826346A8(ctx, base);
 }
 
+PPC_FUNC_IMPL(__imp__sub_828134E0);
 PPC_FUNC(sub_828134E0)
 {
     fprintf(stderr, "[WORKER-FUNC] sub_828134E0 CALLED - Worker function!\n");
@@ -581,8 +582,10 @@ PPC_FUNC(sub_828134E0)
 // NOTE: Using PPC_FUNC_IMPL pattern instead of PPC_FUNC to ensure this wrapper is called
 // for BOTH direct calls (bl) and indirect calls (function pointer).
 //
-PPC_FUNC(sub_8215BC78) {
-    SetPPCContext(ctx);
+
+PPC_FUNC_IMPL(__imp__sub_8215BC78);
+PPC_FUNC(sub_8215BC78)
+{
     // Check if the freed block pointer (r4) is NULL or invalid
     uint32_t freed_block_ptr = ctx.r4.u32;
 

@@ -90,91 +90,91 @@ def main():
 
     # Set all environment variables from run_with_env.cmd
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
-    env["MW05_BREAK_82813514"] = "0"
-    env["MW05_FAKE_ALLOC_SYSBUF"] = "1"
-    env["MW05_UNBLOCK_MAIN"] = "0"
     env["MW05_TRACE_KERNEL"] = "1"
-    env["MW05_HOST_TRACE_IMPORTS"] = "1"
-    env["MW05_HOST_TRACE_HOSTOPS"] = "1"
-    env["MW05_TRACE_HEAP"] = "1"
-    env["MW05_BREAK_SLEEP_LOOP"] = "1"
-    env["MW05_BREAK_SLEEP_AFTER"] = "5"
 
-    env["MW05_VBLANK_VDSWAP"] = "0"
-    env["MW05_KICK_VIDEO"] = "0"
-    env["MW05_VDSWAP_NOTIFY"] = "0"
-    env["MW05_FAST_BOOT"] = "0"
-    env["MW05_FAST_RET"] = "0"
-    env["MW05_FORCE_VD_INIT"] = "1"
+    # env["MW05_BREAK_82813514"] = "0"
+    # env["MW05_FAKE_ALLOC_SYSBUF"] = "1"
+    # env["MW05_UNBLOCK_MAIN"] = "0"
+    # env["MW05_HOST_TRACE_IMPORTS"] = "1"
+    # env["MW05_HOST_TRACE_HOSTOPS"] = "1"
+    # env["MW05_TRACE_HEAP"] = "1"
+    # env["MW05_BREAK_SLEEP_LOOP"] = "1"
+    # env["MW05_BREAK_SLEEP_AFTER"] = "5"
+    # 
+    # env["MW05_VBLANK_VDSWAP"] = "0"
+    # env["MW05_KICK_VIDEO"] = "0"
+    # env["MW05_VDSWAP_NOTIFY"] = "0"
+    # env["MW05_FAST_BOOT"] = "0"
+    # env["MW05_FAST_RET"] = "0"
+    # env["MW05_FORCE_VD_INIT"] = "1"
+    # 
+    # env["MW05_TRACE_INDIRECT"] = "0"
+    # env["MW05_TITLE_STATE_TRACE"] = "1"
+    # env["MW05_BREAK_WAIT_LOOP"] = "0"
+    # env["MW05_FORCE_VIDEO_THREAD"] = "0"
+    # env["MW05_FORCE_VIDEO_THREAD_TICK"] = "0"
+    # env["MW05_DEFAULT_VD_ISR"] = "0"
+    # env["MW05_REGISTER_DEFAULT_VD_ISR"] = "0"
+    # env["MW05_PULSE_VD_ON_SLEEP"] = "0"
+    # env["MW05_PRESENT_HEARTBEAT_MS"] = "0"
+    # 
+    # env["MW05_STREAM_BRIDGE"] = "1"
+    # env["MW05_STREAM_FALLBACK_BOOT"] = "1"
+    # env["MW05_STREAM_ACK_NO_PATH"] = "0"
+    # env["MW05_LOOP_TRY_PM4_PRE"] = "0"
+    # env["MW05_LOOP_TRY_PM4_POST"] = "0"
+    # env["MW05_INNER_TRY_PM4"] = "0"
+    # env["MW05_FORCE_GFX_NOTIFY_CB"] = "1"
+    # env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0x40007180"
+    # env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
+    # env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
+    # 
+    # env["MW05_FORCE_PRESENT"] = "1"
+    # env["MW05_FORCE_PRESENT_BG"] = "1"
+    # env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
+    # env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
+    # env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
+    # env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
+    # env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
+    # 
+    # env["MW05_SCHED_R3_EA"] = "0x00260370"
+    # env["MW05_FPW_KICK_PM4"] = "1"
+    # 
+    # # DISABLE force-call workarounds - let the game initialize naturally via worker threads!
+    # # The worker threads (created by MW05_FORCE_RENDER_THREADS=1) will call the initialization chain:
+    # # Thread 0x828508A8 -> callback 0x8261A558 -> work_func 0x82441E58 -> sub_823B0190 -> sub_823AF590 -> ... -> sub_825A16A0
+    # env["MW05_FORCE_CALL_CREATEDEVICE"] = "0"
+    # env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "400"  # Not used when disabled
+    # 
+    # env["MW05_FORCE_CALL_CREATE_RENDER_THREAD"] = "0"
+    # env["MW05_FORCE_CREATE_RENDER_THREAD_DELAY_TICKS"] = "500"  # Not used when disabled
+    # 
+    # # CRITICAL FIX: Force-initialize the callback parameter structure and create worker threads!
+    # # The worker threads call work_func (0x82441E58) which initializes the entire game!
+    # # Without this, sub_823B0190 -> sub_823AF590 -> sub_82216088 -> ... -> sub_825A16A0 is NEVER called!
+    # # This is why offset+20576 remains 0x00000000 instead of 0x04000001!
+    # env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "1"  # Initialize callback parameter structure
+    # env["MW05_FORCE_RENDER_THREADS"] = "0"  # Disable the render thread creation (wrong threads)
+    # env["MW05_FORCE_RENDER_THREAD"] = "0"  # Keep this disabled - it's for a different thread
+    # 
+    # # Signal the VD interrupt event to wake up the render thread
+    # env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"
+    # env["MW05_PULSE_VD_EVENT_ON_SLEEP"] = "1"
+    # 
+    # # Enable PM4 state application
+    # env["MW05_PM4_APPLY_STATE"] = "1"
+    # 
+    # # Force the flag at r31+10434 that gates present calls
+    # env["MW05_FORCE_PRESENT_FLAG"] = "1"
+    # 
+    # # CRITICAL: Enable present callback pointer workaround
+    # env["MW05_SET_PRESENT_CB"] = "1"
 
-    env["MW05_TRACE_INDIRECT"] = "0"
-    env["MW05_TITLE_STATE_TRACE"] = "1"
-    env["MW05_BREAK_WAIT_LOOP"] = "0"
-    env["MW05_FORCE_VIDEO_THREAD"] = "0"
-    env["MW05_FORCE_VIDEO_THREAD_TICK"] = "0"
-    env["MW05_DEFAULT_VD_ISR"] = "0"
-    env["MW05_REGISTER_DEFAULT_VD_ISR"] = "0"
-    env["MW05_PULSE_VD_ON_SLEEP"] = "0"
-    env["MW05_PRESENT_HEARTBEAT_MS"] = "0"
-
-    env["MW05_STREAM_BRIDGE"] = "1"
-    env["MW05_STREAM_FALLBACK_BOOT"] = "1"
-    env["MW05_STREAM_ACK_NO_PATH"] = "0"
-    env["MW05_LOOP_TRY_PM4_PRE"] = "0"
-    env["MW05_LOOP_TRY_PM4_POST"] = "0"
-    env["MW05_INNER_TRY_PM4"] = "0"
-    env["MW05_FORCE_GFX_NOTIFY_CB"] = "1"
-    env["MW05_FORCE_GFX_NOTIFY_CB_CTX"] = "0x40007180"
-    env["MW05_FORCE_GFX_NOTIFY_CB_DELAY_TICKS"] = "350"
-    env["MW05_VD_ISR_SWAP_PARAMS"] = "0"
-
-    env["MW05_FORCE_PRESENT"] = "1"
-    env["MW05_FORCE_PRESENT_BG"] = "1"
-    env["MW05_FORCE_PRESENT_WRAPPER_DELAY_TICKS"] = "0"
-    env["MW05_FORCE_PRESENT_WRAPPER_ONCE"] = "1"
-    env["MW05_FORCE_PRESENT_EVERY_ZERO"] = "1"
-    env["MW05_FORCE_PRESENT_ON_ZERO"] = "1"
-    env["MW05_FORCE_PRESENT_ON_FIRST_ZERO"] = "1"
-
-    env["MW05_SCHED_R3_EA"] = "0x00260370"
-    env["MW05_FPW_KICK_PM4"] = "1"
-
-    # DISABLE force-call workarounds - let the game initialize naturally via worker threads!
-    # The worker threads (created by MW05_FORCE_RENDER_THREADS=1) will call the initialization chain:
-    # Thread 0x828508A8 -> callback 0x8261A558 -> work_func 0x82441E58 -> sub_823B0190 -> sub_823AF590 -> ... -> sub_825A16A0
-    env["MW05_FORCE_CALL_CREATEDEVICE"] = "0"
-    env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "400"  # Not used when disabled
-
-    env["MW05_FORCE_CALL_CREATE_RENDER_THREAD"] = "0"
-    env["MW05_FORCE_CREATE_RENDER_THREAD_DELAY_TICKS"] = "500"  # Not used when disabled
-
-    # CRITICAL FIX: Force-initialize the callback parameter structure and create worker threads!
-    # The worker threads call work_func (0x82441E58) which initializes the entire game!
-    # Without this, sub_823B0190 -> sub_823AF590 -> sub_82216088 -> ... -> sub_825A16A0 is NEVER called!
-    # This is why offset+20576 remains 0x00000000 instead of 0x04000001!
-    env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "1"  # Initialize callback parameter structure
-    env["MW05_FORCE_RENDER_THREADS"] = "0"  # Disable the render thread creation (wrong threads)
-    env["MW05_FORCE_RENDER_THREAD"] = "0"  # Keep this disabled - it's for a different thread
-
-    # Signal the VD interrupt event to wake up the render thread
-    env["MW05_HOST_ISR_SIGNAL_VD_EVENT"] = "1"
-    env["MW05_PULSE_VD_EVENT_ON_SLEEP"] = "1"
-
-    # Enable PM4 state application
-    env["MW05_PM4_APPLY_STATE"] = "1"
-
-    # Force the flag at r31+10434 that gates present calls
-    env["MW05_FORCE_PRESENT_FLAG"] = "1"
-
-    # CRITICAL: Enable present callback pointer workaround
-    env["MW05_SET_PRESENT_CB"] = "1"
-
-    print(f"[ENV] Using environment variables from run_with_env.cmd + RENDER THREAD FIX")
-    print(f"  MW05_UNBLOCK_MAIN = {env['MW05_UNBLOCK_MAIN']}")
-    print(f"  MW05_STREAM_BRIDGE = {env['MW05_STREAM_BRIDGE']}")
-    print(f"  MW05_FORCE_RENDER_THREADS = {env['MW05_FORCE_RENDER_THREADS']}")
-    print(f"  MW05_FORCE_RENDER_THREAD = {env['MW05_FORCE_RENDER_THREAD']} (CRITICAL!)")
-
+    print("Environment variables (MINIMAL - NO WORKAROUNDS):")
+    for key in sorted(env.keys()):
+        if key.startswith("MW05_"):
+            print(f"  {key} = {env[key]}")
+            
     # Redirect stderr to file directly (game writes to stderr in real-time)
     stderr_file = Path("traces/auto_test_stderr.txt")
     stdout_file = Path("traces/auto_test_stdout.txt")

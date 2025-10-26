@@ -21,17 +21,14 @@ static inline void host_sleep(int ms) {
   }
 #endif
 
-// originals from the recompiled lib
-PPC_FUNC_IMPL(__imp__sub_820E25C0); // IsListEmpty(head) -> r3=1/0
-extern "C" void __imp__sub_8215CDA0(PPCContext& __restrict, uint8_t*); // process/free node (not overridden, just called)
-PPC_FUNC_IMPL(__imp__sub_8215FEF0);
-
-PPC_FUNC(sub_8215CDA0)
-{
-    SetPPCContext(ctx);
-    KernelTraceHostOp("HOST.ListShim.sub_8215CDA0");
-    __imp__sub_8215CDA0(ctx, base);
+extern "C" {
+    // originals from the recompiled lib
+    void __imp__sub_820E25C0(PPCContext& ctx, uint8_t* base); // IsListEmpty(head) -> r3=1/0
+    void __imp__sub_8215CDA0(PPCContext& ctx, uint8_t* base); // process/free node
+    void __imp__sub_8215FEF0(PPCContext& ctx, uint8_t* base);
 }
+
+
 
 // Seed helper from GPU trace to capture candidate scheduler/context pointer safely (no logging)
 extern "C" void Mw05Trace_SeedSchedR3_NoLog(uint32_t r3);
@@ -64,6 +61,7 @@ static inline bool ListIsEmpty(uint8_t* base, uint32_t headEA) {
 }
 
 // Replacement for sub_8215FEF0 (the list-drain routine)
+PPC_FUNC_IMPL(__imp__sub_8215FEF0);
 PPC_FUNC(sub_8215FEF0)
 {
     KernelTraceHostOp("HOST.ListShim.Enter");
@@ -130,6 +128,7 @@ PPC_FUNC(sub_8215FEF0)
 
 // Replacement for sub_820E25C0 (IsListEmpty)
 // Keep a minimal, side-effect-free implementation; otherwise tail-call original.
+PPC_FUNC_IMPL(__imp__sub_820E25C0);
 PPC_FUNC(sub_820E25C0)
 {
     KernelTraceHostOp("HOST.sub_820E25C0");

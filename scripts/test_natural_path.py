@@ -33,30 +33,6 @@ def run_test():
     # Basic tracing only
     env["MW05_HOST_TRACE_FILE"] = "traces/natural_path_trace.log"
     env["MW05_TRACE_KERNEL"] = "1"
-    env["MW05_HOST_TRACE_IMPORTS"] = "0"
-    env["MW05_HOST_TRACE_HOSTOPS"] = "0"
-    env["MW05_TRACE_HEAP"] = "0"
-    
-    # NO WORKAROUNDS - let the game run naturally!
-    env["MW05_UNBLOCK_MAIN"] = "0"
-    env["MW05_FORCE_INIT_CALLBACK_PARAM"] = "0"
-    env["MW05_FORCE_RENDER_THREADS"] = "0"
-    env["MW05_FORCE_RENDER_THREAD"] = "0"
-    env["MW05_FORCE_GFX_NOTIFY_CB"] = "0"
-    env["MW05_FORCE_PRESENT"] = "0"
-    env["MW05_SET_PRESENT_CB"] = "0"
-    env["MW05_FORCE_VD_INIT"] = "0"
-    env["MW05_KICK_VIDEO"] = "0"
-    env["MW05_FORCE_VIDEO_THREAD"] = "0"
-    env["MW05_FORCE_CALL_CREATEDEVICE"] = "0"
-    env["MW05_FORCE_CALL_CREATE_RENDER_THREAD"] = "0"
-    
-    # Stream bridge for file I/O
-    env["MW05_STREAM_BRIDGE"] = "1"
-    env["MW05_STREAM_FALLBACK_BOOT"] = "1"
-    
-    # PM4 processing
-    env["MW05_PM4_APPLY_STATE"] = "1"
     
     print("=" * 80)
     print("TESTING NATURAL INITIALIZATION PATH - NO WORKAROUNDS!")

@@ -40,17 +40,19 @@ PPC_FUNC(sub_8215FDC0)
 //     if (dword_ptr) {
 //         dword_value = __builtin_bswap32(*(uint32_t*)dword_ptr);
 //     }
-// 
+//
 //     fprintf(stderr, "[HOOK-8215CB08] Allocator called! r3=0x%08X dword_82A2BF44=0x%08X lr=0x%08llX\n",
 //             ctx.r3.u32, dword_value, (unsigned long long)ctx.lr);
 //     fflush(stderr);
-// 
+//
 //     // Call the original function
 //     __imp__sub_8215CB08(ctx, base);
-// 
+//
 //     fprintf(stderr, "[HOOK-8215CB08] Allocator returned, r3=0x%08X\n", ctx.r3.u32);
 //     fflush(stderr);
 // }
+
+// NOTE: sub_82598A20 wrapper is already in mw05_trace_shims.cpp
 
 // sub_8211E470_hook: Vector resize function
 // This function is crashing because the structure is not properly initialized

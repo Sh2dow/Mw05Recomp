@@ -1384,8 +1384,8 @@ PPC_FUNC(sub_82598A20) {
         static int stub_count = 0;
         if (stub_count < 8) KernelTraceHostOpF("sub_82598A20.STUB calling VdSwap() (count=%d)", stub_count);
         ++stub_count;
-        extern void VdSwap(uint32_t, uint32_t, uint32_t);
-        VdSwap(0, 0, 0);
+        extern void VdSwap(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+        VdSwap(0, 0, 0, 0, 0, 0, 0, 0);
         return;
     }
 
@@ -1463,6 +1463,35 @@ PPC_FUNC(sub_82598A20) {
                                ctx.r4.u32, countdown_addr, s_last_countdown, countdown);
             s_last_countdown = countdown;
         }
+    }
+
+    // CRITICAL DEBUG: Check VdSwap function pointer before calling present
+    // The game calls VdSwap through a function pointer at 0x828AA03C (type=1 thunk)
+    // Let's check what's at that address AND the type=0 thunk
+    static bool s_vdswap_ptr_logged = false;
+    if (!s_vdswap_ptr_logged && count < 5) {
+        uint32_t vdswap_type1_addr = 0x828AA03C;  // Type=1 thunk address
+        uint32_t vdswap_type0_addr = 0x82000A1C;  // Type=0 thunk address
+
+        if (auto* p1 = reinterpret_cast<const uint32_t*>(g_memory.Translate(vdswap_type1_addr))) {
+            uint32_t vdswap_type1_value = __builtin_bswap32(*p1);  // Read big-endian
+            fprintf(stderr, "[VDSWAP-PTR-DEBUG] Type=1 thunk at 0x%08X = 0x%08X (raw bytes: %02X %02X %02X %02X)\n",
+                    vdswap_type1_addr, vdswap_type1_value,
+                    ((const uint8_t*)p1)[0], ((const uint8_t*)p1)[1],
+                    ((const uint8_t*)p1)[2], ((const uint8_t*)p1)[3]);
+            fflush(stderr);
+        }
+
+        if (auto* p0 = reinterpret_cast<const uint32_t*>(g_memory.Translate(vdswap_type0_addr))) {
+            uint32_t vdswap_type0_value = __builtin_bswap32(*p0);  // Read big-endian
+            fprintf(stderr, "[VDSWAP-PTR-DEBUG] Type=0 thunk at 0x%08X = 0x%08X (raw bytes: %02X %02X %02X %02X)\n",
+                    vdswap_type0_addr, vdswap_type0_value,
+                    ((const uint8_t*)p0)[0], ((const uint8_t*)p0)[1],
+                    ((const uint8_t*)p0)[2], ((const uint8_t*)p0)[3]);
+            fflush(stderr);
+        }
+
+        if (count >= 4) s_vdswap_ptr_logged = true;
     }
 
     // Forward to original present implementation

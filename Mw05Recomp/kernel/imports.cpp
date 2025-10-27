@@ -1429,14 +1429,22 @@ static inline bool Mw05VblankPumpEnabled() {
     return on;
 }
 
-void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase)
+// VdSwap is called with 8 parameters based on IDA decompilation:
+// r3: command buffer ptr, r4: swap params ptr, r5: GPU queue ptr
+// r6: system command buffer, r7: ???, r8-r10: pointers to surface/format/flags
+void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase,
+            uint32_t pSysCmdBuf, uint32_t param5, uint32_t pSurfaceAddr,
+            uint32_t pFormat, uint32_t param8)
 {
+    fprintf(stderr, "[VDSWAP-ENTRY] VdSwap function entered!\n");
+    fflush(stderr);
     KernelTraceHostOp("HOST.VdSwap");
     if (auto* ctx = GetPPCContext()) {
         KernelTraceHostOpF("HOST.VdSwap.caller lr=%08X", (uint32_t)ctx->lr);
     }
     // Terse arg trace to correlate with vdswap.txt disassembly
-    KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X", pWriteCur, pParams, pRingBase);
+    KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
+                       pWriteCur, pParams, pRingBase, pSysCmdBuf, param5, pSurfaceAddr, pFormat, param8);
     // Mark that the guest performed a swap at least once (real)
     g_guestHasSwapped.store(true, std::memory_order_release);
     g_sawRealVdSwap.store(true, std::memory_order_release);
@@ -2798,8 +2806,8 @@ void Mw05StartVblankPumpOnce() {
                 s_logged_vblank_vdswap = true;
             }
             if (s_vblank_vdswap) {
-                // Call VdSwap(0, 0, 0) to simulate guest swap
-                VdSwap(0, 0, 0);
+                // Call VdSwap with 8 parameters (all zeros for test)
+                VdSwap(0, 0, 0, 0, 0, 0, 0, 0);
             }
 
             // Optional: one-shot nudge into MW05 present-wrapper region to try waking the scheduler
@@ -10819,7 +10827,31 @@ GUEST_FUNCTION_HOOK(__imp__KfAcquireSpinLock, KfAcquireSpinLock);
 GUEST_FUNCTION_HOOK(__imp__KeQueryPerformanceFrequency, KeQueryPerformanceFrequency);
 GUEST_FUNCTION_HOOK(__imp__MmFreePhysicalMemory, MmFreePhysicalMemory);
 GUEST_FUNCTION_HOOK(__imp__VdPersistDisplay, VdPersistDisplay);
-GUEST_FUNCTION_HOOK(__imp__VdSwap, VdSwap);
+// CRITICAL DEBUG: Call VdSwap directly with extracted parameters
+PPC_FUNC(__imp__VdSwap) {
+    fprintf(stderr, "[HOOK-CALLED] __imp__VdSwap hook called!\n");
+    fflush(stderr);
+
+    // Extract parameters from PPC registers (r3-r10)
+    uint32_t r3 = ctx.r3.u32;
+    uint32_t r4 = ctx.r4.u32;
+    uint32_t r5 = ctx.r5.u32;
+    uint32_t r6 = ctx.r6.u32;
+    uint32_t r7 = ctx.r7.u32;
+    uint32_t r8 = ctx.r8.u32;
+    uint32_t r9 = ctx.r9.u32;
+    uint32_t r10 = ctx.r10.u32;
+
+    fprintf(stderr, "[HOOK-DEBUG] Calling VdSwap with params: r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X\n",
+            r3, r4, r5, r6, r7, r8, r9, r10);
+    fflush(stderr);
+
+    // Call VdSwap directly
+    VdSwap(r3, r4, r5, r6, r7, r8, r9, r10);
+
+    fprintf(stderr, "[HOOK-DEBUG] VdSwap returned\n");
+    fflush(stderr);
+}
 GUEST_FUNCTION_HOOK(__imp__VdGetSystemCommandBuffer, VdGetSystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__KeReleaseSpinLockFromRaisedIrql, KeReleaseSpinLockFromRaisedIrql);
 GUEST_FUNCTION_HOOK(__imp__KeAcquireSpinLockAtRaisedIrql, KeAcquireSpinLockAtRaisedIrql);

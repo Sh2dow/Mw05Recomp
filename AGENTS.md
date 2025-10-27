@@ -101,6 +101,62 @@ Get-Content traces/auto_test_stderr.txt | Select-String -Pattern "Physical heap 
 Get-Content traces/auto_test_stderr.txt | Select-String -Pattern "sub_XXXXXXXX"
 ```
 
+### IDA Pro API Usage (Port 5050)
+
+**Available Endpoints**:
+- `/decompile?ea=<address>` - Decompile function at address
+- `/disasm?ea=<address>&count=<count>` - Disassemble instructions
+- `/functions?mode=<fast|full>&filter=<regex>&limit=<n>` - List functions
+
+**Examples**:
+
+```powershell
+# Decompile a function
+$response = Invoke-WebRequest -Uri "http://127.0.0.1:5050/decompile?ea=0x82598A20" -UseBasicParsing
+$response.Content | Out-File "traces/ida_sub_82598A20_decomp.txt" -Encoding utf8
+
+# Disassemble 20 instructions
+$response = Invoke-WebRequest -Uri "http://127.0.0.1:5050/disasm?ea=0x828AA03C&count=20" -UseBasicParsing
+$response.Content
+
+# List functions (fast mode - no xrefs)
+$response = Invoke-WebRequest -Uri "http://127.0.0.1:5050/functions?limit=100" -UseBasicParsing
+$data = $response.Content | ConvertFrom-Json
+$data.functions | Format-Table name, start_ea -AutoSize
+
+# Filter functions by keyword
+$response = Invoke-WebRequest -Uri "http://127.0.0.1:5050/functions?filter=render|draw|swap&limit=50" -UseBasicParsing
+$data = $response.Content | ConvertFrom-Json
+$data.functions | Format-Table name, start_ea -AutoSize
+
+# Full mode with xref counts (slower)
+$response = Invoke-WebRequest -Uri "http://127.0.0.1:5050/functions?mode=full&filter=vdswap&limit=10" -UseBasicParsing
+$data = $response.Content | ConvertFrom-Json
+$data.functions | Format-Table name, xrefs_to, start_ea -AutoSize
+```
+
+### Redis MCP Usage
+
+**IMPORTANT**: Redis MCP is available for storing research findings, debugging state, and cross-session data.
+
+```powershell
+# Store research findings
+hset_Redis -name "mw05:issue_name" -key "root_cause" -value "Description of root cause"
+hset_Redis -name "mw05:issue_name" -key "solution" -value "Description of solution"
+
+# Retrieve findings
+hget_Redis -name "mw05:issue_name" -key "root_cause"
+
+# Get all data for an issue
+hgetall_Redis -name "mw05:issue_name"
+
+# Store vectors/embeddings
+set_vector_in_hash_Redis -name "mw05:function_analysis" -vector @(0.1, 0.2, 0.3, ...)
+
+# Store JSON data
+json_set_Redis -name "mw05:config" -path "$.render_settings" -value @{draws=0; pm4_active=$true}
+```
+
 ## 🚨 Known Issues & Fixes
 
 ### ✅ Memory Leak FIXED (2025-10-26)
@@ -115,9 +171,15 @@ Get-Content traces/auto_test_stderr.txt | Select-String -Pattern "sub_XXXXXXXX"
 - **Fix**: Moved heap start from 0x20000 to 0x100000
 - **Result**: Game runs 120+ seconds without crashes
 
-### ❌ No Rendering Yet (draws=0)
-- Game initializes correctly but doesn't issue draw commands
-- All systems operational (threads, PM4, VBLANK, file I/O)
+### ❌ VdSwap Not Being Called - PPC Trampoline Issue (2025-10-27)
+- **Problem**: VdSwap is never called, causing zero draw commands
+- **Root Cause**: VdSwap at `0x828AA03C` is a 16-byte PPC trampoline stub, NOT a simple function pointer
+- **IDA Disassembly**: `.text:828AA03C VdSwap: .long 0x101025B, 0x201025B, 0x7D6903A6, 0x4E800420`
+- **PPC Instructions**:
+  - `0x7D6903A6` = `mtctr r12` (move to count register)
+  - `0x4E800420` = `bctr` (branch to count register)
+- **Current Issue**: Import patching writes a function pointer, but the game executes the PPC stub code
+- **Fix Needed**: Patch the PPC trampoline stub to jump to our host VdSwap implementation
 - Investigation ongoing - see `docs/research/` for details
 
 ## 📚 Additional Documentation

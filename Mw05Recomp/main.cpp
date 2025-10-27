@@ -758,7 +758,24 @@ void ProcessImportTable(const uint8_t* xexData, uint32_t loadAddress)
 
             // Patch the thunk to point to this guest address
             // The thunk data is in big-endian format (be<uint32_t>)
+
+            // DEBUG: Log before patch for VdSwap
+            if (strcmp(functionName, "__imp__VdSwap") == 0) {
+                const uint8_t* rawBefore = reinterpret_cast<const uint8_t*>(thunkData);
+                fprintf(stderr, "[XEX-VDSWAP-DEBUG] BEFORE patch: thunk=0x%08X bytes=%02X %02X %02X %02X\n",
+                        thunkAddr, rawBefore[0], rawBefore[1], rawBefore[2], rawBefore[3]);
+                fflush(stderr);
+            }
+
             thunkData->function = importGuestAddr;
+
+            // DEBUG: Log after patch for VdSwap
+            if (strcmp(functionName, "__imp__VdSwap") == 0) {
+                const uint8_t* rawAfter = reinterpret_cast<const uint8_t*>(thunkData);
+                fprintf(stderr, "[XEX-VDSWAP-DEBUG] AFTER patch: thunk=0x%08X bytes=%02X %02X %02X %02X (should be guest=0x%08X)\n",
+                        thunkAddr, rawAfter[0], rawAfter[1], rawAfter[2], rawAfter[3], importGuestAddr);
+                fflush(stderr);
+            }
 
             fprintf(stderr, "[XEX]   Import %u: %s (ordinal=%u) type=%u thunk=0x%08X -> guest=0x%08X PATCHED\n",
                     i, functionName, importOrdinal, importType, thunkAddr, importGuestAddr);

@@ -560,6 +560,10 @@ PPC_FUNC(sub_828134E0)
     fflush(stderr);
 }
 
+// NOTE: sub_825A7B78 shim is in mw05_trace_shims.cpp (viewport setup function)
+// It was causing infinite loop due to buggy RtlFillMemoryUlong call with 4GB size parameter.
+// The shim in mw05_trace_shims.cpp now skips the function to avoid the infinite loop.
+
 // CRITICAL FIX: Wrapper for sub_8215BC78 (memory allocator free function)
 // This function fills freed memory with 0xEE pattern, but it has a bug where it tries to
 // free NULL pointers, causing it to write to address 0x10 (NULL + 16), which corrupts

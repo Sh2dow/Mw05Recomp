@@ -32,10 +32,12 @@ enum PM4Type {
 
 // PM4 Type-3 opcodes (common draw commands)
 enum PM4Opcode {
+    PM4_MICRO_IB = 0x04,            // Micro Index Buffer (embedded small index buffers)
     PM4_ME_INIT = 0x48,
     PM4_NOP = 0x10,
     PM4_INDIRECT_BUFFER = 0x3F,
     PM4_WAIT_REG_MEM = 0x3C,
+    PM4_CONTEXT_UPDATE = 0x3E,      // Update GPU context state
     PM4_REG_RMW = 0x21,
     PM4_COND_WRITE = 0x45,
     PM4_EVENT_WRITE = 0x46,
@@ -410,7 +412,8 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
         }
 
         // Log draw commands (and optionally emit guarded host draws)
-        if (opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2) {
+        // MW05 uses Micro-IB (0x04) for most draws, plus standard DRAW_INDX (0x22/0x36)
+        if (opcode == PM4_MICRO_IB || opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2) {
             g_pm4DrawCount.fetch_add(1, std::memory_order_relaxed);
 
             // Read draw parameters (already byteswapped to host LE)
@@ -424,8 +427,10 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
             // DEBUG: Log PM4 draw commands
             static int s_pm4DrawLogCount = 0;
             if (s_pm4DrawLogCount < 5) {
+                const char* opcode_name = (opcode == PM4_MICRO_IB) ? "MICRO_IB" :
+                                         (opcode == PM4_DRAW_INDX) ? "DRAW_INDX" : "DRAW_INDX_2";
                 fprintf(stderr, "[RENDER-DEBUG] PM4 DRAW command detected: opcode=%s count=%u total_draws=%llu emit_enabled=%d\n",
-                        (opcode == PM4_DRAW_INDX) ? "DRAW_INDX" : "DRAW_INDX_2",
+                        opcode_name,
                         count, (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed),
                         IsEmitDrawsEnabled());
                 fflush(stderr);
@@ -433,8 +438,10 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
             }
 
             if (IsPM4TracingEnabled()) {
+                const char* opcode_name = (opcode == PM4_MICRO_IB) ? "MICRO_IB" :
+                                         (opcode == PM4_DRAW_INDX) ? "INDX" : "INDX_2";
                 KernelTraceHostOpF("HOST.PM4.DRAW_%s addr=%08X count=%u p0=%08X p1=%08X p2=%08X total_draws=%llu",
-                                  (opcode == PM4_DRAW_INDX) ? "INDX" : "INDX_2",
+                                  opcode_name,
                                   addr, count, p0, p1, p2,
                                   (unsigned long long)g_pm4DrawCount.load(std::memory_order_relaxed));
             }

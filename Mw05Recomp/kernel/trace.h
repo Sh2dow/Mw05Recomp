@@ -165,49 +165,35 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
         }
     }
 
-    // CRITICAL FIX: BLOCK writes to o1heap instance structure ONLY from game's memset function
-    // The game's memset function (sub_826BE660) is called from sub_8215BC78 (memory allocator free)
-    // with NULL pointer, causing it to write 0xEE pattern to low addresses that wrap around
-    // and corrupt the o1heap instance structure at 0x100000-0x100300.
+    // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
+    // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
+    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
-    // We ONLY block writes from lr=0x825A7DC8 (the specific call site in the game's memset).
+    // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
+    // is clearly buggy and should not be writing to memory at all.
     // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
-    //
-    // O1HeapInstance layout (from o1heap.c):
-    //   - bins[64]: 512 bytes (offsets 0-511)
-    //   - nonempty_bin_mask: 8 bytes (offsets 512-519)
-    //   - diagnostics.capacity: 8 bytes (offsets 520-527)
-    //   - diagnostics.allocated: 8 bytes (offsets 528-535)
-    //   - diagnostics.peak_allocated: 8 bytes (offsets 536-543)
-    //   - diagnostics.oom_count: 8 bytes (offsets 544-551)
-    // Total: ~552 bytes, padded to 576 bytes (INSTANCE_SIZE_PADDED)
-    // Heap starts at 0x100000, so instance is at 0x100000-0x100240 (576 bytes)
-    // Add extra padding for safety: protect 0x100000-0x100300 (768 bytes)
-    if (ea >= 0x100000 && ea < 0x100300) {
-        if (auto* c = GetPPCContext()) {
-            uint32_t lr = c->lr;
+    if (auto* c = GetPPCContext()) {
+        uint32_t lr = c->lr;
 
-            // ONLY block writes from the game's memset function (lr=0x825A7DC8)
-            // ALLOW all other writes (o1heap internal operations, etc.)
-            if (lr == 0x825A7DC8) {
-                static int block_count = 0;
-                block_count++;
+        // BLOCK ALL writes from the game's buggy memset function (lr=0x825A7DC8)
+        if (lr == 0x825A7DC8) {
+            static int block_count = 0;
+            block_count++;
 
-                // Log first 10 blocked writes, then log every 100th write to reduce spam
-                if (block_count <= 10 || (block_count % 100) == 0) {
-                    fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store16 from game memset! (count=%d)\n", block_count);
-                    fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%04X lr=0x%08X\n", ea, v, lr);
-                    fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
-                            c->r3.u32, c->r4.u32, c->r5.u32);
-                    fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
-                            c->r31.u32, c->r30.u32, c->r29.u32);
-                    fflush(stderr);
-                }
-
-                // CRITICAL: Return WITHOUT writing to prevent heap corruption!
-                return;
+            // Log first 10 blocked writes, then log every 10 millionth write to reduce spam
+            if (block_count <= 10 || (block_count % 10000000) == 0) {
+                fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store16 from buggy memset! (count=%d)\n", block_count);
+                fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%04X lr=0x%08X\n", ea, v, lr);
+                fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
+                        c->r3.u32, c->r4.u32, c->r5.u32);
+                fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
+                        c->r31.u32, c->r30.u32, c->r29.u32);
+                fflush(stderr);
             }
-            // else: Allow write from other sources (o1heap, etc.)
+
+            // CRITICAL: Return WITHOUT writing to prevent heap corruption!
+            return;
         }
     }
 
@@ -227,49 +213,35 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
         // KernelTraceHostOp("HOST.watch.store override ACTIVE");
     }
 
-    // CRITICAL FIX: BLOCK writes to o1heap instance structure ONLY from game's memset function
-    // The game's memset function (sub_826BE660) is called from sub_8215BC78 (memory allocator free)
-    // with NULL pointer, causing it to write 0xEE pattern to low addresses that wrap around
-    // and corrupt the o1heap instance structure at 0x100000-0x100300.
+    // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
+    // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
+    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
-    // We ONLY block writes from lr=0x825A7DC8 (the specific call site in the game's memset).
+    // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
+    // is clearly buggy and should not be writing to memory at all.
     // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
-    //
-    // O1HeapInstance layout (from o1heap.c):
-    //   - bins[64]: 512 bytes (offsets 0-511)
-    //   - nonempty_bin_mask: 8 bytes (offsets 512-519)
-    //   - diagnostics.capacity: 8 bytes (offsets 520-527)
-    //   - diagnostics.allocated: 8 bytes (offsets 528-535)
-    //   - diagnostics.peak_allocated: 8 bytes (offsets 536-543)
-    //   - diagnostics.oom_count: 8 bytes (offsets 544-551)
-    // Total: ~552 bytes, padded to 576 bytes (INSTANCE_SIZE_PADDED)
-    // Heap starts at 0x100000, so instance is at 0x100000-0x100240 (576 bytes)
-    // Add extra padding for safety: protect 0x100000-0x100300 (768 bytes)
-    if (ea >= 0x100000 && ea < 0x100300) {
-        if (auto* c = GetPPCContext()) {
-            uint32_t lr = c->lr;
+    if (auto* c = GetPPCContext()) {
+        uint32_t lr = c->lr;
 
-            // ONLY block writes from the game's memset function (lr=0x825A7DC8)
-            // ALLOW all other writes (o1heap internal operations, etc.)
-            if (lr == 0x825A7DC8) {
-                static int block_count = 0;
-                block_count++;
+        // BLOCK ALL writes from the game's buggy memset function (lr=0x825A7DC8)
+        if (lr == 0x825A7DC8) {
+            static int block_count = 0;
+            block_count++;
 
-                // Log first 10 blocked writes, then log every 100th write to reduce spam
-                if (block_count <= 10 || (block_count % 100) == 0) {
-                    fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store32 from game memset! (count=%d)\n", block_count);
-                    fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%08X lr=0x%08X\n", ea, v, lr);
-                    fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
-                            c->r3.u32, c->r4.u32, c->r5.u32);
-                    fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
-                            c->r31.u32, c->r30.u32, c->r29.u32);
-                    fflush(stderr);
-                }
-
-                // CRITICAL: Return WITHOUT writing to prevent heap corruption!
-                return;
+            // Log first 10 blocked writes, then log every 10 millionth write to reduce spam
+            if (block_count <= 10 || (block_count % 10000000) == 0) {
+                fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store32 from buggy memset! (count=%d)\n", block_count);
+                fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%08X lr=0x%08X\n", ea, v, lr);
+                fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
+                        c->r3.u32, c->r4.u32, c->r5.u32);
+                fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
+                        c->r31.u32, c->r30.u32, c->r29.u32);
+                fflush(stderr);
             }
-            // else: Allow write from other sources (o1heap, etc.)
+
+            // CRITICAL: Return WITHOUT writing to prevent heap corruption!
+            return;
         }
     }
 
@@ -538,48 +510,35 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
 
-    // CRITICAL FIX: BLOCK writes to o1heap instance structure ONLY from game's memset function
-    // The game's memset function (sub_826BE660) is called from sub_8215BC78 (memory allocator free)
-    // with NULL pointer, causing it to write 0xEE pattern to low addresses that wrap around
-    // and corrupt the o1heap instance structure at 0x100000-0x100300.
+    // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
+    // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
+    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
-    // We ONLY block writes from lr=0x825A7DC8 (the specific call site in the game's memset).
+    // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
+    // is clearly buggy and should not be writing to memory at all.
     // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
-    //
-    // O1HeapInstance layout (from o1heap.c):
-    //   - bins[64]: 512 bytes (offsets 0-511)
-    //   - nonempty_bin_mask: 8 bytes (offsets 512-519)
-    //   - diagnostics.capacity: 8 bytes (offsets 520-527)
-    //   - diagnostics.allocated: 8 bytes (offsets 528-535)
-    //   - diagnostics.peak_allocated: 8 bytes (offsets 536-543)
-    //   - diagnostics.oom_count: 8 bytes (offsets 544-551)
-    // Total: ~552 bytes, padded to 576 bytes (INSTANCE_SIZE_PADDED)
-    // Heap starts at 0x100000, so instance is at 0x100000-0x100240 (576 bytes)
-    // Add extra padding for safety: protect 0x100000-0x100300 (768 bytes)
-    if (ea >= 0x100000 && ea < 0x100300) {
-        // ONLY block writes from the game's memset function (lr=0x825A7DC8)
-        // ALLOW all other writes (o1heap internal operations, etc.)
-        if (lr == 0x825A7DC8) {
-            static int block_count = 0;
-            block_count++;
 
-            // Log first 10 blocked writes, then log every 100th write to reduce spam
-            if (block_count <= 10 || (block_count % 100) == 0) {
-                fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store64 from game memset! (count=%d)\n", block_count);
-                fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%016llX lr=0x%08llX\n", ea, v64, lr);
-                if (c) {
-                    fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
-                            c->r3.u32, c->r4.u32, c->r5.u32);
-                    fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
-                            c->r31.u32, c->r30.u32, c->r29.u32);
-                }
-                fflush(stderr);
+    // BLOCK ALL writes from the game's buggy memset function (lr=0x825A7DC8)
+    if (lr == 0x825A7DC8) {
+        static int block_count = 0;
+        block_count++;
+
+        // Log first 10 blocked writes, then log every 10 millionth write to reduce spam
+        if (block_count <= 10 || (block_count % 10000000) == 0) {
+            fprintf(stderr, "[HEAP-PROTECT] BLOCKED Store64 from buggy memset! (count=%d)\n", block_count);
+            fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%016llX lr=0x%08llX\n", ea, v64, lr);
+            if (c) {
+                fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
+                        c->r3.u32, c->r4.u32, c->r5.u32);
+                fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
+                        c->r31.u32, c->r30.u32, c->r29.u32);
             }
-
-            // CRITICAL: Return WITHOUT writing to prevent heap corruption!
-            return;
+            fflush(stderr);
         }
-        // else: Allow write from other sources (o1heap, etc.)
+
+        // CRITICAL: Return WITHOUT writing to prevent heap corruption!
+        return;
     }
 
     KernelTraceHostOpF("HOST.Store64BE_W.called ea=%08X val=%016llX", ea, v64);

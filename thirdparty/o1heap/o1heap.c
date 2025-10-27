@@ -17,6 +17,7 @@
 #include "o1heap.h"
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 
 // ---------------------------------------- BUILD CONFIGURATION OPTIONS ----------------------------------------
 
@@ -330,6 +331,21 @@ void* o1heapAllocate(O1HeapInstance* const handle, const size_t amount)
             // The bin we found shall not be empty, otherwise it's a state divergence (memory corruption?).
             Fragment* const frag = handle->bins[bin_index];
             O1HEAP_ASSERT(frag != NULL);
+
+            // CRITICAL DEBUG: Log fragment details BEFORE assertion
+            if (frag->header.size < fragment_size) {
+                fprintf(stderr, "[O1HEAP-ERROR] Fragment size mismatch!\n");
+                fprintf(stderr, "[O1HEAP-ERROR]   bin_index=%u\n", (unsigned)bin_index);
+                fprintf(stderr, "[O1HEAP-ERROR]   frag=%p\n", (void*)frag);
+                fprintf(stderr, "[O1HEAP-ERROR]   frag->header.size=%zu (0x%zx)\n", frag->header.size, frag->header.size);
+                fprintf(stderr, "[O1HEAP-ERROR]   fragment_size=%zu (0x%zx)\n", fragment_size, fragment_size);
+                fprintf(stderr, "[O1HEAP-ERROR]   requested_amount=%zu\n", amount);
+                fprintf(stderr, "[O1HEAP-ERROR]   frag->header.used=%d\n", frag->header.used);
+                fprintf(stderr, "[O1HEAP-ERROR]   frag->header.next=%p\n", (void*)frag->header.next);
+                fprintf(stderr, "[O1HEAP-ERROR]   frag->header.prev=%p\n", (void*)frag->header.prev);
+                fflush(stderr);
+            }
+
             O1HEAP_ASSERT(frag->header.size >= fragment_size);
             O1HEAP_ASSERT((frag->header.size % FRAGMENT_SIZE_MIN) == 0U);
             O1HEAP_ASSERT(!frag->header.used);

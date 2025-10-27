@@ -651,7 +651,7 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
     thread_local std::string builtPath;
     builtPath.clear();
 
-    // Special-case: MW05 FS service requests for ZDIR (e.g., "FS\\ZD", "FS\\ZDBIN").
+    // Special-case: MW05 FS service requests for ZDIR (e.g., "FS\\ZD", "FS\\ZDBIN", "NFS\\ZDIR.BIN").
     // These are service tokens, not real subfolders; locate an actual ZDIR file under the game root.
     {
         auto starts_with_ci = [](std::string_view s, std::string_view p){
@@ -663,42 +663,80 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
             }
             return true;
         };
+        // Handle both "FS\\ZD" and "NFS\\ZDIR.BIN" paths
+        bool isZdirRequest = false;
         if (starts_with_ci(path, "FS\\")) {
             std::string_view rest = path.substr(3);
             if (starts_with_ci(rest, "ZD")) {
-                static std::string s_cachedZdir;
-                if (s_cachedZdir.empty()) {
-                    const std::string gameRoot = std::string(XamGetRootPath("game"));
-                    if (!gameRoot.empty()) {
-                        const char* candidates[] = {
-                            "/ZDIR.BIN", "/ZDIR.bin", "/ZDIR", "/GLOBAL/ZDIR.BIN", "/GLOBAL/ZDIR.bin", "/GLOBAL/ZDIR"
-                        };
-                        for (const char* c : candidates) {
-                            std::string tryPath = gameRoot; tryPath += c;
-                            if (std::filesystem::exists(tryPath)) { s_cachedZdir = std::move(tryPath); break; }
-                        }
-                        if (s_cachedZdir.empty()) {
-                            std::error_code ec;
-                            for (auto it = std::filesystem::recursive_directory_iterator(gameRoot, ec);
-                                 !ec && it != std::filesystem::recursive_directory_iterator(); ++it) {
-                                if (!it->is_regular_file(ec)) continue;
-                                auto name = it->path().filename().string();
-                                if (name.size() >= 4) {
-                                    bool zdir = (std::tolower((unsigned char)name[0])=='z' &&
-                                                 std::tolower((unsigned char)name[1])=='d' &&
-                                                 std::tolower((unsigned char)name[2])=='i' &&
-                                                 std::tolower((unsigned char)name[3])=='r');
-                                    if (zdir) { s_cachedZdir = it->path().string(); break; }
-                                }
+                isZdirRequest = true;
+            }
+        } else if (starts_with_ci(path, "NFS\\")) {
+            std::string_view rest = path.substr(4);
+            if (starts_with_ci(rest, "ZDIR")) {
+                isZdirRequest = true;
+            }
+        }
+
+        if (isZdirRequest) {
+            static std::string s_cachedZdir;
+            if (s_cachedZdir.empty()) {
+                const std::string gameRoot = std::string(XamGetRootPath("game"));
+                if (!gameRoot.empty()) {
+                    const char* candidates[] = {
+                        "/ZDIR.BIN", "/ZDIR.bin", "/ZDIR", "/GLOBAL/ZDIR.BIN", "/GLOBAL/ZDIR.bin", "/GLOBAL/ZDIR"
+                    };
+                    for (const char* c : candidates) {
+                        std::string tryPath = gameRoot; tryPath += c;
+                        if (std::filesystem::exists(tryPath)) { s_cachedZdir = std::move(tryPath); break; }
+                    }
+                    if (s_cachedZdir.empty()) {
+                        std::error_code ec;
+                        for (auto it = std::filesystem::recursive_directory_iterator(gameRoot, ec);
+                             !ec && it != std::filesystem::recursive_directory_iterator(); ++it) {
+                            if (!it->is_regular_file(ec)) continue;
+                            auto name = it->path().filename().string();
+                            if (name.size() >= 4) {
+                                bool zdir = (std::tolower((unsigned char)name[0])=='z' &&
+                                             std::tolower((unsigned char)name[1])=='d' &&
+                                             std::tolower((unsigned char)name[2])=='i' &&
+                                             std::tolower((unsigned char)name[3])=='r');
+                                if (zdir) { s_cachedZdir = it->path().string(); break; }
                             }
                         }
                     }
                 }
-                if (!s_cachedZdir.empty()) {
-                    if (FileTraceEnabled()) {
-                        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.fs_zdir.map guest=\"%s\" host=\"%s\"", std::string(path).c_str(), s_cachedZdir.c_str());
+            }
+            if (!s_cachedZdir.empty()) {
+                if (FileTraceEnabled()) {
+                    KernelTraceHostOpF("HOST.FileSystem.ResolvePath.zdir.map guest=\"%s\" host=\"%s\"", std::string(path).c_str(), s_cachedZdir.c_str());
+                }
+                return std::u8string_view((const char8_t*)s_cachedZdir.c_str());
+            }
+        }
+
+        // Handle "NFS\\ZZDATA" paths - these are virtual file system data files
+        if (starts_with_ci(path, "NFS\\")) {
+            std::string_view rest = path.substr(4);
+            if (starts_with_ci(rest, "ZZDATA")) {
+                static std::string s_cachedZzdata;
+                if (s_cachedZzdata.empty()) {
+                    const std::string gameRoot = std::string(XamGetRootPath("game"));
+                    if (!gameRoot.empty()) {
+                        // Try to find ZZDATA files (numbered 0-29 based on IDA analysis)
+                        const char* candidates[] = {
+                            "/ZZDATA0.BIN", "/ZZDATA0.bin", "/ZZDATA", "/GLOBAL/ZZDATA0.BIN", "/GLOBAL/ZZDATA0.bin"
+                        };
+                        for (const char* c : candidates) {
+                            std::string tryPath = gameRoot; tryPath += c;
+                            if (std::filesystem::exists(tryPath)) { s_cachedZzdata = std::move(tryPath); break; }
+                        }
                     }
-                    return std::u8string_view((const char8_t*)s_cachedZdir.c_str());
+                }
+                if (!s_cachedZzdata.empty()) {
+                    if (FileTraceEnabled()) {
+                        KernelTraceHostOpF("HOST.FileSystem.ResolvePath.zzdata.map guest=\"%s\" host=\"%s\"", std::string(path).c_str(), s_cachedZzdata.c_str());
+                    }
+                    return std::u8string_view((const char8_t*)s_cachedZzdata.c_str());
                 }
             }
         }

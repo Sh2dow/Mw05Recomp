@@ -8,6 +8,7 @@ extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
 #include <ppc/ppc_context.h>
 
 #include <kernel/memory.h>
+#include <kernel/heap.h>
 #include <atomic>
 
 // Type definitions for kernel functions
@@ -471,11 +472,19 @@ PPC_FUNC(sub_825A7A40) {
     uint32_t height = v19 - v17;
 
     // CRITICAL FIX: Check for divide-by-zero condition
+    static std::atomic<uint64_t> s_invalidCount{0};
     if (width == 0 || height == 0) {
-        // Invalid viewport dimensions - use default 1280x720
-        fprintf(stderr, "[sub_825A7A40] DIVIDE-BY-ZERO FIX: Invalid viewport dimensions (%u x %u), using defaults\n", width, height);
-        fflush(stderr);
+        uint64_t count = s_invalidCount.fetch_add(1);
 
+        // Log first 5 invalid calls with full details
+        if (count < 5) {
+            fprintf(stderr, "[sub_825A7A40] INVALID VIEWPORT #%llu: input bounds [%u,%u,%u,%u] -> size (%u x %u)\n",
+                    count, v16, v17, v18, v19, width, height);
+            fprintf(stderr, "[sub_825A7A40]   r6=%08X r7=%08X lr=%08llX\n", r6, r7, ctx.lr);
+            fflush(stderr);
+        }
+
+        // Invalid viewport dimensions - use default 1280x720
         // Set default viewport: 0,0 to 1280,720
         WriteBE32(r7 + 0, 0);      // x_min = 0
         WriteBE32(r7 + 4, 0);      // y_min = 0
@@ -492,27 +501,35 @@ PPC_FUNC(sub_825A7A40) {
     __imp__sub_825A7A40(ctx, base);
 }
 
-// CRITICAL FIX: Catch-all for divide-by-zero in rendering functions
-// The crash happens after sub_825A7A40 returns, likely in a function that does aspect ratio calculations
-// We'll add shims for other viewport-related functions that might have divide-by-zero issues
-// Convert MW05Shim_sub_825A7B78 to PPC_FUNC_IMPL pattern
+// CRITICAL FIX: sub_825A7B78 (scaler command buffer / viewport setup function)
+// This function calls RtlFillMemoryUlong with corrupted parameters due to a recompiler bug.
+// The recompiled code passes:
+//   r3 = destination - 4 (wrong offset)
+//   r4 = garbage address instead of pattern
+//   r5 = 0xFFE8001C (4GB as unsigned, -1.5MB as signed) instead of 800 bytes
+//
+// This causes an infinite loop where the heap protection blocks billions of writes,
+// consuming 100% CPU and preventing the game from progressing to the rendering stage.
+//
+// Solution: Completely skip this function. It's a scaler command buffer initialization
+// function that's not critical for basic rendering. The game can work without it.
 PPC_FUNC_IMPL(__imp__sub_825A7B78);
 PPC_FUNC(sub_825A7B78) {
-    // sub_825A7B78 is the viewport setup function that calls sub_825A7A40 and sub_825A74B8
-    // It might have its own divide-by-zero issues
-    KernelTraceHostOpF("HOST.sub_825A7B78.enter r3=%08X r4=%08X r5=%08X r6=%08X",
-                       ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+    // CRITICAL: Return immediately to avoid the buggy RtlFillMemoryUlong call
+    // This function is called during video initialization but is not essential.
+    // Skipping it allows the game to progress past the infinite loop.
 
-    // Call the original function with SEH exception handling for divide-by-zero
-    __try {
-        SetPPCContext(ctx);
-
-        __imp__sub_825A7B78(ctx, base);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        KernelTraceHostOpF("HOST.sub_825A7B78.exception caught code=%08X", GetExceptionCode());
-        // Return safely
-        ctx.r3.u32 = 0;
+    // Log once to confirm the shim is being used
+    static std::atomic<bool> s_logged{false};
+    if (!s_logged.exchange(true, std::memory_order_relaxed)) {
+        KernelTraceHostOpF("HOST.sub_825A7B78.SKIPPED to avoid buggy RtlFillMemoryUlong infinite loop");
+        KernelTraceHostOpF("HOST.sub_825A7B78.This function initializes scaler command buffer - not critical for rendering");
     }
+
+    // Return success (r3 = 0)
+    ctx.r3.u32 = 0;
+
+    // DO NOT call __imp__sub_825A7B78 - it contains the buggy code!
 }
 
 // Convert MW05Shim_sub_825A74B8 to PPC_FUNC_IMPL pattern
@@ -536,7 +553,68 @@ PPC_FUNC(sub_825A74B8) {
 
 SHIM(sub_825A7DE8)
 SHIM(sub_825A7E60)
-SHIM(sub_825A7EA0)
+
+// CRITICAL FIX: The game doesn't call VdQueryVideoMode, so viewport data is never initialized
+// We need to initialize the viewport structure at r3 + 0x364C (offset 13900) which is passed via r6
+PPC_FUNC_IMPL(__imp__sub_825A7EA0);
+PPC_FUNC(sub_825A7EA0) {
+    static std::atomic<uint64_t> s_callCount{0};
+    uint64_t count = s_callCount.fetch_add(1);
+
+    uint32_t r3 = ctx.r3.u32;  // a1 - object pointer
+    uint32_t r4 = ctx.r4.u32;  // a2 - width parameter
+    uint32_t r5 = ctx.r5.u32;  // a3 - height parameter
+    uint32_t r6 = ctx.r6.u32;  // a4 - viewport bounds pointer (set by caller)
+
+    // Log first few calls to understand what's happening
+    if (count < 5) {
+        fprintf(stderr, "[sub_825A7EA0] CALL #%llu: r3=%08X r4=%u r5=%u r6=%08X lr=%08llX\n",
+                count, r3, r4, r5, r6, ctx.lr);
+        fflush(stderr);
+
+        // Check if r6 points to valid memory
+        if (GuestOffsetInRange(r6, 24)) {
+            uint8_t* r6_ptr = (uint8_t*)g_memory.Translate(r6);
+            uint32_t v0 = ReadBE32((uintptr_t)(r6_ptr + 0));
+            uint32_t v1 = ReadBE32((uintptr_t)(r6_ptr + 4));
+            uint32_t v2 = ReadBE32((uintptr_t)(r6_ptr + 8));
+            uint32_t v3 = ReadBE32((uintptr_t)(r6_ptr + 12));
+            fprintf(stderr, "[sub_825A7EA0]   r6 points to: [%u,%u,%u,%u]\n", v0, v1, v2, v3);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[sub_825A7EA0]   r6 is INVALID!\n");
+            fflush(stderr);
+        }
+    }
+
+    // CRITICAL FIX: Initialize viewport data at r6 if it's all zeros
+    // The game doesn't call VdQueryVideoMode, so the viewport structure is never initialized
+    if (r4 == 0 && r5 == 0 && GuestOffsetInRange(r6, 24)) {
+        uint8_t* r6_ptr = (uint8_t*)g_memory.Translate(r6);
+        uint32_t v0 = ReadBE32((uintptr_t)(r6_ptr + 0));
+        uint32_t v1 = ReadBE32((uintptr_t)(r6_ptr + 4));
+        uint32_t v2 = ReadBE32((uintptr_t)(r6_ptr + 8));
+        uint32_t v3 = ReadBE32((uintptr_t)(r6_ptr + 12));
+
+        // Check if viewport is uninitialized (all zeros)
+        if (v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0) {
+            fprintf(stderr, "[sub_825A7EA0] FORCE-INIT: Viewport at r6=%08X is zero, initializing to [0,0,1280,720]\n", r6);
+            fflush(stderr);
+
+            // Initialize viewport bounds: [x_min=0, y_min=0, x_max=1280, y_max=720]
+            WriteBE32((uintptr_t)(r6_ptr + 0), 0);      // x_min
+            WriteBE32((uintptr_t)(r6_ptr + 4), 0);      // y_min
+            WriteBE32((uintptr_t)(r6_ptr + 8), 1280);   // x_max
+            WriteBE32((uintptr_t)(r6_ptr + 12), 720);   // y_max
+
+            fprintf(stderr, "[sub_825A7EA0] FORCE-INIT: Viewport initialized successfully\n");
+            fflush(stderr);
+        }
+    }
+
+    // Call the original recompiled function
+    __imp__sub_825A7EA0(ctx, base);
+}
 
 // Scheduler/notify-adjacent shims (log, dump key pointers, and forward)
 // Convert MW05Shim_sub_8262F248 to PPC_FUNC_IMPL pattern

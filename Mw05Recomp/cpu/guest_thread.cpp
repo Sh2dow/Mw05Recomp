@@ -39,6 +39,13 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
             (diag_before.capacity - diag_before.allocated) / (1024.0 * 1024.0));
     fflush(stderr);
 
+    // CRITICAL DEBUG: Validate heap integrity BEFORE allocation
+    if (!g_userHeap.ValidateHeapIntegrity("GuestThreadContext::BEFORE_ALLOC")) {
+        fprintf(stderr, "[THREAD-CTX-ERROR] Heap corrupted BEFORE thread context allocation!\n");
+        fprintf(stderr, "[THREAD-CTX-ERROR] tid=%08lX TOTAL_SIZE=%zu\n", GetCurrentThreadId(), TOTAL_SIZE);
+        fflush(stderr);
+    }
+
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
     if (!thread) {
         fprintf(stderr, "[CRITICAL] Failed to allocate thread context memory (%zu bytes = %.2f KB)\n",

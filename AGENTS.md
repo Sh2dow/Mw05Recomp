@@ -2,6 +2,8 @@
 
 **Project**: Mw05Recomp - Xbox 360 NFS: Most Wanted recompilation to x64 with D3D12/Vulkan backend
 
+**MCP servers** available: Context 7, Sequebtial thinking, Redis
+
 ## 🎯 CRITICAL RULES FOR AI AGENTS
 
 ### 1. **PPC Function Override Pattern** (MEMORY LEAK FIX - 2025-10-26)

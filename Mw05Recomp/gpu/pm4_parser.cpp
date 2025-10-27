@@ -219,6 +219,10 @@ static void DumpHexWindow(uint32_t addr, uint32_t dwords) {
 }
 
 void PM4_SetRingBuffer(uint32_t base, uint32_t size_log2) {
+    fprintf(stderr, "[PM4-RINGBUF] PM4_SetRingBuffer: base=%08X size_log2=%u size=%u bytes\n",
+            base, size_log2, (size_log2 < 32) ? (1u << size_log2) : 0);
+    fflush(stderr);
+
     g_rbBase.store(base, std::memory_order_release);
     const uint32_t size = (size_log2 < 32) ? (1u << size_log2) : 0;
     g_rbSize.store(size, std::memory_order_release);

@@ -728,8 +728,6 @@ static std::atomic<uint32_t> g_VdSystemCommandBufferGpuIdAddr{0};
 static std::atomic<uint32_t> g_VdGraphicsCallback{0};
 static std::atomic<uint32_t> g_VdGraphicsCallbackCtx{0};
 
-static std::atomic<uint32_t> g_SysCmdBufValue{0};
-
 static constexpr uint32_t kHostDefaultVdIsrMagic = 0xDEFAD15A; // magic tag for host default ISR
 
 // Accessor functions for GPU writeback pointers (used by mw05_trace_shims.cpp)
@@ -1084,13 +1082,8 @@ extern "C" {
                     if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(sysIdEA))) {
                         uint32_t val = *p + 1u;
                         *p = val;
-
-                        g_SysCmdBufValue.store(val, std::memory_order_release);
                         KernelTraceHostOpF("HOST.HostDefaultVdIsr.sys_id.tick val=%08X", val);
                     }
-                } else {
-                    // Even if the GPU-id address wasn't set, expose progress via the API value
-                    g_SysCmdBufValue.fetch_add(1u, std::memory_order_acq_rel);
                 }
         if (!tag || strcmp(tag, "vd_call") != 0) {
 
@@ -2919,11 +2912,9 @@ void Mw05StartVblankPumpOnce() {
 
                                 if (const char* e = std::getenv("MW05_FPW_POST_SYSBUF")) {
                                     if (!(e[0]=='0' && e[1]=='\0')) {
-                                        // Ensure syscmd exists and get EA
-                                        VdGetSystemCommandBuffer(nullptr, nullptr);
+                                        // Get system command buffer address
                                         uint32_t sys_ea = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
-                                        uint32_t sys_val = g_SysCmdBufValue.load(std::memory_order_acquire);
-                                        KernelTraceHostOpF("HOST.FPW.post.sysbuf ea=%08X val=%08X", sys_ea, sys_val);
+                                        KernelTraceHostOpF("HOST.FPW.post.sysbuf ea=%08X", sys_ea);
                                         if (sys_ea && GuestOffsetInRange(sys_ea, 32)) {
                                             const uint8_t* p = static_cast<const uint8_t*>(g_memory.Translate(sys_ea));
                                             if (p) {
@@ -6268,37 +6259,70 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     // cs is already a HOST pointer (translated by the import table patching)
     // No need to translate again - just use it directly
 
+    // CRITICAL FIX: Check if the critical section is initialized
+    // An uninitialized critical section will have LockCount != -1
+    // If not initialized, initialize it lazily to avoid deadlocks
+    if (cs->LockCount != -1)
+    {
+        // Lazily initialize the critical section
+        // Use atomic compare-exchange to ensure only one thread initializes it
+        int32_t expected = cs->LockCount;
+        if (expected != -1)
+        {
+            // Try to atomically set LockCount to -1 (initialized state)
+            if (std::atomic_compare_exchange_strong(
+                    reinterpret_cast<std::atomic<int32_t>*>(&cs->LockCount),
+                    &expected,
+                    -1))
+            {
+                // Successfully initialized the critical section
+                cs->RecursionCount = 0;
+                cs->OwningThread = 0;
+                cs->Header.Absolute = 0;
+
+                fprintf(stderr, "[RtlEnterCS] Lazy-initialized critical section at %p (guest addr=0x%08X)\n",
+                        (void*)cs, (uint32_t)((uint8_t*)cs - g_memory.base));
+                fflush(stderr);
+            }
+        }
+    }
+
     uint32_t thisThread = 0;
     if (auto* ctx = GetPPCContext())
         thisThread = ctx->r13.u32;
     if (thisThread == 0)
         thisThread = 1; // Fallback owner id if TLS not yet established
 
-    // Under forced-present bring-up (FG or BG) or when kicking video early,
-    // avoid indefinite blocking on potentially uninitialized CS objects.
-    // Perform a bounded spin and give up so early boot can limp forward.
-    const bool non_blocking = (std::getenv("MW05_FORCE_PRESENT") != nullptr) ||
-                              (std::getenv("MW05_FORCE_PRESENT_BG") != nullptr) ||
-                              (std::getenv("MW05_KICK_VIDEO") != nullptr);
-    int spins = non_blocking ? 1024 : INT_MAX;
-
-    while (spins-- > 0)
+    // CRITICAL FIX: Use atomic compare-exchange to acquire the lock
+    // This prevents race conditions where multiple threads try to acquire the lock simultaneously
+    uint32_t expected = 0;
+    while (true)
     {
-        uint32_t owner = cs->OwningThread;
-        if (owner == 0 || owner == thisThread)
+        // Try to atomically acquire the lock if it's free (owner == 0)
+        expected = 0;
+        if (std::atomic_compare_exchange_weak(
+                reinterpret_cast<std::atomic<uint32_t>*>(&cs->OwningThread),
+                &expected,
+                thisThread))
         {
-            if (owner == 0)
-                cs->OwningThread = thisThread;
-            cs->RecursionCount++;
+            // Successfully acquired the lock
+            cs->RecursionCount = 1;
             cs->LockCount = (cs->LockCount < -1) ? -1 : cs->LockCount; // clamp
             cs->LockCount++;
             return;
         }
 
-        // Light yield to avoid tight spinning; avoid atomic wait on possibly unaligned memory
+        // Check if we already own the lock (recursive acquisition)
+        if (expected == thisThread)
+        {
+            cs->RecursionCount++;
+            cs->LockCount++;
+            return;
+        }
+
+        // Lock is held by another thread, yield and retry
         std::this_thread::yield();
     }
-    // Give up acquiring in non-blocking mode; caller will likely retry later.
 }
 
 // NTSTATUS RtlImageXexHeaderField(void* HeaderBase, uint32_t Field, void** OutPtr)
@@ -6517,77 +6541,42 @@ bool VdPersistDisplay(uint32_t /*a1*/, uint32_t* a2)
 // Minimal emulation of the system command buffer used by the guest.
 // We expose a guest-visible buffer and return its address via both return value
 // and out-parameters to satisfy MW'05 call sites.
-// CRITICAL FIX: Place system command buffer at a FIXED address BEFORE the heap
-// to avoid corrupting the o1heap metadata at 0x01000000
+// System command buffer - allocate at fixed address to avoid heap corruption
 static void* g_SysCmdBufHost = nullptr;
 static uint32_t g_SysCmdBufGuest = 0;
 static constexpr uint32_t kSysCmdBufSize = 64 * 1024;
-static constexpr uint32_t kSysCmdBufFixedAddr = 0x00F00000;  // Place at 15 MB (before heap at 16 MB)
+static constexpr uint32_t kSysCmdBufFixedAddr = 0x00F00000;  // 15 MB (before heap at 16 MB)
 
 static void EnsureSystemCommandBuffer()
 {
-    // CRITICAL FIX: Prevent infinite recursion!
-    // PM4_ScanLinear -> KernelTraceHostOpF -> VdGetSystemCommandBuffer -> EnsureSystemCommandBuffer
-    static thread_local bool s_inEnsure = false;
-    if (s_inEnsure) {
-        // Already in EnsureSystemCommandBuffer, skip to avoid infinite recursion
-        return;
-    }
-    s_inEnsure = true;
-
     if (g_SysCmdBufGuest == 0)
     {
-        // Use fixed address instead of heap allocation to avoid corrupting o1heap metadata
         g_SysCmdBufGuest = kSysCmdBufFixedAddr;
         g_SysCmdBufHost = g_memory.Translate(g_SysCmdBufGuest);
         g_VdSystemCommandBuffer.store(g_SysCmdBufGuest);
 
-        // Zero the buffer
         if (g_SysCmdBufHost) {
             memset(g_SysCmdBufHost, 0, kSysCmdBufSize);
         }
-
-        // Immediate visibility: scan once upon allocation to detect early PM4 usage.
-        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-        // KernelTraceHostOpF("HOST.PM4.SysBufScan.ensure buf=%08X bytes=%u (FIXED ADDRESS)", g_SysCmdBufGuest, (unsigned)kSysCmdBufSize);
-        extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
-        PM4_ScanLinear(g_SysCmdBufGuest, kSysCmdBufSize);
     }
-
-    s_inEnsure = false;
 }
 
 uint32_t VdGetSystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
-    // CRITICAL FIX: Following UnleashedRecomp's pattern - this is essentially a stub!
-    // UnleashedRecomp's VdGetSystemCommandBuffer does nothing and Unleashed works fine.
-    // MW05 might be calling this during initialization but not actually using the values.
-    // Just return reasonable defaults and let the game continue.
+    EnsureSystemCommandBuffer();
 
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1, std::memory_order_relaxed);
+    uint32_t bufAddr = g_VdSystemCommandBuffer.load(std::memory_order_acquire);
+    uint32_t bufValue = 0;
 
-    // Log first few calls to confirm it's being called
-    if (count < 5) {
-        fprintf(stderr, "[VD-SYSCMD-STUB] VdGetSystemCommandBuffer called (count=%llu)\n", count);
-        fflush(stderr);
-    }
+    if (outCmdBufPtr) *outCmdBufPtr = bufAddr;
+    if (outValue)     *outValue     = bufValue;
 
-    // Return simple default values - buffer address and a ticking value
-    if (outCmdBufPtr) *outCmdBufPtr = kSysCmdBufFixedAddr;  // Fixed buffer address
-    if (outValue)     *outValue     = (uint32_t)count;       // Just return call count as the "value"
-
-    return kSysCmdBufFixedAddr;
+    return bufAddr;
 }
 
 uint32_t VdQuerySystemCommandBuffer(be<uint32_t>* outCmdBufPtr, be<uint32_t>* outValue)
 {
-    KernelTraceHostOp("HOST.VdQuerySystemCommandBuffer");
-
-    EnsureSystemCommandBuffer();
-    if (outCmdBufPtr) *outCmdBufPtr = g_SysCmdBufGuest;
-    if (outValue)     *outValue     = g_SysCmdBufValue.load(std::memory_order_acquire);
-    return 0;
+    return VdGetSystemCommandBuffer(outCmdBufPtr, outValue);
 }
 
 void KeReleaseSpinLockFromRaisedIrql(uint32_t* spinLock)
@@ -6643,6 +6632,10 @@ void VdEnableRingBufferRPtrWriteBack(uint32_t base)
 
 void VdInitializeRingBuffer(uint32_t base, uint32_t len)
 {
+    fprintf(stderr, "[VD-RINGBUF] VdInitializeRingBuffer: base=%08X len_log2=%u size=%u bytes\n",
+            base, len, (len < 32) ? (1u << len) : 0);
+    fflush(stderr);
+
     KernelTraceHostOpF("HOST.VdInitializeRingBuffer base=%08X len_log2=%u", base, len);
     if (auto* ctx = GetPPCContext()) {
         KernelTraceHostOpF("HOST.VdInitializeRingBuffer.caller lr=%08X", (uint32_t)ctx->lr);
@@ -6664,6 +6657,8 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
             // and o1heap returns pointers to user-allocatable memory (NOT metadata).
             // The first allocation starts at heap_base + ~736 bytes (o1heap metadata size).
             memset(p, 0, size_bytes);
+            fprintf(stderr, "[VD-RINGBUF] Ring buffer zeroed at base=%08X size=%u\n", base, size_bytes);
+            fflush(stderr);
         }
     }
     // Seed write-back pointer so guest sees progress
@@ -6675,6 +6670,8 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
     }
 
     // Initialize PM4 parser with ring buffer info
+    fprintf(stderr, "[VD-RINGBUF] Calling PM4_SetRingBuffer with base=%08X len_log2=%u\n", base, len);
+    fflush(stderr);
     PM4_SetRingBuffer(base, len);
 
     g_vdInterruptPending.store(true, std::memory_order_release);
@@ -7654,24 +7651,12 @@ void VdSetSystemCommandBufferGpuIdentifierAddress(uint32_t addr)
 
 void VdSetSystemCommandBuffer(uint32_t base, uint32_t len)
 {
-    // Trust guest-provided base/len; ensure our cache matches for VdGetSystemCommandBuffer callers.
-    if (base != 0)
-    {
-        KernelTraceHostOpF("HOST.VdSetSystemCommandBuffer base=%08X len=%u", base, len);
+    if (base != 0) {
         g_VdSystemCommandBuffer.store(base);
         g_SysCmdBufGuest = base;
         g_SysCmdBufHost = g_memory.Translate(base);
-        // Opportunistic scan when the guest sets the system buffer explicitly.
-        const uint32_t scanBytes = (len != 0) ? len : kSysCmdBufSize;
-        KernelTraceHostOpF("HOST.PM4.SysBufScan.set base=%08X bytes=%u", base, (unsigned)scanBytes);
-        extern void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
-        PM4_ScanLinear(base, scanBytes);
     }
     (void)len;
-    if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
-        printf("[vd] SetSystemCommandBuffer -> 0x%08X\n", base);
-        fflush(stdout);
-    }
 }
 
 

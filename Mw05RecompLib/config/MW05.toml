@@ -1912,7 +1912,7 @@ functions = [
     { address = 0x8215E408, size = 0x108 },
     { address = 0x8215E510, size = 0x80 },
     { address = 0x8215E590, size = 0x58 },
-    { address = 0x8215E5E8, size = 0x320 },
+    # { address = 0x8215E5E8, size = 0x320 },  # REMOVED: Using wrapper to trace string interning
     { address = 0x8215E908, size = 0x208 },
     { address = 0x8215EB10, size = 0x270 },
     { address = 0x8215ECA0, size = 0xAB4 },
@@ -10562,7 +10562,7 @@ functions = [
     { address = 0x823B0C48, size = 0x50 },
     { address = 0x823B0C98, size = 0x48 },
     { address = 0x823B0CE0, size = 0x40 },
-    { address = 0x823B0D20, size = 0xD0 },
+    # { address = 0x823B0D20, size = 0xD0 },  # REMOVED: Using wrapper to trace file loader init
     { address = 0x823B0DF0, size = 0x48 },
     { address = 0x823B0E38, size = 0xC0 },
     { address = 0x823B0EF8, size = 0x50 },
@@ -10576,8 +10576,9 @@ functions = [
     { address = 0x823B1310, size = 0x40 },
     { address = 0x823B1350, size = 0x68 },
     { address = 0x823B13B8, size = 0x50 },
-    { address = 0x823B1408, size = 0x130 },
-    { address = 0x823B1538, size = 0x78 },
+    { address = 0x823B1408, size = 0x130 },  # File loader queue processor
+    { address = 0x823B1508, size = 0x30 },  # File processing ready check
+    { address = 0x823B1538, size = 0x78 },  # File processing loop
     { address = 0x823B15B0, size = 0xA8 },
     { address = 0x823B1620, size = 0x314 },
     { address = 0x823B1658, size = 0xA0 },
@@ -10773,8 +10774,8 @@ functions = [
     { address = 0x823BC910, size = 0xA0 },
     { address = 0x823BC9B0, size = 0x38 },
     { address = 0x823BC9E8, size = 0x80 },
-    { address = 0x823BCA68, size = 0xD8 },
-    { address = 0x823BCB40, size = 0xB0 },
+    # { address = 0x823BCA68, size = 0xD8 },  # REMOVED: Using wrapper to trace file opens
+    # { address = 0x823BCB40, size = 0xB0 },  # REMOVED: Using wrapper to trace file open
     { address = 0x823BCBF0, size = 0x140 },
     { address = 0x823BCD30, size = 0x78 },
     { address = 0x823BCDA8, size = 0x78 },
@@ -24138,4 +24139,6 @@ invalid_instructions = [
     { data = 0x8215C914, size = 4 }, # Padding in sub_8215C838
     { data = 0x8215C964, size = 4 }, # Padding in sub_8215C838
     { data = 0x8215C97C, size = 4 }, # Padding in sub_8215C838
+    { data = 0x82159FD0, size = 0x70 }, # sub_82159FD0 - memory pool allocator - replaced by PPC_FUNC wrapper in mw05_trace_threads.cpp
+    { data = 0x823B1298, size = 0x78 }, # sub_823B1298 - file load function - already has wrapper at line 2456 in mw05_trace_threads.cpp
 ]

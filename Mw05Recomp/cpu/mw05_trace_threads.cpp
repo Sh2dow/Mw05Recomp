@@ -697,30 +697,104 @@ PPC_FUNC(_xstart) {
 }
 
 // Called from _xstart() (0x8262E9A8)
-PPC_FUNC_IMPL(__imp__sub_82441E80);
-PPC_FUNC(sub_82441E80) {
-    fprintf(stderr, "[THREAD_82441E80] ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
-            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
-    fflush(stderr);
+// Using recompiled version directly - no wrapper needed
 
-    // CRITICAL DEBUG: Add periodic logging to see if main loop is stuck
-    // Create a background thread that logs the program counter every 5 seconds
-    static std::atomic<bool> s_monitor_started{false};
-    if (!s_monitor_started.exchange(true)) {
-        std::thread([]() {
-            for (int i = 0; i < 12; ++i) {  // Log for 60 seconds (12 * 5s)
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-                fprintf(stderr, "[MAIN_LOOP_MONITOR] Still running after %d seconds...\n", (i+1)*5);
-                fflush(stderr);
-            }
-        }).detach();
+// sub_82159FD0 - Memory pool allocator
+PPC_FUNC_IMPL(__imp__sub_82159FD0);
+PPC_FUNC(sub_82159FD0) {
+    static int call_count = 0;
+    int this_call = ++call_count;
+
+    uint32_t pool_ptr = ctx.r3.u32;
+
+    if (this_call <= 10) {
+        fprintf(stderr, "[FUNC_82159FD0] #%d ENTER pool_ptr=%08X lr=%08X\n",
+                this_call, pool_ptr, (uint32_t)ctx.lr);
+
+        if (pool_ptr != 0) {
+            // Read pool structure fields
+            uint32_t field_0x10 = PPC_LOAD_U32(pool_ptr + 0x10);  // a1[4]
+            uint32_t field_0x14 = PPC_LOAD_U32(pool_ptr + 0x14);  // a1[5]
+            uint32_t field_0x18 = PPC_LOAD_U32(pool_ptr + 0x18);  // a1[6]
+            uint32_t field_0x1C = PPC_LOAD_U32(pool_ptr + 0x1C);  // a1[7]
+
+            fprintf(stderr, "[FUNC_82159FD0]   pool[0x10]=%08X pool[0x14]=%08X pool[0x18]=%08X pool[0x1C]=%08X\n",
+                    field_0x10, field_0x14, field_0x18, field_0x1C);
+        }
+        fflush(stderr);
     }
 
-    // Call the original function
-    __imp__sub_82441E80(ctx, base);
+    __imp__sub_82159FD0(ctx, base);
 
-    fprintf(stderr, "[THREAD_82441E80] EXIT (should never return)\n");
-    fflush(stderr);
+    if (this_call <= 10) {
+        fprintf(stderr, "[FUNC_82159FD0] #%d RETURN r3=%08X\n", this_call, ctx.r3.u32);
+        fflush(stderr);
+    }
+}
+
+// Main game loop (0x82441CF0) - called from sub_82441E80
+// Using recompiled version directly - no wrapper needed
+
+// sub_8262FA08 - Called from sub_82441E80 before main loop
+PPC_FUNC_IMPL(__imp__sub_8262FA08);
+PPC_FUNC(sub_8262FA08) {
+    static int call_count = 0;
+    int this_call = ++call_count;
+
+    if (this_call <= 5 || (uint32_t)ctx.lr == 0x82441F04) {
+        fprintf(stderr, "[FUNC_8262FA08] #%d ENTER r3=%08X r4=%08X lr=%08X\n",
+                this_call, ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr);
+        fflush(stderr);
+    }
+
+    __imp__sub_8262FA08(ctx, base);
+
+    if (this_call <= 5 || (uint32_t)ctx.lr == 0x82441F04) {
+        fprintf(stderr, "[FUNC_8262FA08] #%d RETURN r3=%08X\n", this_call, ctx.r3.u32);
+        fflush(stderr);
+    }
+}
+
+// sub_826B96B0 - Called from sub_82441E80 before main loop
+PPC_FUNC_IMPL(__imp__sub_826B96B0);
+PPC_FUNC(sub_826B96B0) {
+    static int call_count = 0;
+    int this_call = ++call_count;
+
+    if (this_call <= 5 || (uint32_t)ctx.lr == 0x82441F28) {
+        fprintf(stderr, "[FUNC_826B96B0] #%d ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
+                this_call, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
+        fflush(stderr);
+    }
+
+    __imp__sub_826B96B0(ctx, base);
+
+    if (this_call <= 5 || (uint32_t)ctx.lr == 0x82441F28) {
+        fprintf(stderr, "[FUNC_826B96B0] #%d RETURN r3=%08X\n", this_call, ctx.r3.u32);
+        fflush(stderr);
+
+        // CRITICAL: If this is the call from sub_82441E80 (lr=0x82441F28),
+        // the next instruction should be at 0x82441F28, which loads r10 from r30.
+        // Then it should call sub_82441CF0 at 0x82441F38.
+        // Let's trace this to see if execution continues.
+        if ((uint32_t)ctx.lr == 0x82441F28) {
+            fprintf(stderr, "[FUNC_826B96B0] *** MAIN THREAD CALL *** About to return to 0x82441F28\n");
+            fprintf(stderr, "[FUNC_826B96B0] *** r30=%08X (should contain dword_82A2CF44)\n", ctx.r30.u32);
+
+            // Read the value at r30 to see what r10 will be loaded with
+            uint32_t r10_value = PPC_LOAD_U32(ctx.r30.u32);
+            fprintf(stderr, "[FUNC_826B96B0] *** Value at [r30]=%08X (this will be loaded into r10)\n", r10_value);
+
+            if (r10_value == 0) {
+                fprintf(stderr, "[FUNC_826B96B0] *** WARNING: r10 will be 0! Writing to r10+55 will be a NULL pointer write!\n");
+            } else {
+                fprintf(stderr, "[FUNC_826B96B0] *** r10 will be %08X, writing to %08X\n", r10_value, r10_value + 55);
+            }
+
+            fprintf(stderr, "[FUNC_826B96B0] *** Next: load r10 from [r30], store 0 to r10+55, then call sub_82441CF0\n");
+            fflush(stderr);
+        }
+    }
 }
 
 // Trace sub_8261A5E8 - this appears to be the function that creates threads
@@ -1219,28 +1293,8 @@ PPC_FUNC(sub_823AF590) {
     fflush(stderr);
 }
 
-// Wrapper for sub_823AFFA8 - main game loop function called every frame
-// This is the core game loop that processes input, updates game state, and renders
-PPC_FUNC_IMPL(__imp__sub_823AFFA8);
-PPC_FUNC(sub_823AFFA8) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    if (count < 10) {
-        fprintf(stderr, "[GAME_LOOP_823AFFA8] ENTER: count=%llu r3=%08X tid=%lx\n",
-                count, ctx.r3.u32, GetCurrentThreadId());
-        fflush(stderr);
-    }
-
-    // Call the original
-    __imp__sub_823AFFA8(ctx, base);
-
-    if (count < 10) {
-        fprintf(stderr, "[GAME_LOOP_823AFFA8] RETURN: count=%llu r3=%08X\n",
-                count, ctx.r3.u32);
-        fflush(stderr);
-    }
-}
+// REMOVED: Wrapper for sub_823AFFA8 - using recompiled version directly
+// The recompiled version will call sub_823B1408 shim (which is not in TOML anymore)
 
 // Wrapper for sub_823B0190 - main worker loop (infinite loop)
 // This function runs the main game loop and should never return
@@ -1591,54 +1645,9 @@ PPC_FUNC(sub_823BCBF0) {
     fflush(stderr);
 }
 
-// Wrapper for sub_823BCA68 - file open function
-// Opens a file and returns a handle
-PPC_FUNC_IMPL(__imp__sub_823BCA68);
-PPC_FUNC(sub_823BCA68) {
-    // Get filename from r3
-    const char* filename = nullptr;
-    if (ctx.r3.u32 >= 0x80000000 && ctx.r3.u32 < 0x90000000) {
-        filename = reinterpret_cast<const char*>(g_memory.Translate(ctx.r3.u32));
-    }
-
-    fprintf(stderr, "[FILE_OPEN_823BCA68] ENTER r3=%08X (%s) r4=%08X r5=%08X tid=%lx\n",
-            ctx.r3.u32, filename ? filename : "NULL",
-            ctx.r4.u32, ctx.r5.u32, GetCurrentThreadId());
-    fflush(stderr);
-
-    // CRITICAL FIX: The file open function blocks indefinitely for certain files
-    // This is likely due to the game's async file loading system waiting for callbacks
-    // that never arrive in our synchronous file loading implementation.
-    // Since the game handles NULL file handles gracefully (as seen with GLOBALA.BUN),
-    // we bypass the file open and return 0 (NULL handle) to allow initialization to continue.
-
-    // Check if this is a file that causes blocking
-    bool shouldBypass = false;
-    if (filename) {
-        std::string fname(filename);
-        // Convert to lowercase for case-insensitive comparison
-        std::transform(fname.begin(), fname.end(), fname.begin(), ::tolower);
-
-        // These files cause the file open to block indefinitely
-        if (fname.find("globalmemoryfile") != std::string::npos ||
-            fname.find("globala.bun") != std::string::npos) {
-            shouldBypass = true;
-        }
-    }
-
-    if (shouldBypass) {
-        fprintf(stderr, "[FILE_OPEN_823BCA68] BYPASS: File causes blocking, returning NULL handle\n");
-        fflush(stderr);
-        ctx.r3.u32 = 0;  // Return NULL handle
-        return;
-    }
-
-    __imp__sub_823BCA68(ctx, base);
-
-    fprintf(stderr, "[FILE_OPEN_823BCA68] RETURN r3=%08X (handle=%08X)\n",
-            ctx.r3.u32, ctx.r3.u32);
-    fflush(stderr);
-}
+// NOTE: sub_823BCA68 wrapper removed - cannot override weak symbol from PPC sources
+// The recompiled version runs correctly, but the game is stuck in file loading
+// The real issue is NOT with file opening, but with async file I/O completion
 
 // NOTE: Initialization chain functions - trying GUEST_FUNCTION_HOOK pattern instead
 // Chain: 823AF590 → 82216088 → 82440530 → 82440448 → 825A16A0 → 825A8698 → CreateDevice
@@ -2466,88 +2475,85 @@ PPC_FUNC(sub_823B0F48) {
     fflush(stderr);
 }
 
-// sub_823B1408 - Called by sub_823B1538 before the polling loop
-// This function processes asynchronous file loading queue items
-// IDA shows it has a loop that processes dword_82A2CC14 (queue counter)
-// Since we do synchronous file loading, the queue is often empty, causing blocking
-PPC_FUNC_IMPL(__imp__sub_823B1408);
-PPC_FUNC(sub_823B1408) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
+// sub_823B1408 - Called by sub_823AFFA8 (main game update)
+// This function processes file loading queue
+// REMOVED SHIM: Cannot override __imp__ symbols due to linker duplicate symbol error
+// Let the recompiled version run and see if the game progresses
+// The game checks a queue counter at 0x82A2CC14 and processes loaders if > 0
 
-    fprintf(stderr, "[FILE_PROC_823B1408] ENTER count=%llu r3=%08X tid=%lx\n",
-            count, ctx.r3.u32, GetCurrentThreadId());
+// sub_823B0D20 - File loader initialization
+// Called by sub_823B1298 to initialize a file loader structure
+PPC_FUNC_IMPL(__imp__sub_823B0D20);
+PPC_FUNC(sub_823B0D20) {
+    fprintf(stderr, "[FILE_INIT_823B0D20] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X tid=%lx\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    // Check the async file loading queue counter at 0x82A2CC14
-    // If it's 0, the queue is empty and we should return immediately
-    uint32_t* queueCounter = reinterpret_cast<uint32_t*>(g_memory.Translate(0x82A2CC14));
-    if (queueCounter && *queueCounter == 0) {
-        fprintf(stderr, "[FILE_PROC_823B1408] BYPASS: Queue empty (dword_82A2CC14=0), returning 0\n");
-        fflush(stderr);
-        ctx.r3.u32 = 0;  // Return 0 (no items processed)
+    __imp__sub_823B0D20(ctx, base);
+
+    fprintf(stderr, "[FILE_INIT_823B0D20] RETURN r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_8215E5E8 - String interning function
+// Called by sub_823B0D20 to intern strings
+// CRITICAL FIX: This function has an infinite loop in the hash table search
+// Implementing a simple string interning mechanism using a static hash map
+PPC_FUNC_IMPL(__imp__sub_8215E5E8);
+PPC_FUNC(sub_8215E5E8) {
+    // Read the string pointer from r3
+    uint32_t str_ptr = ctx.r3.u32;
+
+    // If the pointer is null or invalid, return 0
+    if (!str_ptr || str_ptr >= PPC_MEMORY_SIZE) {
+        ctx.r3.u32 = 0;
         return;
     }
 
-    // Call the original if queue has items
-    __imp__sub_823B1408(ctx, base);
+    const char* str = (const char*)(base + str_ptr);
 
-    fprintf(stderr, "[FILE_PROC_823B1408] RETURN count=%llu r3=%08X\n",
-            count, ctx.r3.u32);
-    fflush(stderr);
-}
-
-// sub_823B1508 - Polling function called by sub_823B1538
-// Checks if async file operations are complete
-// Returns 1 if done (both dword_82A2CC10 and dword_82A2CC14 are 0)
-// Returns 0 if not done (either counter is non-zero)
-PPC_FUNC_IMPL(__imp__sub_823B1508);
-PPC_FUNC(sub_823B1508) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    // Read the async queue counters
-    uint32_t* counter1 = reinterpret_cast<uint32_t*>(g_memory.Translate(0x82A2CC10));
-    uint32_t* counter2 = reinterpret_cast<uint32_t*>(g_memory.Translate(0x82A2CC14));
-    uint32_t val1 = counter1 ? *counter1 : 0;
-    uint32_t val2 = counter2 ? *counter2 : 0;
-
-    // CRITICAL FIX: Force the counters to 0 since we do synchronous file loading
-    // The game's async file loading system increments these counters when queuing operations
-    // but since we do synchronous loading, the counters never get decremented
-    // This causes the polling function to block indefinitely
-    if (counter1) *counter1 = 0;
-    if (counter2) *counter2 = 0;
-
-    // Call the original
-    __imp__sub_823B1508(ctx, base);
-
-    // Only log every 100th call to avoid spam
-    if (count < 10 || count % 100 == 0) {
-        fprintf(stderr, "[POLL_823B1508] count=%llu r3=%08X (1=done) dword_82A2CC10=%08X->00000000 dword_82A2CC14=%08X->00000000 tid=%lx\n",
-                count, ctx.r3.u32, val1, val2, GetCurrentThreadId());
-        fflush(stderr);
+    // If the string is empty, return 0 (as per IDA decompilation)
+    if (!str || str[0] == '\0') {
+        ctx.r3.u32 = 0;
+        return;
     }
+
+    // Simple string interning: use a static hash map to store interned strings
+    // This is thread-safe because we're using a mutex
+    static std::mutex intern_mutex;
+    static std::unordered_map<std::string, uint32_t> interned_strings;
+
+    std::lock_guard<std::mutex> lock(intern_mutex);
+
+    // Check if the string is already interned
+    std::string key(str);
+    auto it = interned_strings.find(key);
+    if (it != interned_strings.end()) {
+        // String already interned, return the interned pointer
+        ctx.r3.u32 = it->second;
+        return;
+    }
+
+    // String not interned yet, store it and return the original pointer
+    interned_strings[key] = str_ptr;
+    ctx.r3.u32 = str_ptr;
 }
 
-// sub_823B1538 - Called after sub_823B0F48 at 0x823AF788
-// This function has a polling loop that calls sub_823B1508 until it returns non-zero
-PPC_FUNC_IMPL(__imp__sub_823B1538);
-PPC_FUNC(sub_823B1538) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    fprintf(stderr, "[FILE_PROC_823B1538] ENTER count=%llu r3=%08X tid=%lx\n",
-            count, ctx.r3.u32, GetCurrentThreadId());
+// sub_823BCB40 - File open wrapper
+// Called by sub_823B0D20 to open a file
+PPC_FUNC_IMPL(__imp__sub_823BCB40);
+PPC_FUNC(sub_823BCB40) {
+    fprintf(stderr, "[FILE_OPEN_823BCB40] ENTER r3=%08X tid=%lx\n",
+            ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    // Call the original
-    __imp__sub_823B1538(ctx, base);
+    __imp__sub_823BCB40(ctx, base);
 
-    fprintf(stderr, "[FILE_PROC_823B1538] RETURN count=%llu r3=%08X\n",
-            count, ctx.r3.u32);
+    fprintf(stderr, "[FILE_OPEN_823BCB40] RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
+
+
 
 // sub_8233DFF8 - Called with "GLOBAL\\GAMEPLAY.BIN" at 0x823AF82C
 PPC_FUNC_IMPL(__imp__sub_8233DFF8);

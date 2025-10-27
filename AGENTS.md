@@ -61,6 +61,10 @@ extern "C" void __imp__sub_XXXXXXXX(PPCContext& ctx, uint8_t* base);
 - **Research docs**: `docs/research/` directory (move old AGENTS.md content here)
 - **IDA dumps**: `IDA_dumps/` directory
 - **Build output**: `out/build/x64-Clang-Debug/`
+- **⚠️ GAME ASSETS**: Located at `out/build/x64-Clang-Debug/Mw05Recomp/game/` (NOT in repo root `game/`)
+  - Contains GLOBAL/, CARS/, TRACKS/, Movies/, SOUND/, etc.
+  - Game executable runs from `out/build/x64-Clang-Debug/Mw05Recomp/` directory
+  - All file paths are relative to the build output directory
 
 ## 📁 Project Structure
 - `Mw05Recomp/`: Application code (ui/, gpu/, apu/, kernel/, cpu/)

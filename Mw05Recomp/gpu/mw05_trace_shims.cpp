@@ -659,11 +659,12 @@ PPC_FUNC(sub_8262F2A0)
     // Extract parameters
     int32_t timeout_ms = static_cast<int32_t>(ctx.r3.s32);
 
-    // CRITICAL FIX: Force r4=0 (alertable=FALSE) to make r31=0 and exit sleep loop
-    // According to CRITICAL_FINDINGS_VdInit.md, threads with entry 0x828508A8 are stuck
-    // in sleep loops because r31 stays non-zero. In Xenia, r31 becomes 0 somehow.
-    // FIX: Force alertable=FALSE so r31=0 and threads exit the loop immediately.
-    BOOLEAN alertable = FALSE;  // FORCED TO FALSE - was: static_cast<BOOLEAN>(ctx.r4.u32 & 0xFF);
+    // CRITICAL FIX (2025-10-27): Restore alertable parameter to allow APC delivery
+    // The game uses async file I/O with APC callbacks. Forcing alertable=FALSE breaks
+    // APC delivery, causing the game to hang waiting for file loads to complete.
+    // The original fix (forcing alertable=FALSE) was to prevent stuck threads, but it
+    // broke file I/O. The real solution is to properly implement APC delivery in alertable waits.
+    BOOLEAN alertable = static_cast<BOOLEAN>(ctx.r4.u32 & 0xFF);  // RESTORED - was forced to FALSE
 
     // Prepare interval structure on stack
     int64_t interval_value;

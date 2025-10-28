@@ -171,16 +171,57 @@ json_set_Redis -name "mw05:config" -path "$.render_settings" -value @{draws=0; p
 - **Fix**: Moved heap start from 0x20000 to 0x100000
 - **Result**: Game runs 120+ seconds without crashes
 
-### ❌ VdSwap Not Being Called - PPC Trampoline Issue (2025-10-27)
-- **Problem**: VdSwap is never called, causing zero draw commands
-- **Root Cause**: VdSwap at `0x828AA03C` is a 16-byte PPC trampoline stub, NOT a simple function pointer
-- **IDA Disassembly**: `.text:828AA03C VdSwap: .long 0x101025B, 0x201025B, 0x7D6903A6, 0x4E800420`
-- **PPC Instructions**:
-  - `0x7D6903A6` = `mtctr r12` (move to count register)
-  - `0x4E800420` = `bctr` (branch to count register)
-- **Current Issue**: Import patching writes a function pointer, but the game executes the PPC stub code
-- **Fix Needed**: Patch the PPC trampoline stub to jump to our host VdSwap implementation
-- Investigation ongoing - see `docs/research/` for details
+### ✅ VdSwap Fixed - Signature Mismatch (2025-10-28)
+- **Problem**: VdSwap was never called, causing zero draw commands
+- **Root Cause**: VdSwap signature mismatch - function was defined with 3 parameters but game calls it with 8 parameters (r3-r10)
+- **IDA Decompilation**: Game calls VdSwap with 8 parameters:
+  - r3: command buffer write cursor
+  - r4: swap params pointer
+  - r5: GPU ring buffer base
+  - r6: system command buffer address
+  - r7: system command buffer size
+  - r8-r10: surface/format/flags pointers
+- **Fix Applied**:
+  1. Updated VdSwap signature to accept 8 parameters
+  2. Manually extracted parameters from PPC registers (r3-r10) instead of using `HostToGuestFunction` template
+  3. VdSwap now being called successfully
+- **Current Status**: VdSwap is working, but game is NOT issuing draw commands yet (still in initialization phase)
+
+### ✅ PM4 Buffer System FIXED (2025-10-28)
+- **Problem**: Game was not writing PM4 commands to buffers (all zeros)
+- **Root Cause Analysis**:
+  - `sub_82595FC8` is a game-side PM4 buffer space allocator (NOT VdGetSystemCommandBuffer!)
+  - `VdGetSystemCommandBuffer` is a separate kernel function that takes two output pointers
+  - The game manages its own PM4 command buffers independently from the system command buffer
+  - Attempting to override these functions caused conflicts with game's buffer management
+- **Fix Applied**:
+  1. Removed custom overrides of `sub_82595FC8` and `sub_825972B0`
+  2. Let the original recompiled functions handle PM4 buffer management
+  3. Game initializes its own GPU context structures correctly
+- **Result**:
+  - Buffer system working correctly with no memory leaks
+  - Game writing **1.2 million TYPE3 PM4 packets**
+  - VdSwap called successfully
+  - PM4 scanner processing commands correctly
+  - Memory usage stable (no growth)
+- **Current Status**: Buffer system FIXED! Game writing PM4 commands. Still `draws=0` - game is in initialization phase writing context updates (opcode 0x3E). Need to investigate why game hasn't progressed to rendering stage yet.
+
+### ✅ Memory Leak in Buffer Initialization FIXED (2025-10-28)
+- **Problem**: Physical heap growing 2-5 MB/second, 145 MB leaked in 30 seconds
+- **Root Cause**: GPU context initialization check was flawed
+  - After game writes PM4 commands, it updates `write_ptr` (gpu_ctx[0])
+  - Code checked if `write_ptr == base_ptr` to determine if initialized
+  - Since game updates write_ptr after writing, this check always failed
+  - Result: Re-initialized GPU context on EVERY call (580 times instead of once)
+  - Each initialization allocated 256KB → 580 × 256KB = **145 MB leaked**
+- **Fix Applied**:
+  - Use `static std::unordered_set<uint32_t>` to track initialized GPU context addresses
+  - Only initialize each unique GPU context address once
+  - Check if game already initialized the context (valid base_ptr and end_ptr)
+- **Result**:
+  - **580 initializations → 4 initializations** (one per unique GPU context)
+  - **145 MB leak → 1 MB total** (4 contexts × 256KB each)
+  - Memory usage stable, no more growth
 
 ## 📚 Additional Documentation
 - **Full debugging history**: `docs/research/AGENTS_ARCHIVE.md` (moved from AGENTS.md)

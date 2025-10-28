@@ -1707,8 +1707,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "[BOOT] dword_82A2D1AC BEFORE init = %08X\n", old_value);
         fflush(stderr);
 
-        // Allocate a graphics settings structure (256 bytes should be enough)
-        void* gfx_obj_host = g_userHeap.AllocPhysical(256, 16);
+        // CRITICAL FIX: Allocate a graphics settings structure (32KB to cover all offsets)
+        // The structure needs to be large enough to hold viewport bounds at offset 0x4FD4 (20436)
+        const uint32_t gfx_obj_size = 32768;  // 32KB should be enough
+        void* gfx_obj_host = g_userHeap.AllocPhysical(gfx_obj_size, 16);
         uint32_t gfx_obj_ptr = g_memory.MapVirtual(gfx_obj_host);
 
         if (gfx_obj_ptr != 0) {
@@ -1721,12 +1723,20 @@ int main(int argc, char *argv[])
             fflush(stderr);
 
             // Initialize the graphics settings structure
+            memset(gfx_obj_host, 0, gfx_obj_size);
+
             // Based on decompilation, offset +0 contains a mode value (0-5)
             // Set it to 4 (default mode)
-            memset(gfx_obj_host, 0, 256);
             StoreBE32_Watched(g_memory.base, gfx_obj_ptr + 0, 4);  // mode = 4
 
-            fprintf(stderr, "[BOOT] Initialized dword_82A2D1AC = %08X (graphics settings)\n", gfx_obj_ptr);
+            // CRITICAL FIX: Initialize viewport bounds at offset 0x4FD4 (20436) and 0x4FD8 (20440)
+            // These are read by sub_825A7EA0 to get the display dimensions
+            // sub_825A7EA0 reads: v7 = *(_DWORD *)(a1 + 20436); v9 = *(_DWORD *)(a1 + 20440);
+            StoreBE32_Watched(g_memory.base, gfx_obj_ptr + 0x4FD4, 1280);  // display width
+            StoreBE32_Watched(g_memory.base, gfx_obj_ptr + 0x4FD8, 720);   // display height
+
+            fprintf(stderr, "[BOOT] Initialized dword_82A2D1AC = %08X (graphics settings, size=%u bytes)\n", gfx_obj_ptr, gfx_obj_size);
+            fprintf(stderr, "[BOOT]   Viewport bounds at +0x4FD4: width=1280, height=720\n");
             fflush(stderr);
         } else {
             fprintf(stderr, "[BOOT] ERROR: Failed to allocate graphics settings object!\n");

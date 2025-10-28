@@ -1671,15 +1671,15 @@ static void MW05_Trace_sub_82440530(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[INIT_82440530] ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    // CRITICAL FIX: This function is blocking during initialization
-    // It calls sub_82440448 (which we bypassed) and many other initialization functions
-    // Bypassing to allow initialization to continue
-    fprintf(stderr, "[INIT_82440530] BYPASSING: Function blocks during initialization\n");
+    // TRY CALLING THE ORIGINAL FUNCTION NOW THAT VIEWPORT IS FIXED
+    // This function calls sub_82440448 and other initialization functions
+    // Previously bypassed because it was blocking, but now that viewport is initialized, it might work
+    fprintf(stderr, "[INIT_82440530] CALLING ORIGINAL FUNCTION (viewport fixed)\n");
     fflush(stderr);
 
-    ctx.r3.u32 = 0; // Return success
+    __imp__sub_82440530(ctx, base);
 
-    fprintf(stderr, "[INIT_82440530] RETURN r3=%08X (BYPASSED)\n", ctx.r3.u32);
+    fprintf(stderr, "[INIT_82440530] RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
 
@@ -1687,15 +1687,15 @@ static void MW05_Trace_sub_82440448(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[INIT_82440448] ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    // CRITICAL FIX: This function is blocking during initialization
-    // Based on IDA decompilation, it calls sub_825A16A0 and sub_82598230 (CreateDevice)
-    // CreateDevice is already called elsewhere, so we can skip this function
-    fprintf(stderr, "[INIT_82440448] BYPASSING: Function blocks during initialization\n");
+    // TRY CALLING THE ORIGINAL FUNCTION NOW THAT VIEWPORT IS FIXED
+    // This function calls sub_825A16A0 and sub_82598230 (CreateDevice)
+    // Previously bypassed because it was blocking, but now that viewport is initialized, it might work
+    fprintf(stderr, "[INIT_82440448] CALLING ORIGINAL FUNCTION (viewport fixed)\n");
     fflush(stderr);
 
-    ctx.r3.u32 = 0; // Return success
+    __imp__sub_82440448(ctx, base);
 
-    fprintf(stderr, "[INIT_82440448] RETURN r3=%08X (BYPASSED)\n", ctx.r3.u32);
+    fprintf(stderr, "[INIT_82440448] RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
 
@@ -1739,14 +1739,15 @@ PPC_FUNC(sub_8222B0D8) {
     fprintf(stderr, "[INIT_TRACE] sub_8222B0D8 ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    // TEMPORARY BYPASS: The allocator is taking 60+ seconds for a single 224 KB allocation
-    // This is blocking initialization. Bypass to see if the game can continue without particle pools.
-    fprintf(stderr, "[INIT_TRACE] sub_8222B0D8 BYPASSING: Allocator is too slow (60+ seconds per allocation)\n");
+    // TRY CALLING THE ORIGINAL FUNCTION NOW THAT VIEWPORT IS FIXED
+    // This is a particle pool allocator that was taking 60+ seconds
+    // Now that viewport is initialized, it might work faster
+    fprintf(stderr, "[INIT_TRACE] sub_8222B0D8 CALLING ORIGINAL FUNCTION (viewport fixed)\n");
     fflush(stderr);
 
-    ctx.r3.u32 = 0; // Return success
+    __imp__sub_8222B0D8(ctx, base);
 
-    fprintf(stderr, "[INIT_TRACE] sub_8222B0D8 RETURN r3=%08X (BYPASSED)\n", ctx.r3.u32);
+    fprintf(stderr, "[INIT_TRACE] sub_8222B0D8 RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
 
@@ -1756,12 +1757,13 @@ PPC_FUNC(sub_822D6A50) {
     fprintf(stderr, "[INIT_TRACE] sub_822D6A50 ENTER tid=%lx\n", GetCurrentThreadId());
     fflush(stderr);
 
-    // TEMPORARY BYPASS: Skip to see if this is blocking
-    fprintf(stderr, "[INIT_TRACE] sub_822D6A50 BYPASSING\n");
+    // TRY CALLING THE ORIGINAL FUNCTION NOW THAT VIEWPORT IS FIXED
+    fprintf(stderr, "[INIT_TRACE] sub_822D6A50 CALLING ORIGINAL FUNCTION (viewport fixed)\n");
     fflush(stderr);
-    ctx.r3.u32 = 0;
 
-    fprintf(stderr, "[INIT_TRACE] sub_822D6A50 RETURN r3=%08X (BYPASSED)\n", ctx.r3.u32);
+    __imp__sub_822D6A50(ctx, base);
+
+    fprintf(stderr, "[INIT_TRACE] sub_822D6A50 RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
 }
 

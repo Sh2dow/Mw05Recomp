@@ -1436,15 +1436,25 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase,
             uint32_t pSysCmdBuf, uint32_t param5, uint32_t pSurfaceAddr,
             uint32_t pFormat, uint32_t param8)
 {
-    fprintf(stderr, "[VDSWAP-ENTRY] VdSwap function entered!\n");
-    fflush(stderr);
-    KernelTraceHostOp("HOST.VdSwap");
-    if (auto* ctx = GetPPCContext()) {
-        KernelTraceHostOpF("HOST.VdSwap.caller lr=%08X", (uint32_t)ctx->lr);
+    // PERFORMANCE FIX: Remove excessive logging that causes FPS drops
+    // Only log if MW05_VDSWAP_DEBUG is enabled
+    static const bool s_vdswap_debug = [](){
+        if (const char* v = std::getenv("MW05_VDSWAP_DEBUG"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DEFAULT: OFF for performance
+    }();
+
+    if (s_vdswap_debug) {
+        fprintf(stderr, "[VDSWAP-ENTRY] VdSwap function entered!\n");
+        fflush(stderr);
+        KernelTraceHostOp("HOST.VdSwap");
+        if (auto* ctx = GetPPCContext()) {
+            KernelTraceHostOpF("HOST.VdSwap.caller lr=%08X", (uint32_t)ctx->lr);
+        }
+        // Terse arg trace to correlate with vdswap.txt disassembly
+        KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
+                           pWriteCur, pParams, pRingBase, pSysCmdBuf, param5, pSurfaceAddr, pFormat, param8);
     }
-    // Terse arg trace to correlate with vdswap.txt disassembly
-    KernelTraceHostOpF("HOST.VdSwap.args r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
-                       pWriteCur, pParams, pRingBase, pSysCmdBuf, param5, pSurfaceAddr, pFormat, param8);
     // Mark that the guest performed a swap at least once (real)
     g_guestHasSwapped.store(true, std::memory_order_release);
     g_sawRealVdSwap.store(true, std::memory_order_release);
@@ -1860,16 +1870,8 @@ void Mw05StartVblankPumpOnce() {
             // The real issue is that threads are stuck in sleep loops instead of waiting on events
             // Need to find what sets r31 to 0 in the sleep function to allow threads to exit
 
-            // MW05 FIX: Check if worker threads need to be created (every second)
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-BEFORE-WORKERS] tick=%u about to call Mw05ForceCreateMissingWorkerThreads\n", currentTick);
-                fflush(stderr);
-            }
-            Mw05ForceCreateMissingWorkerThreads();
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-AFTER-WORKERS] tick=%u returned from Mw05ForceCreateMissingWorkerThreads\n", currentTick);
-                fflush(stderr);
-            }
+            // PERFORMANCE FIX: Mw05ForceCreateMissingWorkerThreads() is DISABLED (just returns immediately)
+            // Removed call to avoid wasted function calls on every tick
 
             // CRITICAL FIX: Signal event 0x400007E0 to wake up sleeping threads
             // According to CRITICAL_FINDINGS_VdInit.md, threads with entry 0x828508A8 are stuck
@@ -3786,6 +3788,7 @@ void Mw05StartVblankPumpOnce() {
                             }
                         }
                     }
+
 
 
 
@@ -8027,8 +8030,8 @@ void VdCallGraphicsNotificationRoutines(uint32_t source)
 {
     KernelTraceHostOpF("HOST.VdCallGraphicsNotificationRoutines source=%u", source);
 
-    // MW05 FIX: Check if worker threads need to be created (called frequently from graphics callbacks)
-    Mw05ForceCreateMissingWorkerThreads();
+    // PERFORMANCE FIX: Mw05ForceCreateMissingWorkerThreads() is DISABLED (just returns immediately)
+    // Removed call to avoid wasted function calls
 
     // First, dispatch any registered graphics notification routines (list),
     // which some titles rely on to advance their render scheduler.
@@ -10713,19 +10716,24 @@ void sub_8215C838_debug(PPCContext& ctx, uint8_t* base) {
 
 
 void sub_821BB4D0_debug(PPCContext& ctx, uint8_t* base) {
-    fprintf(stderr, "[MW05_DEBUG] ========== ENTER sub_821BB4D0 (AUDIO INIT) ==========\n");
-    fprintf(stderr, "[MW05_DEBUG] CRITICAL FIX: Skipping audio initialization due to known hang\n");
-    fprintf(stderr, "[MW05_DEBUG] The game waits for EAXSnd/audio device which we don't fully support\n");
-    fprintf(stderr, "[MW05_DEBUG] Returning success to allow game to continue without audio\n");
+    fprintf(stderr, "[MW05_AUDIO_INIT] ========== ENTER sub_821BB4D0 (AUDIO INIT) ==========\n");
+    fprintf(stderr, "[MW05_AUDIO_INIT] r3=%08X r4=%08X r5=%08X r6=%08X\n",
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
     fflush(stderr);
 
-    // CRITICAL FIX: Skip audio initialization entirely
-    // The recompiled code hangs waiting for audio device initialization
-    // which we don't fully support (only basic SDL audio stubs)
+    // CRITICAL FIX: The original function hangs waiting for audio device initialization
+    // The game is NOT stuck waiting for audio - it's stuck IN the audio init function
+    // Simply skip the entire audio initialization and return success
+    // This allows the game to progress without audio
+
+    fprintf(stderr, "[MW05_AUDIO_INIT] WORKAROUND: Skipping audio initialization entirely (original function hangs)\n");
+    fprintf(stderr, "[MW05_AUDIO_INIT] Game will run without audio\n");
+    fflush(stderr);
+
     // Return success (non-zero) to allow the game to continue
     ctx.r3.u32 = 1;
 
-    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  sub_821BB4D0 r3=%08X (SKIPPED - NO AUDIO) ==========\n", ctx.r3.u32);
+    fprintf(stderr, "[MW05_AUDIO_INIT] ========== EXIT  sub_821BB4D0 r3=%08X (SUCCESS - NO AUDIO) ==========\n", ctx.r3.u32);
     fflush(stderr);
 }
 
@@ -10827,31 +10835,7 @@ GUEST_FUNCTION_HOOK(__imp__KfAcquireSpinLock, KfAcquireSpinLock);
 GUEST_FUNCTION_HOOK(__imp__KeQueryPerformanceFrequency, KeQueryPerformanceFrequency);
 GUEST_FUNCTION_HOOK(__imp__MmFreePhysicalMemory, MmFreePhysicalMemory);
 GUEST_FUNCTION_HOOK(__imp__VdPersistDisplay, VdPersistDisplay);
-// CRITICAL DEBUG: Call VdSwap directly with extracted parameters
-PPC_FUNC(__imp__VdSwap) {
-    fprintf(stderr, "[HOOK-CALLED] __imp__VdSwap hook called!\n");
-    fflush(stderr);
-
-    // Extract parameters from PPC registers (r3-r10)
-    uint32_t r3 = ctx.r3.u32;
-    uint32_t r4 = ctx.r4.u32;
-    uint32_t r5 = ctx.r5.u32;
-    uint32_t r6 = ctx.r6.u32;
-    uint32_t r7 = ctx.r7.u32;
-    uint32_t r8 = ctx.r8.u32;
-    uint32_t r9 = ctx.r9.u32;
-    uint32_t r10 = ctx.r10.u32;
-
-    fprintf(stderr, "[HOOK-DEBUG] Calling VdSwap with params: r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X\n",
-            r3, r4, r5, r6, r7, r8, r9, r10);
-    fflush(stderr);
-
-    // Call VdSwap directly
-    VdSwap(r3, r4, r5, r6, r7, r8, r9, r10);
-
-    fprintf(stderr, "[HOOK-DEBUG] VdSwap returned\n");
-    fflush(stderr);
-}
+GUEST_FUNCTION_HOOK(__imp__VdSwap, VdSwap);
 GUEST_FUNCTION_HOOK(__imp__VdGetSystemCommandBuffer, VdGetSystemCommandBuffer);
 GUEST_FUNCTION_HOOK(__imp__KeReleaseSpinLockFromRaisedIrql, KeReleaseSpinLockFromRaisedIrql);
 GUEST_FUNCTION_HOOK(__imp__KeAcquireSpinLockAtRaisedIrql, KeAcquireSpinLockAtRaisedIrql);

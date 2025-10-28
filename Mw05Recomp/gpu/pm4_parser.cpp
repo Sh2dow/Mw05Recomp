@@ -369,9 +369,11 @@ static uint32_t ParsePM4Packet(uint32_t addr) {
         s_packetLogCount++;
     }
 
-    // DEBUG: Log type distribution every 1000 packets
+    // PERFORMANCE FIX: Reduce logging frequency from every 1000 packets to every 100000 packets
+    // With 6.45M packets in 60s, logging every 1000 packets = 107 logs/sec (excessive!)
+    // Logging every 100000 packets = ~1 log/sec (reasonable)
     static int s_typeLogTicker = 0;
-    if ((++s_typeLogTicker % 1000) == 0) {
+    if ((++s_typeLogTicker % 100000) == 0) {
         uint64_t t0 = g_typeCounts[0].load(std::memory_order_relaxed);
         uint64_t t1 = g_typeCounts[1].load(std::memory_order_relaxed);
         uint64_t t2 = g_typeCounts[2].load(std::memory_order_relaxed);

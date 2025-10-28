@@ -555,7 +555,7 @@ SHIM(sub_825A7DE8)
 SHIM(sub_825A7E60)
 
 // CRITICAL FIX: The game doesn't call VdQueryVideoMode, so viewport data is never initialized
-// We need to initialize the viewport structure at r3 + 0x364C (offset 13900) which is passed via r6
+// We need to initialize the viewport structure at r3 + 0x4FD4 (offset 20436) which contains the display dimensions
 PPC_FUNC_IMPL(__imp__sub_825A7EA0);
 PPC_FUNC(sub_825A7EA0) {
     static std::atomic<uint64_t> s_callCount{0};
@@ -571,44 +571,26 @@ PPC_FUNC(sub_825A7EA0) {
         fprintf(stderr, "[sub_825A7EA0] CALL #%llu: r3=%08X r4=%u r5=%u r6=%08X lr=%08llX\n",
                 count, r3, r4, r5, r6, ctx.lr);
         fflush(stderr);
-
-        // Check if r6 points to valid memory
-        if (GuestOffsetInRange(r6, 24)) {
-            uint8_t* r6_ptr = (uint8_t*)g_memory.Translate(r6);
-            uint32_t v0 = ReadBE32((uintptr_t)(r6_ptr + 0));
-            uint32_t v1 = ReadBE32((uintptr_t)(r6_ptr + 4));
-            uint32_t v2 = ReadBE32((uintptr_t)(r6_ptr + 8));
-            uint32_t v3 = ReadBE32((uintptr_t)(r6_ptr + 12));
-            fprintf(stderr, "[sub_825A7EA0]   r6 points to: [%u,%u,%u,%u]\n", v0, v1, v2, v3);
-            fflush(stderr);
-        } else {
-            fprintf(stderr, "[sub_825A7EA0]   r6 is INVALID!\n");
-            fflush(stderr);
-        }
     }
 
-    // CRITICAL FIX: Initialize viewport data at r6 if it's all zeros
-    // The game doesn't call VdQueryVideoMode, so the viewport structure is never initialized
-    if (r4 == 0 && r5 == 0 && GuestOffsetInRange(r6, 24)) {
-        uint8_t* r6_ptr = (uint8_t*)g_memory.Translate(r6);
-        uint32_t v0 = ReadBE32((uintptr_t)(r6_ptr + 0));
-        uint32_t v1 = ReadBE32((uintptr_t)(r6_ptr + 4));
-        uint32_t v2 = ReadBE32((uintptr_t)(r6_ptr + 8));
-        uint32_t v3 = ReadBE32((uintptr_t)(r6_ptr + 12));
+    // CRITICAL FIX: Initialize the source structure at r3 + 0x4FD4 (offset 20436) BEFORE calling original
+    // The original function reads from r3 + 0x4FD4 and r3 + 0x4FD8 to get the display dimensions
+    // If these are zero, the viewport will be zero
+    if (r4 == 0 && r5 == 0 && GuestOffsetInRange(r3 + 0x4FD4, 8)) {
+        uint8_t* r3_ptr = (uint8_t*)g_memory.Translate(r3);
+        uint32_t width = ReadBE32((uintptr_t)(r3_ptr + 0x4FD4));
+        uint32_t height = ReadBE32((uintptr_t)(r3_ptr + 0x4FD8));
 
-        // Check if viewport is uninitialized (all zeros)
-        if (v0 == 0 && v1 == 0 && v2 == 0 && v3 == 0) {
-            fprintf(stderr, "[sub_825A7EA0] FORCE-INIT: Viewport at r6=%08X is zero, initializing to [0,0,1280,720]\n", r6);
-            fflush(stderr);
+        // Check if display dimensions are uninitialized (zero)
+        if (width == 0 && height == 0) {
+            if (count < 10) {
+                fprintf(stderr, "[sub_825A7EA0] FORCE-INIT: Display dimensions at r3+0x4FD4 are zero, initializing to 1280x720\n");
+                fflush(stderr);
+            }
 
-            // Initialize viewport bounds: [x_min=0, y_min=0, x_max=1280, y_max=720]
-            WriteBE32((uintptr_t)(r6_ptr + 0), 0);      // x_min
-            WriteBE32((uintptr_t)(r6_ptr + 4), 0);      // y_min
-            WriteBE32((uintptr_t)(r6_ptr + 8), 1280);   // x_max
-            WriteBE32((uintptr_t)(r6_ptr + 12), 720);   // y_max
-
-            fprintf(stderr, "[sub_825A7EA0] FORCE-INIT: Viewport initialized successfully\n");
-            fflush(stderr);
+            // Initialize display dimensions: width=1280, height=720
+            WriteBE32((uintptr_t)(r3_ptr + 0x4FD4), 1280);  // display width
+            WriteBE32((uintptr_t)(r3_ptr + 0x4FD8), 720);   // display height
         }
     }
 
@@ -1090,6 +1072,7 @@ PPC_FUNC(sub_82595FC8) {
     }
 
     // Call the original recompiled function to get the correct buffer pointer
+    // DO NOT initialize buffer pointers - let the game manage its own buffers!
     SetPPCContext(ctx);
 
     __imp__sub_82595FC8(ctx, base);
@@ -1152,18 +1135,8 @@ PPC_FUNC(sub_825972B0) {
             WriteBE32(ctx.r3.u32 + 10432, nw);
             KernelTraceHostOpF("HOST.825972B0.flags10433 %02X->%02X", (unsigned)b10433, (unsigned)nb);
         }
-        // Seed allocator state if missing: write_ptr/rear_ptr/end_ptr
-        uint32_t a_wptr = ReadBE32(ctx.r3.u32 + 14012);
-        uint32_t a_rend = ReadBE32(ctx.r3.u32 + 14016);
-        uint32_t a_end  = ReadBE32(ctx.r3.u32 + 14020);
-        if (a_wptr == 0 || a_end == 0) {
-            const uint32_t sysbufBase = 0x00140400u;
-            const uint32_t sysbufSize = 0x00010000u; // 64 KB
-            WriteBE32(ctx.r3.u32 + 14012, sysbufBase + 0x10u);
-            WriteBE32(ctx.r3.u32 + 14016, sysbufBase + sysbufSize);
-            WriteBE32(ctx.r3.u32 + 14020, sysbufBase + sysbufSize);
-            KernelTraceHostOpF("HOST.825972B0.seed alloc w=%08X re=%08X end=%08X", sysbufBase+0x10, sysbufBase+sysbufSize, sysbufBase+sysbufSize);
-        }
+        // DO NOT seed allocator state or buffer pointers - let the game manage its own buffers!
+        // The game initializes these structures correctly on its own.
     }
 
 

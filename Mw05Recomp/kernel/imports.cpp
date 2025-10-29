@@ -4342,81 +4342,77 @@ uint32_t XGetGameRegion()
 
 uint32_t XMsgStartIORequest(uint32_t App, uint32_t Message, XXOVERLAPPED* lpOverlapped, void* Buffer, uint32_t szBuffer)
 {
-    // KernelTraceHostOpF("HOST.XMsgStartIORequest app=%u msg=%08X buf=%08X size=%u ovl=%08X",
-    //                    App, Message, (uint32_t)g_memory.MapVirtual(Buffer), szBuffer,
-    //                    (uint32_t)g_memory.MapVirtual(lpOverlapped));
-// 
-    // // For known messages, dump a small hex preview of the payload to help discovery.
-    // if (Buffer && szBuffer) {
-    //     const uint32_t bufEA = g_memory.MapVirtual(Buffer);
-    //     const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
-    //     if (b) {
-    //         char hex[64 * 3 + 1] = {};
-    //         const uint32_t to_dump = std::min<uint32_t>(szBuffer, 64);
-    //         for (uint32_t i = 0; i < to_dump; ++i) {
-    //             std::snprintf(hex + i * 3, 4, "%02X ", b[i]);
-    //         }
-    //         KernelTraceHostOpF("HOST.XMsgStartIORequest.dump msg=%08X first=%u: %s", Message, to_dump, hex);
-    //     }
-    // }
-// 
-    // // Opportunistic decode for msg 0x7001B observed in MW05: buffer layout appears as:
-    // //   u32 opcode(=2), u32 outEA0, u32 outEA1. Titles likely expect us to populate these outputs.
-    // if (Message == 0x7001B && Buffer && szBuffer >= 12) {
-    //     const uint32_t bufEA = g_memory.MapVirtual(Buffer);
-    //     const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
-    //     if (b) {
-    //         auto ld32 = [](const uint8_t* p) -> uint32_t {
-    //             return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
-    //         };
-    //         const uint32_t opcode = ld32(b + 0);
-    //         const uint32_t out0EA = ld32(b + 4);
-    //         const uint32_t out1EA = ld32(b + 8);
-    //         if (opcode == 2 && GuestOffsetInRange(out0EA, 4) && GuestOffsetInRange(out1EA, 4)) {
-    //             *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out0EA)) = 0u;
-    //             *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out1EA)) = 0u;
-    //             KernelTraceHostOpF("HOST.XMsgStartIORequest(7001B).write out0=%08X out1=%08X => 0,0", out0EA, out1EA);
-    //         }
-    //     }
-    // }
-// 
-    // // Minimal immediate-complete behavior: mark overlapped as success and signal its event.
-    // if (lpOverlapped && GuestOffsetInRange((uint32_t)g_memory.MapVirtual(lpOverlapped), sizeof(XXOVERLAPPED))) {
-    //     lpOverlapped->Error = 0;    // STATUS_SUCCESS
-    //     lpOverlapped->Length = 0;
-    //     lpOverlapped->dwExtendedError = 0;
-    //     const uint32_t evEA = lpOverlapped->hEvent;
-    //     if (evEA && GuestOffsetInRange(evEA, sizeof(XDISPATCHER_HEADER))) {
-    //         if (auto* ev = reinterpret_cast<XKEVENT*>(g_memory.Translate(evEA))) {
-    //             KeSetEvent(ev, 0, false);
-    //             KernelTraceHostOpF("HOST.XMsgStartIORequest.signal hEvent=%08X", evEA);
-    //         }
-    //     }
-    // }
+    KernelTraceHostOpF("HOST.XMsgStartIORequest app=%u msg=%08X buf=%08X size=%u ovl=%08X",
+                       App, Message, (uint32_t)g_memory.MapVirtual(Buffer), szBuffer,
+                       (uint32_t)g_memory.MapVirtual(lpOverlapped));
+
+    // For known messages, dump a small hex preview of the payload to help discovery.
+    if (Buffer && szBuffer) {
+        const uint32_t bufEA = g_memory.MapVirtual(Buffer);
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
+        if (b) {
+            char hex[64 * 3 + 1] = {};
+            const uint32_t to_dump = std::min<uint32_t>(szBuffer, 64);
+            for (uint32_t i = 0; i < to_dump; ++i) {
+                std::snprintf(hex + i * 3, 4, "%02X ", b[i]);
+            }
+            KernelTraceHostOpF("HOST.XMsgStartIORequest.dump msg=%08X first=%u: %s", Message, to_dump, hex);
+        }
+    }
+
+    // Opportunistic decode for msg 0x7001B observed in MW05: buffer layout appears as:
+    //   u32 opcode(=2), u32 outEA0, u32 outEA1. Titles likely expect us to populate these outputs.
+    if (Message == 0x7001B && Buffer && szBuffer >= 12) {
+        const uint32_t bufEA = g_memory.MapVirtual(Buffer);
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(g_memory.Translate(bufEA));
+        if (b) {
+            auto ld32 = [](const uint8_t* p) -> uint32_t {
+                return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+            };
+            const uint32_t opcode = ld32(b + 0);
+            const uint32_t out0EA = ld32(b + 4);
+            const uint32_t out1EA = ld32(b + 8);
+            if (opcode == 2 && GuestOffsetInRange(out0EA, 4) && GuestOffsetInRange(out1EA, 4)) {
+                *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out0EA)) = 0u;
+                *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(out1EA)) = 0u;
+                KernelTraceHostOpF("HOST.XMsgStartIORequest(7001B).write out0=%08X out1=%08X => 0,0", out0EA, out1EA);
+            }
+        }
+    }
+
+    // Minimal immediate-complete behavior: mark overlapped as success and signal its event.
+    if (lpOverlapped && GuestOffsetInRange((uint32_t)g_memory.MapVirtual(lpOverlapped), sizeof(XXOVERLAPPED))) {
+        lpOverlapped->Error = 0;    // STATUS_SUCCESS
+        lpOverlapped->Length = 0;
+        lpOverlapped->dwExtendedError = 0;
+        const uint32_t evEA = lpOverlapped->hEvent;
+        if (evEA && GuestOffsetInRange(evEA, sizeof(XDISPATCHER_HEADER))) {
+            if (auto* ev = reinterpret_cast<XKEVENT*>(g_memory.Translate(evEA))) {
+                KeSetEvent(ev, 0, false);
+                KernelTraceHostOpF("HOST.XMsgStartIORequest.signal hEvent=%08X", evEA);
+            }
+        }
+    }
     return STATUS_SUCCESS;
 }
 
 uint32_t XamUserGetSigninState(uint32_t userIndex)
 {
-    // uint32_t state = userIndex == 0 ? 1u : 0u;
-    // KernelTraceHostOpF("HOST.XamUserGetSigninState userIndex=%u -> state=%u", userIndex, state);
-    // return state;
-
-    return true;
+    uint32_t state = userIndex == 0 ? 1u : 0u;
+    KernelTraceHostOpF("HOST.XamUserGetSigninState userIndex=%u -> state=%u", userIndex, state);
+    return state;
 }
 
 uint32_t XamGetSystemVersion()
 {
     // Pack as (Major << 24) | (Minor << 16) | Build; QFE ignored.
     // Match/meet the import library requirement (>= 2.0.1861; prefer 2.0.2135).
-    // constexpr uint32_t kMajor = 2;
-    // constexpr uint32_t kMinor = 0;
-    // constexpr uint32_t kBuild = 2135; // 0x0857
-    // const uint32_t version = (kMajor << 24) | (kMinor << 16) | kBuild;
-    // KernelTraceHostOpF("HOST.XamGetSystemVersion -> %08X (major=%u minor=%u build=%u)", version, kMajor, kMinor, kBuild);
-    // return version;
-
-    return 0;
+    constexpr uint32_t kMajor = 2;
+    constexpr uint32_t kMinor = 0;
+    constexpr uint32_t kBuild = 2135; // 0x0857
+    const uint32_t version = (kMajor << 24) | (kMinor << 16) | kBuild;
+    KernelTraceHostOpF("HOST.XamGetSystemVersion -> %08X (major=%u minor=%u build=%u)", version, kMajor, kMinor, kBuild);
+    return version;
 }
 
 void XamContentDelete()

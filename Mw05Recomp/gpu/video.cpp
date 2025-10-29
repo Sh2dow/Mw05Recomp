@@ -3499,20 +3499,34 @@ void Video::Present()
         }
     }
 
-    // Optional: aggressively scan PM4 ring during early presents to discover draws even if VdSwap path isn't hit
-    static int s_pm4_probe_presents = 180; // ~3 seconds at 60 FPS
-    if (s_pm4_probe_presents > 0 && PM4_GetDrawCount() == 0) {
-        --s_pm4_probe_presents;
-        PM4_DebugScanAll_Force();
-        PM4_DumpOpcodeHistogram();
-        KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu",
-            (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+    // PERFORMANCE: PM4 ring scanning (disabled by default - causes massive FPS drop)
+    // This was scanning the entire PM4 ring buffer on every Present call, taking ~1 second per scan
+    static const bool s_enable_pm4_probe = [](){
+        if (const char* v = std::getenv("MW05_PM4_PROBE_ON_PRESENT"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
+
+    if (s_enable_pm4_probe) {
+        static int s_pm4_probe_presents = 180; // ~3 seconds at 60 FPS
+        if (s_pm4_probe_presents > 0 && PM4_GetDrawCount() == 0) {
+            --s_pm4_probe_presents;
+            PM4_DebugScanAll_Force();
+            PM4_DumpOpcodeHistogram();
+            KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu",
+                (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
+        }
     }
 
-    // CRITICAL FIX: Always scan the system command buffer for draw commands
-    // The game doesn't call VdSetSystemCommandBuffer, so we must scan it continuously
-    // This is the primary source of draw commands in MW05
-    {
+    // PERFORMANCE: System command buffer scanning (disabled by default - causes FPS drop)
+    // This was scanning 64 KiB on every Present call
+    static const bool s_enable_sysbuf_scan = [](){
+        if (const char* v = std::getenv("MW05_PM4_SYSBUF_SCAN"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
+
+    if (s_enable_sysbuf_scan) {
         uint32_t sysEA = Mw05GetSysBufBaseEA();
         if (sysEA) {
             // Scan the system command buffer payload (skip 16-byte header)
@@ -3549,7 +3563,15 @@ void Video::Present()
             }
         }
 
-        {
+        // PERFORMANCE: Micro-draw marker scanning (disabled by default - causes FPS drop)
+        // This was scanning 64 KiB buffer 3 times on every Present call
+        static const bool s_enable_micro_scan = [](){
+            if (const char* v = std::getenv("MW05_PM4_MICRO_SCAN"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false; // DISABLED by default for performance
+        }();
+
+        if (s_enable_micro_scan) {
             // Diagnostic: scan sysbuf payload for MW05 micro-draw markers to quantify guest activity
             uint32_t sysEA = Mw05GetSysBufBaseEA();
             if (sysEA) {
@@ -3655,7 +3677,7 @@ void Video::Present()
                     }
                 }
             }
-        }
+        } // end if (s_enable_micro_scan)
 
     }
 
@@ -7781,91 +7803,6 @@ static void CompileParticleMaterialPipeline(const Hedgehog::Sparkle::CParticleMa
 static std::thread::id g_mainThreadId = std::this_thread::get_id();
 
 // SWA-specific database hooks removed
-
-#ifdef MW05_ENABLE_SWA
-static bool CheckMadeAll(Hedgehog::Mirage::CMeshData* meshData)
-{
-    if (!meshData->IsMadeOne())
-        return false;
-
-    if (meshData->m_spMaterial.get() != nullptr)
-    {
-        if (!meshData->m_spMaterial->IsMadeOne())
-            return false;
-
-        if (meshData->m_spMaterial->m_spTexsetData.get() != nullptr)
-        {
-            if (!meshData->m_spMaterial->m_spTexsetData->IsMadeOne())
-                return false;
-
-            for (auto& texture : meshData->m_spMaterial->m_spTexsetData->m_TextureList)
-            {
-                if (!texture->IsMadeOne())
-                    return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-template<typename T>
-static bool CheckMadeAll(const T& modelData)
-{
-    if (!modelData.IsMadeOne())
-        return false;
-
-    for (auto& meshGroup : modelData.m_NodeGroupModels)
-    {
-        for (auto& mesh : meshGroup->m_OpaqueMeshes)
-        {
-            if (!CheckMadeAll(mesh.get()))
-                return false;
-        }
-
-        for (auto& mesh : meshGroup->m_TransparentMeshes)
-        {
-            if (!CheckMadeAll(mesh.get()))
-                return false;
-        }
-
-        for (auto& mesh : meshGroup->m_PunchThroughMeshes)
-        {
-            if (!CheckMadeAll(mesh.get()))
-                return false;
-        }
-
-        for (auto& specialMeshGroup : meshGroup->m_SpecialMeshGroups)
-        {
-            for (auto& mesh : specialMeshGroup)
-            {
-                if (!CheckMadeAll(mesh.get()))
-                    return false;
-            }
-        }
-    }
-
-    for (auto& mesh : modelData.m_OpaqueMeshes)
-    {
-        if (!CheckMadeAll(mesh.get()))
-            return false;
-    }
-
-    for (auto& mesh : modelData.m_TransparentMeshes)
-    {
-        if (!CheckMadeAll(mesh.get()))
-            return false;
-    }
-
-    for (auto& mesh : modelData.m_PunchThroughMeshes)
-    {
-        if (!CheckMadeAll(mesh.get()))
-            return false;
-    }
-
-    return true;
-}
-#endif // MW05_ENABLE_SWA
 
 static void PipelineTaskConsumerThread()
 {

@@ -856,6 +856,13 @@ extern "C" {
     bool KeResetEvent(XKEVENT* pEvent);
 
     void Mw05RunHostDefaultVdIsrNudge(const char* tag) {
+        // PERFORMANCE: ISR debug logging (disabled by default - causes FPS drop)
+        static const bool s_debug_isr = [](){
+            if (const char* v = std::getenv("MW05_DEBUG_ISR"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false; // DISABLED by default for performance
+        }();
+
         // Controls whether the host default VD ISR requests a Present at the end of each nudge.
         // Default: enabled (preserves current behavior). Set MW05_ISR_AUTO_PRESENT=0 to disable for diagnostics.
         static const bool s_isr_auto_present = []() {
@@ -867,13 +874,15 @@ extern "C" {
 
         static thread_local bool s_inHostIsrNudge = false;
         if(s_inHostIsrNudge) {
-            KernelTraceHostOp("HOST.HostDefaultVdIsr.nudge.reentrant");
+            if (s_debug_isr) KernelTraceHostOp("HOST.HostDefaultVdIsr.nudge.reentrant");
             return;
         }
         s_inHostIsrNudge = true;
 
-        if(tag) KernelTraceHostOpF("HOST.HostDefaultVdIsr.nudge.%s", tag);
-        else     KernelTraceHostOp("HOST.HostDefaultVdIsr.nudge");
+        if (s_debug_isr) {
+            if(tag) KernelTraceHostOpF("HOST.HostDefaultVdIsr.nudge.%s", tag);
+            else     KernelTraceHostOp("HOST.HostDefaultVdIsr.nudge");
+        }
 
         // Adjustable ring write-back step
         uint32_t step = 0x40u;
@@ -903,7 +912,9 @@ extern "C" {
                 uint32_t next = (cur + step) & mask;
                 uint32_t write = next ? next : 0x20u;
                 *rptr = write;
-                KernelTraceHostOpF("HOST.RB.rptr.bump ea=%08X cur=%08X next=%08X step=%u mask=%08X", wb, cur, write, step, mask);
+                if (s_debug_isr) {
+                    KernelTraceHostOpF("HOST.RB.rptr.bump ea=%08X cur=%08X next=%08X step=%u mask=%08X", wb, cur, write, step, mask);
+                }
             }
         }
 
@@ -920,7 +931,9 @@ extern "C" {
                 const uint32_t len_log2 = g_RbLen.load(std::memory_order_relaxed) & 31u;
                 if(base && len_log2) {
                     const uint32_t bytes = 1u << len_log2;
-                    KernelTraceHostOpF("HOST.PM4.ScanLinear.RingTick base=%08X bytes=%u tick_scan=%u", base, bytes, s_ring_scan_count);
+                    if (s_debug_isr) {
+                        KernelTraceHostOpF("HOST.PM4.ScanLinear.RingTick base=%08X bytes=%u tick_scan=%u", base, bytes, s_ring_scan_count);
+                    }
                     PM4_ScanLinear(base, bytes);
                     ++s_ring_scan_count;
                 }
@@ -943,7 +956,9 @@ extern "C" {
                             ctx.r3.u32 = seed;
                             if(ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
                             uint8_t* base = g_memory.base;
-                            KernelTraceHostOpF("HOST.ISR.pm4_forward r3=%08X r4=%08X call=%u", ctx.r3.u32, ctx.r4.u32, s_builder_calls);
+                            if (s_debug_isr) {
+                                KernelTraceHostOpF("HOST.ISR.pm4_forward r3=%08X r4=%08X call=%u", ctx.r3.u32, ctx.r4.u32, s_builder_calls);
+                            }
                             ++s_builder_calls;
                         }
                     }
@@ -960,13 +975,17 @@ extern "C" {
                     if(GuestOffsetInRange(eventEA, sizeof(uint64_t))) {
                         if(auto* ps = static_cast<uint8_t*>(g_memory.Translate(eventEA))) {
                             *reinterpret_cast<uint64_t*>(ps) = 0ull;
-                            KernelTraceHostOpF("HOST.HostDefaultVdIsr.ack.status.zero ea=%08X", eventEA);
+                            if (s_debug_isr) {
+                                KernelTraceHostOpF("HOST.HostDefaultVdIsr.ack.status.zero ea=%08X", eventEA);
+                            }
                         }
                     }
                     if(GuestOffsetInRange(eventEA - 8, sizeof(uint64_t))) {
                         if(auto* p2 = static_cast<uint8_t*>(g_memory.Translate(eventEA - 8))) {
                             *reinterpret_cast<uint64_t*>(p2) = 0ull;
-                            KernelTraceHostOpF("HOST.HostDefaultVdIsr.ack.ptr.zero ea=%08X", eventEA - 8);
+                            if (s_debug_isr) {
+                                KernelTraceHostOpF("HOST.HostDefaultVdIsr.ack.ptr.zero ea=%08X", eventEA - 8);
+                            }
                         }
                     }
 
@@ -993,7 +1012,9 @@ extern "C" {
                                 if(blkEA && GuestOffsetInRange(blkEA, 0x20)) {
                                     if(auto* blk = static_cast<uint8_t*>(g_memory.Translate(blkEA))) {
                                         memset(blk, 0, 0x20);
-                                        KernelTraceHostOpF("HOST.HostDefaultVdIsr.sched.clear ea=%08X", blkEA);
+                                        if (s_debug_isr) {
+                                            KernelTraceHostOpF("HOST.HostDefaultVdIsr.sched.clear ea=%08X", blkEA);
+                                        }
                                     }
                                 }
                             }
@@ -1005,7 +1026,9 @@ extern "C" {
                         if(!(se[0] == '0' && se[1] == '\0')) {
                             if(auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(eventEA))) {
                                 KeSetEvent(evt, 0, false);
-                                KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal ea=%08X", eventEA);
+                                if (s_debug_isr) {
+                                    KernelTraceHostOpF("HOST.HostDefaultVdIsr.signal ea=%08X", eventEA);
+                                }
                             }
                         }
                     }
@@ -1553,21 +1576,31 @@ void Mw05StartVblankPumpOnce() {
         static auto pump_start_time = std::chrono::steady_clock::now();
         static auto last_iteration_end = std::chrono::steady_clock::now();
 
+        // PERFORMANCE: VBlank debug logging (disabled by default - causes massive FPS drop)
+        static const bool s_debug_vblank = [](){
+            if (const char* v = std::getenv("MW05_DEBUG_VBLANK"))
+                return !(v[0]=='0' && v[1]=='\0');
+            return false; // DISABLED by default for performance
+        }();
+
         // CRITICAL DEBUG: Wrap entire loop in SEH to detect silent crashes
         #if defined(_WIN32)
         __try {
         #endif
         while (true) {
-            // CRITICAL DEBUG: Check g_vblankPumpRun at start of each iteration
+            // Check g_vblankPumpRun at start of each iteration
             const bool pumpRun = g_vblankPumpRun.load(std::memory_order_acquire);
             const uint32_t preTickValue = g_vblankTicks.load(std::memory_order_acquire);
-            if (preTickValue < 20) {
+
+            if (s_debug_vblank && preTickValue < 20) {
                 fprintf(stderr, "[VBLANK-LOOP-START] About to increment tick (current=%u) pumpRun=%d\n", preTickValue, pumpRun ? 1 : 0);
                 fflush(stderr);
             }
             if (!pumpRun) {
-                fprintf(stderr, "[VBLANK-LOOP-EXIT] g_vblankPumpRun is false at tick %u, exiting loop\n", preTickValue);
-                fflush(stderr);
+                if (s_debug_vblank) {
+                    fprintf(stderr, "[VBLANK-LOOP-EXIT] g_vblankPumpRun is false at tick %u, exiting loop\n", preTickValue);
+                    fflush(stderr);
+                }
                 break;
             }
 
@@ -1578,45 +1611,41 @@ void Mw05StartVblankPumpOnce() {
             // Global vblank tick counter for gating guest ISR dispatches
             const uint32_t currentTick = g_vblankTicks.fetch_add(1u, std::memory_order_acq_rel);
 
-            // CRITICAL DEBUG: Log immediately after tick increment for first 20 ticks
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-TICK-INCREMENTED] currentTick=%u (after fetch_add)\n", currentTick);
-                fflush(stderr);
-            }
-
-            // CRITICAL DEBUG: Log every 100 ticks to verify this part of the loop is executing
-            if (currentTick % 100 == 0) {
-                KernelTraceHostOpF("HOST.VblankPump.loop_executing tick=%u", currentTick);
-            }
-
-            // CRITICAL DEBUG: Log tick 3800 specifically to verify this code is executing
-            if (currentTick == 3800) {
-                KernelTraceHostOpF("HOST.VblankPump.TICK_3800_REACHED tick=%u", currentTick);
-            }
-
-            // Debug: log tick count every 10 ticks AND always log tick 0
-            // Also log every tick after 350 to track crash
-            // CRITICAL DEBUG: Log first 20 ticks to debug early exit
-            static bool s_detailed_logging = false;
-            if (currentTick >= 350 && currentTick <= 450) {
-                if (!s_detailed_logging) {
-                    fprintf(stderr, "[VBLANK-DETAILED] Enabling detailed logging from tick 350-450\n");
+            // PERFORMANCE: Disabled by default - enable with MW05_DEBUG_VBLANK=1
+            if (s_debug_vblank) {
+                if (currentTick < 20) {
+                    fprintf(stderr, "[VBLANK-TICK-INCREMENTED] currentTick=%u (after fetch_add)\n", currentTick);
                     fflush(stderr);
-                    s_detailed_logging = true;
                 }
-                fprintf(stderr, "[VBLANK-TICK] count=%u (detailed mode) g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
-                fflush(stderr);
-            } else if (currentTick == 0 || currentTick % 10 == 0 || currentTick < 20) {
-                fprintf(stderr, "[VBLANK-TICK] count=%u g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
-                fflush(stderr);
-            }
 
-            // DIAGNOSTIC: Log ISR callback status every 100 ticks
-            if (currentTick % 100 == 0) {
-                const uint32_t cb = VdGetGraphicsInterruptCallback();
-                const uint32_t ctx = VdGetGraphicsInterruptContext();
-                fprintf(stderr, "[VBLANK-ISR-STATUS] tick=%u cb=%08X ctx=%08X\n", currentTick, cb, ctx);
-                fflush(stderr);
+                if (currentTick % 100 == 0) {
+                    KernelTraceHostOpF("HOST.VblankPump.loop_executing tick=%u", currentTick);
+                }
+
+                if (currentTick == 3800) {
+                    KernelTraceHostOpF("HOST.VblankPump.TICK_3800_REACHED tick=%u", currentTick);
+                }
+
+                static bool s_detailed_logging = false;
+                if (currentTick >= 350 && currentTick <= 450) {
+                    if (!s_detailed_logging) {
+                        fprintf(stderr, "[VBLANK-DETAILED] Enabling detailed logging from tick 350-450\n");
+                        fflush(stderr);
+                        s_detailed_logging = true;
+                    }
+                    fprintf(stderr, "[VBLANK-TICK] count=%u (detailed mode) g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
+                    fflush(stderr);
+                } else if (currentTick == 0 || currentTick % 10 == 0 || currentTick < 20) {
+                    fprintf(stderr, "[VBLANK-TICK] count=%u g_vblankPumpRun=%d\n", currentTick, g_vblankPumpRun.load(std::memory_order_acquire) ? 1 : 0);
+                    fflush(stderr);
+                }
+
+                if (currentTick % 100 == 0) {
+                    const uint32_t cb = VdGetGraphicsInterruptCallback();
+                    const uint32_t ctx = VdGetGraphicsInterruptContext();
+                    fprintf(stderr, "[VBLANK-ISR-STATUS] tick=%u cb=%08X ctx=%08X\n", currentTick, cb, ctx);
+                    fflush(stderr);
+                }
             }
 
             // DISABLED: Event signaling workaround - g_memory.Translate doesn't exist
@@ -1641,7 +1670,7 @@ void Mw05StartVblankPumpOnce() {
                     static uint32_t s_signal_count = 0;
                     if (KeSetEvent(event, 0, false)) {
                         s_signal_count++;
-                        if (s_signal_count <= 5 || s_signal_count % 100 == 0) {
+                        if (s_debug_vblank && (s_signal_count <= 5 || s_signal_count % 100 == 0)) {
                             fprintf(stderr, "[VBLANK-WAKE] Signaled event 0x%08X (count=%u tick=%u)\n",
                                     WAKE_EVENT_EA, s_signal_count, currentTick);
                             fflush(stderr);
@@ -1675,7 +1704,7 @@ void Mw05StartVblankPumpOnce() {
                 // Check if we've reached the max invocations limit
                 if (s_max_invocations > 0 && s_vdcall_count >= s_max_invocations) {
                     static bool s_logged_limit = false;
-                    if (!s_logged_limit) {
+                    if (!s_logged_limit && s_debug_vblank) {
                         fprintf(stderr, "[MW05_FIX] Reached max invocations limit (%u), stopping callback invocations\n", s_max_invocations);
                         fflush(stderr);
                         s_logged_limit = true;
@@ -1685,7 +1714,7 @@ void Mw05StartVblankPumpOnce() {
 
                 if (currentTick % s_callback_frequency == 0) {
                     s_vdcall_count++;
-                    if (s_vdcall_count % 10 == 1) {  // Log every 10 calls
+                    if (s_debug_vblank && s_vdcall_count % 10 == 1) {  // Log every 10 calls
                         fprintf(stderr, "[MW05_FIX] Calling VdCallGraphicsNotificationRoutines tick=%u count=%u cb=%08X freq=%u max=%u\n",
                                 currentTick, s_vdcall_count, cb_check, s_callback_frequency, s_max_invocations);
                         fflush(stderr);
@@ -1704,20 +1733,20 @@ void Mw05StartVblankPumpOnce() {
                         // Common pattern from Xenia: emit both source=0 (vblank-like) and source=1 (auxiliary)
                         VdCallGraphicsNotificationRoutines(0u);
                         VdCallGraphicsNotificationRoutines(1u);
-                    } else {
+                    } else if (s_debug_vblank) {
                         fprintf(stderr, "[MW05_FIX] Callback invocation DISABLED (registration only)\n");
                         fflush(stderr);
                     }
                 }
             }
 
-            if (currentTick < 20) {
+            if (s_debug_vblank && currentTick < 20) {
                 fprintf(stderr, "[VBLANK-AFTER-GFX-CB] tick=%u after graphics callback section\n", currentTick);
                 fflush(stderr);
             }
 
             // CRITICAL DEBUG: Log before video thread section
-            if (currentTick < 20) {
+            if (s_debug_vblank && currentTick < 20) {
                 fprintf(stderr, "[VBLANK-BEFORE-VIDEO-THREAD] tick=%u about to check video thread section\n", currentTick);
                 fflush(stderr);
             }
@@ -1740,7 +1769,7 @@ void Mw05StartVblankPumpOnce() {
             static bool s_logged_config = false;
 
             // Log configuration once at tick 0
-            if (currentTick == 0 && !s_logged_config) {
+            if (s_debug_vblank && currentTick == 0 && !s_logged_config) {
                 fprintf(stderr, "[VBLANK-CONFIG] s_force_video_thread=%d s_force_video_thread_tick=%u\n",
                     s_force_video_thread, s_force_video_thread_tick);
                 fflush(stderr);
@@ -1755,14 +1784,16 @@ void Mw05StartVblankPumpOnce() {
                     if (void* ptr = g_memory.Translate(SINGLETON_ADDR)) {
                         uint32_t singleton_ptr = *reinterpret_cast<uint32_t*>(ptr);
                         if (singleton_ptr != 0) {
-                            fprintf(stderr, "[VBLANK-NATURAL] Singleton created naturally at tick=%u ptr=%08X\n", currentTick, singleton_ptr);
-                            fflush(stderr);
+                            if (s_debug_vblank) {
+                                fprintf(stderr, "[VBLANK-NATURAL] Singleton created naturally at tick=%u ptr=%08X\n", currentTick, singleton_ptr);
+                                fflush(stderr);
+                            }
                             s_video_thread_created.store(true, std::memory_order_release);
                         }
                     } else {
                         // Address not mapped - skip check
                         static bool logged_once = false;
-                        if (!logged_once) {
+                        if (s_debug_vblank && !logged_once) {
                             fprintf(stderr, "[VBLANK-NATURAL] Singleton address 0x%08X not mapped, skipping checks\n", SINGLETON_ADDR);
                             fflush(stderr);
                             logged_once = true;
@@ -1771,7 +1802,7 @@ void Mw05StartVblankPumpOnce() {
                 }
 
                 // Debug: log when we're checking the condition
-                if (currentTick == s_force_video_thread_tick || currentTick == s_force_video_thread_tick - 1) {
+                if (s_debug_vblank && (currentTick == s_force_video_thread_tick || currentTick == s_force_video_thread_tick - 1)) {
                     fprintf(stderr, "[VBLANK-CHECK] currentTick=%u threshold=%u will_trigger=%d\n",
                         currentTick, s_force_video_thread_tick, currentTick >= s_force_video_thread_tick);
                     fflush(stderr);
@@ -5868,7 +5899,16 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object,
 {
     if (!Object) return STATUS_INVALID_PARAMETER;
 
-    KernelTraceHostOp("HOST.Wait.enter.KeWaitForSingleObject");
+    // PERFORMANCE: Wait debug logging (disabled by default - causes FPS drop)
+    static const bool s_debug_wait = [](){
+        if (const char* v = std::getenv("MW05_DEBUG_WAIT"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
+
+    if (s_debug_wait) {
+        KernelTraceHostOp("HOST.Wait.enter.KeWaitForSingleObject");
+    }
 
     if (const char* tlw = std::getenv("MW05_HOST_ISR_TRACE_LAST_WAIT")) {
         if (!(tlw[0]=='0' && tlw[1]=='\0')) {
@@ -8825,15 +8865,24 @@ uint32_t MmAllocatePhysicalMemoryEx
 {
     LOGF_UTILITY("0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}", flags, size, protect, minAddress, maxAddress, alignment);
 
-    // Debug logging for physical memory allocations
-    fprintf(stderr, "[MmAllocPhysicalMemEx] ENTRY: size=%u (%.2f MB) align=%u flags=%08X min=%08X max=%08X\n",
-            size, size / (1024.0 * 1024.0), alignment, flags, minAddress, maxAddress);
-    fflush(stderr);
+    // PERFORMANCE: Heap debug logging (disabled by default - causes FPS drop)
+    static const bool s_debug_heap = [](){
+        if (const char* v = std::getenv("MW05_DEBUG_HEAP"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
+
+    if (s_debug_heap) {
+        fprintf(stderr, "[MmAllocPhysicalMemEx] ENTRY: size=%u (%.2f MB) align=%u flags=%08X min=%08X max=%08X\n",
+                size, size / (1024.0 * 1024.0), alignment, flags, minAddress, maxAddress);
+        fflush(stderr);
+    }
 
     void* ptr = g_userHeap.AllocPhysical(size, alignment);
     uint32_t result = g_memory.MapVirtual(ptr);
 
     if (result == 0) {
+        // Always log allocation failures (critical errors)
         fprintf(stderr, "[MmAllocPhysicalMemEx] FAILED: AllocPhysical returned NULL for size=%u (%.2f MB)\n",
                 size, size / (1024.0 * 1024.0));
         fflush(stderr);
@@ -8845,15 +8894,17 @@ uint32_t MmAllocatePhysicalMemoryEx
         //
         // memset(ptr, 0, size);  // THIS WAS CORRUPTING THE HEAP!
 
-        fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p\n",
-                size, size / (1024.0 * 1024.0), result, ptr);
-        fflush(stderr);
-
-        // TRACE: Log small allocations that might be context structures
-        if (size >= 12 && size <= 64) {
-            fprintf(stderr, "[CONTEXT-TRACE] Small allocation: size=%u guest=%08X (might be context structure)\n",
-                    size, result);
+        if (s_debug_heap) {
+            fprintf(stderr, "[MmAllocPhysicalMemEx] SUCCESS: allocated %u bytes (%.2f MB) at guest=%08X host=%p\n",
+                    size, size / (1024.0 * 1024.0), result, ptr);
             fflush(stderr);
+
+            // TRACE: Log small allocations that might be context structures
+            if (size >= 12 && size <= 64) {
+                fprintf(stderr, "[CONTEXT-TRACE] Small allocation: size=%u guest=%08X (might be context structure)\n",
+                        size, result);
+                fflush(stderr);
+            }
         }
     }
 
@@ -9250,11 +9301,25 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE));
 
-    fprintf(stderr, "[MW05_FIX] NtResumeThread called: handle=%p tid=%08X\n",
-        (void*)hThread, hThread ? hThread->GetThreadId() : 0);
-    fflush(stderr);
+    // PERFORMANCE: Thread debug logging (disabled by default - causes FPS drop)
+    static const bool s_debug_thread = [](){
+        if (const char* v = std::getenv("MW05_DEBUG_THREAD"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
 
-    KernelTraceHostOpF("HOST.NtResumeThread tid=%08X", hThread ? hThread->GetThreadId() : 0);
+    // Log first 10 thread resumes only
+    static int s_resume_count = 0;
+    if (s_debug_thread || s_resume_count < 10) {
+        fprintf(stderr, "[MW05_FIX] NtResumeThread called: handle=%p tid=%08X\n",
+            (void*)hThread, hThread ? hThread->GetThreadId() : 0);
+        fflush(stderr);
+    }
+    s_resume_count++;
+
+    if (s_debug_thread) {
+        KernelTraceHostOpF("HOST.NtResumeThread tid=%08X", hThread ? hThread->GetThreadId() : 0);
+    }
 
     // CRITICAL FIX: Set qword_828F1F98 BEFORE resuming ANY thread
     // Thread #2 checks this value immediately upon starting, so it must be set before ANY thread resumes
@@ -9274,17 +9339,21 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
         uint64_t value_be = __builtin_bswap64(result);
         *qword = value_be;
 
-        fprintf(stderr, "[MW05_FIX] NtResumeThread: Set qword_828F1F98 to 0x%016llX (was 0x%016llX) tid=%08X\n",
-                result, old_value, hThread->GetThreadId());
-        fflush(stderr);
+        if (s_debug_thread || s_resume_count <= 10) {
+            fprintf(stderr, "[MW05_FIX] NtResumeThread: Set qword_828F1F98 to 0x%016llX (was 0x%016llX) tid=%08X\n",
+                    result, old_value, hThread->GetThreadId());
+            fflush(stderr);
+        }
     }
 
     hThread->suspended = false;
     hThread->suspended.notify_all();
 
-    fprintf(stderr, "[MW05_FIX] NtResumeThread: thread resumed, tid=%08X\n",
-        hThread->GetThreadId());
-    fflush(stderr);
+    if (s_debug_thread || s_resume_count <= 10) {
+        fprintf(stderr, "[MW05_FIX] NtResumeThread: thread resumed, tid=%08X\n",
+            hThread->GetThreadId());
+        fflush(stderr);
+    }
 
     return S_OK;
 }
@@ -10147,15 +10216,27 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
     LOGF_UTILITY("0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}",
         (intptr_t)handle, stackSize, (intptr_t)threadId, xApiThreadStartup, startAddress, startContext, creationFlags);
 
-    KernelTraceHostOpF("HOST.ExCreateThread entry=%08X ctx=%08X flags=%08X", startAddress, startContext, creationFlags);
+    // PERFORMANCE: Thread debug logging (disabled by default - causes FPS drop)
+    static const bool s_debug_thread = [](){
+        if (const char* v = std::getenv("MW05_DEBUG_THREAD"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
 
-    // MW05 FIX: Log all thread creations to find the graphics initialization thread
+    if (s_debug_thread) {
+        KernelTraceHostOpF("HOST.ExCreateThread entry=%08X ctx=%08X flags=%08X", startAddress, startContext, creationFlags);
+    }
+
+    // MW05 FIX: Log first 10 thread creations only (to identify key threads without spam)
     static int s_thread_count = 0;
     const bool is_suspended = (creationFlags & 0x1) != 0;
-    fprintf(stderr, "[MW05_FIX] Thread #%d created: entry=%08X ctx=%08X flags=%08X %s\n",
-        ++s_thread_count, startAddress, startContext, creationFlags,
-        is_suspended ? "SUSPENDED" : "RUNNING");
-    fflush(stderr);
+    if (s_debug_thread || s_thread_count < 10) {
+        fprintf(stderr, "[MW05_FIX] Thread #%d created: entry=%08X ctx=%08X flags=%08X %s\n",
+            s_thread_count + 1, startAddress, startContext, creationFlags,
+            is_suspended ? "SUSPENDED" : "RUNNING");
+        fflush(stderr);
+    }
+    s_thread_count++;
 
     // Log context for debugging (but don't validate - context can be a simple parameter, not a structure!)
     if (startContext != 0 && startContext > 0x1000) {
@@ -10286,12 +10367,16 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
     if (threadId != nullptr)
         *threadId = hostThreadId;
 
-    fprintf(stderr, "[MW05_FIX] Thread #%d handle=%08X hostTid=%08X %s\n",
-        s_thread_count, (uint32_t)*handle, hostThreadId,
-        is_suspended ? "WAITING_FOR_RESUME" : "STARTED");
-    fflush(stderr);
+    if (s_debug_thread || s_thread_count <= 10) {
+        fprintf(stderr, "[MW05_FIX] Thread #%d handle=%08X hostTid=%08X %s\n",
+            s_thread_count, (uint32_t)*handle, hostThreadId,
+            is_suspended ? "WAITING_FOR_RESUME" : "STARTED");
+        fflush(stderr);
+    }
 
-    KernelTraceHostOpF("HOST.ExCreateThread DONE entry=%08X hostTid=%08X", startAddress, hostThreadId);
+    if (s_debug_thread) {
+        KernelTraceHostOpF("HOST.ExCreateThread DONE entry=%08X hostTid=%08X", startAddress, hostThreadId);
+    }
 
     return 0;
 }
@@ -10390,18 +10475,34 @@ uint32_t KeResumeThread(GuestThreadHandle* object)
 {
     assert(object != GetKernelObject(CURRENT_THREAD_HANDLE));
 
-    fprintf(stderr, "[MW05_FIX] KeResumeThread called: handle=%p tid=%08X\n",
-        (void*)object, object ? object->GetThreadId() : 0);
-    fflush(stderr);
+    // PERFORMANCE: Thread debug logging (disabled by default - causes FPS drop)
+    static const bool s_debug_thread = [](){
+        if (const char* v = std::getenv("MW05_DEBUG_THREAD"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return false; // DISABLED by default for performance
+    }();
 
-    KernelTraceHostOpF("HOST.KeResumeThread tid=%08X", object ? object->GetThreadId() : 0);
+    // Log first 10 thread resumes only
+    static int s_resume_count = 0;
+    if (s_debug_thread || s_resume_count < 10) {
+        fprintf(stderr, "[MW05_FIX] KeResumeThread called: handle=%p tid=%08X\n",
+            (void*)object, object ? object->GetThreadId() : 0);
+        fflush(stderr);
+    }
+    s_resume_count++;
+
+    if (s_debug_thread) {
+        KernelTraceHostOpF("HOST.KeResumeThread tid=%08X", object ? object->GetThreadId() : 0);
+    }
 
     object->suspended = false;
     object->suspended.notify_all();
 
-    fprintf(stderr, "[MW05_FIX] KeResumeThread: thread resumed, tid=%08X\n",
-        object->GetThreadId());
-    fflush(stderr);
+    if (s_debug_thread || s_resume_count <= 10) {
+        fprintf(stderr, "[MW05_FIX] KeResumeThread: thread resumed, tid=%08X\n",
+            object->GetThreadId());
+        fflush(stderr);
+    }
 
     return 0;
 }

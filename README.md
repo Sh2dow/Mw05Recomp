@@ -16,7 +16,6 @@
 
 ## Table of Contents
 
-> 📈 **[View Progress Report](./docs/wiki/Home.md)** — Latest updates on GPU Writeback and MW05 Rendering
 - [Minimum System Requirements](#minimum-system-requirements)
 - [How to Install](#how-to-install)
 - [Features](#features)
@@ -95,6 +94,8 @@ In the meantime, those interested in doing extensive code modding are recommende
 
 
 ## FAQ
+
+> 📈 **[Wiki](./docs/wiki/Home.md)**
 
 ---
 
@@ -179,14 +180,26 @@ Or use build switcher:
 
 ## Debugging
 
-``pwsh $env:MW05_FORCE_PRESENT=0;$env:MW05_KICK_VIDEO=0;$env:MW05_AUTO_VIDEO=1;$env:MW05_VBLANK_PUMP=1;$env:MW05_VBLANK_CB=1;$env:MW05_PUMP_EVENTS=0;$env:MW05_LIST_SHIMS=0;$env:MW05_BREAK_82813514=0;$env:MW05_FAST_BOOT=0;$env:MW05_TRACE_KERNEL=1;$env:MW05_HOST_TRACE_IMPORTS=1;$env:MW05_HOST_TRACE_HOSTOPS=1;$env:MW_VERBOSE=0;.\Mw05Recomp.exe``
-or
-``pwsh.exe -Command '$log='"'run_log.txt'; if (Test-Path "'$log) { Remove-Item $log }; $psi = [System.Diagnostics.ProcessStartInfo]::new(); `
-$psi.FileName = '"'Mw05Recomp.exe''; "'; `
-$psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; `
-$envTable = @{MW05_FORCE_PRESENT='"'0';MW05_KICK_VIDEO='1';MW05_AUTO_VIDEO='1';MW05_VBLANK_PUMP='1';MW05_VBLANK_CB='1';MW05_PUMP_EVENTS='0';MW05_LIST_SHIMS='0';MW05_BREAK_82813514='0';MW05_FAST_BOOT='0';MW05_TRACE_KERNEL='0';MW05_HOST_TRACE_IMPORTS='1';MW05_HOST_TRACE_HOSTOPS='1';MW_VERBOSE='0'}; foreach("'$k
-        in $envTable.Keys){ $psi.Environment[$k] = $envTable[$k] }; $proc = [System.Diagnostics.Process]::Start($psi); Start-Sleep -Seconds 30; if (!$proc.HasExited) { $proc.Kill() }; $stdout = $proc.StandardOutput.ReadToEnd(); $stderr = $proc.StandardError.ReadToEnd(); Set-Content $log $stdout; if
-        ($stderr) { Add-Content $log '"'--- STDERR ---'; Add-Content "'$log $stderr }; $proc.ExitCode'``
+### To enable any of the diagnostic scans for debugging, set these environment variables:
+```
+$env:MW05_PM4_PROBE_ON_PRESENT = "1"  # PM4 ring buffer scanning
+$env:MW05_PM4_SYSBUF_SCAN = "1"       # System command buffer scanning
+$env:MW05_PM4_MICRO_SCAN = "1"        # Micro-draw marker scanning
+```
+### Core Debug Logging (Default: MINIMAL)
+```
+$env:MW05_DEBUG_GRAPHICS = "1"   # Graphics subsystem logging
+$env:MW05_DEBUG_KERNEL = "1"     # Kernel operations logging
+$env:MW05_DEBUG_THREAD = "1"     # Thread operation logging
+$env:MW05_DEBUG_HEAP = "1"       # Memory allocation logging
+$env:MW05_DEBUG_FILEIO = "1"     # File I/O operations logging
+$env:MW05_DEBUG_PM4 = "1"        # PM4 command buffer logging
+$env:MW05_DEBUG_ISR = "1"        # Interrupt Service Routine logging
+$env:MW05_DEBUG_VBLANK = "1"     # VBlank pump logging (PERFORMANCE: disabled by default)
+$env:MW05_DEBUG_WAIT = "1"       # Wait function logging
+$env:MW05_DEBUG_PROFILE = "0"    # Disable debug profile (enabled by default)
+```
+The rest vars can be found at [AGENTS.md](./AGENTS.md)
 
 ### Special Thanks
 - [Mr-Wiseguy](https://github.com/Mr-Wiseguy): Creator of [N64: Recompiled](https://github.com/N64Recomp/N64Recomp), which was the inspiration behind the creation of this project. Provided information and assistance at the beginning of development.

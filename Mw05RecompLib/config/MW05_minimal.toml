@@ -12,16 +12,15 @@ out_directory_path = "../ppc"
 switch_table_file_path = "MW05_switch_tables.toml"
 
 # Register allocation heuristics
-# NOTE: Aggressive optimizations disabled temporarily due to trace.h dependencies
-# TODO: Fix trace.h to work with aggressive optimizations, then re-enable
-skip_lr = false
-skip_msr = false
-ctr_as_local = false
-xer_as_local = false
-reserved_as_local = false
-cr_as_local = false
-non_argument_as_local = false
-non_volatile_as_local = false
+# Following UnleashedRecomp's aggressive optimization settings
+skip_lr = true
+skip_msr = true
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
+cr_as_local = true
+non_argument_as_local = true
+non_volatile_as_local = true
 
 # Prolog/epilog helpers (MW'05 addresses)
 restgprlr_14_address = 0x826BDD80

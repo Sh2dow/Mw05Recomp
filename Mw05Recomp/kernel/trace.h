@@ -42,8 +42,13 @@ inline void* Memcpy_Watched_GG(uint8_t* base, uint32_t dstEA, uint32_t srcEA, si
     const uint32_t watch = g_watchEA.load(std::memory_order_relaxed);
     if (watch && dstEA <= watch && watch < dstEA + len) {
         if (auto* c = GetPPCContext()) {
+#ifndef PPC_CONFIG_SKIP_LR
             KernelTraceHostOpF("HOST.watch.memcpyGG dst=%08X len=%zu hit=%08X lr=%08llX",
                                dstEA, len, watch, (unsigned long long)c->lr);
+#else
+            KernelTraceHostOpF("HOST.watch.memcpyGG dst=%08X len=%zu hit=%08X lr=N/A",
+                               dstEA, len, watch);
+#endif
         } else {
             KernelTraceHostOpF("HOST.watch.memcpyGG dst=%08X len=%zu hit=%08X lr=0",
                                dstEA, len, watch);
@@ -87,9 +92,13 @@ static inline void TraceRbWrite(uint32_t ea, size_t n) {
             return false;
         }();
         if (s_trace) {
+#ifndef PPC_CONFIG_SKIP_LR
             PPCContext* c = GetPPCContext();
             const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
             KernelTraceHostOpF("HOST.RB.write ea=%08X..%08X n=%zu lr=%08llX", ea, (uint32_t)a1, n, lr);
+#else
+            KernelTraceHostOpF("HOST.RB.write ea=%08X..%08X n=%zu lr=N/A", ea, (uint32_t)a1, n);
+#endif
         }
     }
 }
@@ -103,8 +112,12 @@ inline void StoreBE8_Watched(uint8_t* /*base*/, uint32_t ea, uint8_t v8)
         KernelTraceHostOp("HOST.watch.store8 override ACTIVE");
     }
 
+#ifndef PPC_CONFIG_SKIP_LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+    const unsigned long long lr = 0ull;
+#endif
 
     KernelTraceHostOpF("HOST.Store8BE_W.called ea=%08X val=%02X", ea, v8);
 
@@ -154,8 +167,12 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
         KernelTraceHostOp("HOST.watch.store16 override ACTIVE");
     }
 
+#ifndef PPC_CONFIG_SKIP_LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+    const unsigned long long lr = 0ull;
+#endif
 
     KernelTraceHostOpF("HOST.Store16BE_W.called ea=%08X val=%04X", ea, v);
 
@@ -173,6 +190,7 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
     // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
     // is clearly buggy and should not be writing to memory at all.
     // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
+#ifndef PPC_CONFIG_SKIP_LR
     if (auto* c = GetPPCContext()) {
         uint32_t lr = c->lr;
 
@@ -187,8 +205,10 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
                 fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%04X lr=0x%08X\n", ea, v, lr);
                 fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
                         c->r3.u32, c->r4.u32, c->r5.u32);
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
                 fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
                         c->r31.u32, c->r30.u32, c->r29.u32);
+#endif
                 fflush(stderr);
             }
 
@@ -196,6 +216,7 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
             return;
         }
     }
+#endif
 
     TraceRbWrite(ea, 2);
 
@@ -221,6 +242,7 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
     // is clearly buggy and should not be writing to memory at all.
     // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
+#ifndef PPC_CONFIG_SKIP_LR
     if (auto* c = GetPPCContext()) {
         uint32_t lr = c->lr;
 
@@ -235,8 +257,10 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
                 fprintf(stderr, "[HEAP-PROTECT]   ea=0x%08X val=0x%08X lr=0x%08X\n", ea, v, lr);
                 fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
                         c->r3.u32, c->r4.u32, c->r5.u32);
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
                 fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
                         c->r31.u32, c->r30.u32, c->r29.u32);
+#endif
                 fflush(stderr);
             }
 
@@ -244,11 +268,13 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             return;
         }
     }
+#endif // PPC_CONFIG_SKIP_LR
 
     // CRITICAL DEBUG: Watch for stores to callback parameter structure at 0x82A2B318
     // The structure is 32 bytes (0x82A2B318 to 0x82A2B338)
     // Field at offset +0x10 (0x82A2B328) is the work_func pointer (should be 0x82441E58)
     if (ea >= 0x82A2B318 && ea < 0x82A2B338) {
+#ifndef PPC_CONFIG_SKIP_LR
         if (auto* c = GetPPCContext()) {
             uint32_t lr = c->lr;
             fprintf(stderr, "[CALLBACK_PARAM_WATCH] Store32 to callback param structure: ea=%08X val=%08X lr=%08X\n", ea, v, lr);
@@ -258,39 +284,64 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             }
             fflush(stderr);
         }
+#endif
     }
 
     // Log all stores from sub_82849DE8 function (worker thread initialization)
     // This function is at 0x82849DE8-0x82849F78, so lr should be in range 0x82849DE8-0x82849F7C
+#ifndef PPC_CONFIG_SKIP_LR
     if (auto* c = GetPPCContext()) {
         uint32_t lr = c->lr;
         if (lr >= 0x82849DE8 && lr <= 0x82849F7C) {
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
             KernelTraceHostOpF("HOST.Store32.sub_82849DE8 ea=%08X val=%08X lr=%08X r30=%08X r31=%08X",
                                ea, v, lr, c->r30.u32, c->r31.u32);
+#else
+            KernelTraceHostOpF("HOST.Store32.sub_82849DE8 ea=%08X val=%08X lr=%08X",
+                               ea, v, lr);
+#endif
         }
         // Also log stores from sub_8284D168 (the function that calls sub_82849DE8)
         if (lr >= 0x8284D168 && lr <= 0x8284D218) {
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
             KernelTraceHostOpF("HOST.Store32.sub_8284D168 ea=%08X val=%08X lr=%08X r29=%08X r30=%08X r31=%08X",
                                ea, v, lr, c->r29.u32, c->r30.u32, c->r31.u32);
+#else
+            KernelTraceHostOpF("HOST.Store32.sub_8284D168 ea=%08X val=%08X lr=%08X",
+                               ea, v, lr);
+#endif
         }
         // Also log stores from sub_82548A08 (calls sub_8284D168)
         if (lr >= 0x82548A08 && lr <= 0x82548AC0) {
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
             KernelTraceHostOpF("HOST.Store32.sub_82548A08 ea=%08X val=%08X lr=%08X r28=%08X r29=%08X r30=%08X r31=%08X",
                                ea, v, lr, c->r28.u32, c->r29.u32, c->r30.u32, c->r31.u32);
+#else
+            KernelTraceHostOpF("HOST.Store32.sub_82548A08 ea=%08X val=%08X lr=%08X",
+                               ea, v, lr);
+#endif
         }
         // Also log stores from sub_8284D218 (calls sub_8284D168)
         if (lr >= 0x8284D218 && lr <= 0x8284D268) {
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
             KernelTraceHostOpF("HOST.Store32.sub_8284D218 ea=%08X val=%08X lr=%08X r29=%08X r30=%08X r31=%08X",
                                ea, v, lr, c->r29.u32, c->r30.u32, c->r31.u32);
+#else
+            KernelTraceHostOpF("HOST.Store32.sub_8284D218 ea=%08X val=%08X lr=%08X",
+                               ea, v, lr);
+#endif
         }
     }
+#endif // PPC_CONFIG_SKIP_LR
 
     const uint32_t watch = g_watchEA.load(std::memory_order_relaxed);
     if (watch && ea == watch) {
+#ifndef PPC_CONFIG_SKIP_LR
         if (auto* c = GetPPCContext())
             KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=%08llX", ea, v,
                                (unsigned long long)c->lr);
         else
+#endif
             KernelTraceHostOpF("HOST.watch.hit ea=%08X val=%08X lr=0", ea, v);
     }
 
@@ -299,10 +350,13 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     if (v == 0x82065268 || (ea & 0xFFF) == 0xC4) {
         static int vtable_write_count = 0;
         if (vtable_write_count++ < 20) {
+#if !defined(PPC_CONFIG_SKIP_LR) && !defined(PPC_CONFIG_NON_VOLATILE_AS_LOCAL)
             if (auto* c = GetPPCContext()) {
                 KernelTraceHostOpF("HOST.vtable.write ea=%08X val=%08X lr=%08llX r31=%08X r29=%08X",
                                   ea, v, (unsigned long long)c->lr, c->r31.u32, c->r29.u32);
-            } else {
+            } else
+#endif
+            {
                 KernelTraceHostOpF("HOST.vtable.write ea=%08X val=%08X lr=0", ea, v);
             }
             fflush(stderr);
@@ -320,9 +374,11 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
         if (base_ea && ea >= base_ea && ea < base_ea + size_ea) {
             static bool s_logged_once32 = false;
             if (!s_logged_once32) {
+#ifndef PPC_CONFIG_SKIP_LR
                 if (auto* c = GetPPCContext())
                     KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=%08llX", ea, 4u, (unsigned long long)c->lr);
                 else
+#endif
                     KernelTraceHostOpF("HOST.PM4.SysBufWrite.hit ea=%08X bytes=%u lr=0", ea, 4u);
                 s_logged_once32 = true;
             }
@@ -333,6 +389,7 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     // This structure is critical for worker thread initialization
     // We need to find what naturally initializes it (especially work_func at +0x10)
     if (ea >= 0x82A2B318 && ea < 0x82A2B338) {  // Structure is 32 bytes (0x20)
+#ifndef PPC_CONFIG_SKIP_LR
         if (auto* c = GetPPCContext()) {
             uint32_t offset = ea - 0x82A2B318;
             const char* field_name = "unknown";
@@ -348,6 +405,7 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
             KernelTraceHostOpF("HOST.WATCHPOINT.0x82A2B318 WRITE: offset=+0x%02X (%s) val=0x%08X lr=%08llX",
                               offset, field_name, v, (unsigned long long)c->lr);
         }
+#endif
     }
 
     // Prevent main thread flag at 0x82A2CF40 from being reset to 0
@@ -375,10 +433,13 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
                 // Block the reset - log it and skip the write
                 static int block_count = 0;
                 if (block_count++ < 10) {
+#ifndef PPC_CONFIG_SKIP_LR
                     if (auto* c = GetPPCContext()) {
                         KernelTraceHostOpF("HOST.StoreBE32_Watched BLOCKING reset of flag ea=%08X val=%08X lr=%08llX",
                                           ea, v, (unsigned long long)c->lr);
-                    } else {
+                    } else
+#endif
+                    {
                         KernelTraceHostOpF("HOST.StoreBE32_Watched BLOCKING reset of flag ea=%08X val=%08X lr=0", ea, v);
                     }
                 }
@@ -390,18 +451,20 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     }
 
     if (v == 0x0A000000u || v == 0x0000000Au) {
+#ifndef PPC_CONFIG_SKIP_LR
         if (auto* c = GetPPCContext()) {
             const unsigned long long lr = (unsigned long long)c->lr;
             KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=%08llX", ea, lr);
             if (Mw05HandleSchedulerSentinel(base, ea, lr)) {
                 return;
             }
-        } else {
+        } else
+#endif
+        {
             KernelTraceHostOpF("HOST.watch.any val=0A000000 ea=%08X lr=0", ea);
             if (Mw05HandleSchedulerSentinel(base, ea, 0)) {
                 return;
             }
-
         }
     }
 
@@ -419,10 +482,13 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
     if (s_trace_mmio && (ea >= 0xC0000000u && ea < 0xC0010000u)) {
         static int mmio_log_count = 0;
         if (mmio_log_count++ < 100) {  // Log first 100 MMIO writes
+#ifndef PPC_CONFIG_SKIP_LR
             if (auto* c = GetPPCContext()) {
                 KernelTraceHostOpF("HOST.GPU.MMIO.write ea=%08X val=%08X lr=%08llX",
                                   ea, v, (unsigned long long)c->lr);
-            } else {
+            } else
+#endif
+            {
                 KernelTraceHostOpF("HOST.GPU.MMIO.write ea=%08X val=%08X lr=0", ea, v);
             }
         }
@@ -475,8 +541,12 @@ inline uint64_t LoadBE64_Watched(uint8_t* base, uint32_t ea)
 
     // Log if this is qword_828F1F98 (the worker thread flag)
     if (ea == 0x828F1F98u) {
+#ifndef PPC_CONFIG_SKIP_LR
         PPCContext* c = GetPPCContext();
         const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+        const unsigned long long lr = 0ull;
+#endif
         // Check if pointers are the same
         bool ptrs_same = (ptr_translate == ptr_base);
         // Read raw bytes from both pointers
@@ -507,8 +577,13 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
         KernelTraceHostOp("HOST.watch.store64 override ACTIVE");
     }
 
+#ifndef PPC_CONFIG_SKIP_LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+    const unsigned long long lr = 0ull;
+    PPCContext* c = nullptr;
+#endif
 
     // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
     // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
@@ -531,8 +606,10 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
             if (c) {
                 fprintf(stderr, "[HEAP-PROTECT]   r3=0x%08X r4=0x%08X r5=0x%08X\n",
                         c->r3.u32, c->r4.u32, c->r5.u32);
+#ifndef PPC_CONFIG_NON_VOLATILE_AS_LOCAL
                 fprintf(stderr, "[HEAP-PROTECT]   r31=0x%08X r30=0x%08X r29=0x%08X\n",
                         c->r31.u32, c->r30.u32, c->r29.u32);
+#endif
             }
             fflush(stderr);
         }
@@ -631,8 +708,12 @@ inline void StoreBE128_Watched(uint8_t* base, uint32_t ea, uint64_t hi, uint64_t
         KernelTraceHostOp("HOST.watch.store128 override ACTIVE");
     }
 
+#ifndef PPC_CONFIG_SKIP_LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+    const unsigned long long lr = 0ull;
+#endif
 
     KernelTraceHostOpF("HOST.Store128BE_W.called ea=%08X val=%016llX%016llX", ea, hi, lo);
 
@@ -674,8 +755,12 @@ inline void StoreBE128_Watched_P(uint8_t* base, uint32_t ea, const void* src16)
         KernelTraceHostOp("HOST.watch.store128(ptr) override ACTIVE");
     }
 
+#ifndef PPC_CONFIG_SKIP_LR
     PPCContext* c = GetPPCContext();
     const unsigned long long lr = c ? (unsigned long long)c->lr : 0ull;
+#else
+    const unsigned long long lr = 0ull;
+#endif
 
     const uint8_t* s = reinterpret_cast<const uint8_t*>(src16);
     KernelTraceHostOpF("HOST.Store128BE_W.ptr.called ea=%08X src=%p", ea, src16);

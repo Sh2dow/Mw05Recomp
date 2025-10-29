@@ -209,23 +209,23 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
     // This notification indicates that a user has signed in (area 0, message 17)
     if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
         const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
-        XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 0);  // param=0 (user index 0)
+        // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
+        XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 1);  // param=1 (user 0 signed in)
         // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
         // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
-        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)\n");
+        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED) param=1\n");
         fflush(stderr);
     }
 
-    // MW05 FIX: Send profile-related notifications to unblock game initialization
-    // Most Wanted may be waiting for profile/storage notifications before loading resources
-    if (qwAreas & (1ull << 2)) {  // If listening to area 2 (storage notifications)
-        const uint32_t XN_SYS_STORAGEDEVICESCHANGED = 0x14;  // area=0, message=20
-        XamNotifyEnqueueEvent(XN_SYS_STORAGEDEVICESCHANGED, 0);
-        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-        // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)");
-        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)\n");
-        fflush(stderr);
-    }
+    // MW05 FIX: DISABLED - Don't send storage notification automatically
+    // This notification (0x14) was blocking the queue and preventing the game from receiving
+    // the signin notification (0x11) that it's actually waiting for
+    // if (qwAreas & (1ull << 2)) {  // If listening to area 2 (storage notifications)
+    //     const uint32_t XN_SYS_STORAGEDEVICESCHANGED = 0x14;  // area=0, message=20
+    //     XamNotifyEnqueueEvent(XN_SYS_STORAGEDEVICESCHANGED, 0);
+    //     fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)\n");
+    //     fflush(stderr);
+    // }
 
     const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
     const char* listShims = std::getenv("MW05_LIST_SHIMS");
@@ -295,6 +295,7 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
     static int last_log_count = 0;
     static bool dummy_notification_sent = false;
     static int empty_queue_count = 0;
+    static int no_match_count = 0;  // NEW: Track consecutive calls with no matching notification
     call_count++;
 
     // MW05_FIX: After 10 consecutive polling attempts with empty queue, send a dummy notification to unblock the thread
@@ -307,11 +308,19 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
         empty_queue_count = 0;  // Reset counter if queue is not empty
     }
 
-    // Log the first 15 calls to debug the dummy notification logic
-    if (call_count <= 15) {
-        fprintf(stderr, "[MW05_DEBUG] XNotifyGetNext call=%d empty_count=%d queue_size=%zu filter=%08X dummy_sent=%d\n",
-                call_count, empty_queue_count, listener.notifications.size(), dwMsgFilter, dummy_notification_sent);
+    // Log the first 30 calls to debug the notification logic
+    if (call_count <= 30) {
+        fprintf(stderr, "[MW05_DEBUG] XNotifyGetNext call=%d empty_count=%d no_match_count=%d queue_size=%zu filter=%08X dummy_sent=%d\n",
+                call_count, empty_queue_count, no_match_count, listener.notifications.size(), dwMsgFilter, dummy_notification_sent);
         fflush(stderr);
+
+        // Log queued notifications
+        for (size_t i = 0; i < listener.notifications.size() && i < 3; i++) {
+            uint32_t id = std::get<0>(listener.notifications[i]);
+            uint32_t param = std::get<1>(listener.notifications[i]);
+            fprintf(stderr, "[MW05_DEBUG]   [%zu] id=%08X param=%08X\n", i, id, param);
+            fflush(stderr);
+        }
     }
 
     if (!dummy_notification_sent && empty_queue_count >= 10 && dwMsgFilter == 0x00000011) {
@@ -326,6 +335,48 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
 
         KernelTraceHostOpF("HOST.XNotifyGetNext DUMMY_NOTIFICATION_SENT id=%08X param=%08X",
                           dwMsgFilter, 0);
+    }
+
+    // MW05_FIX: If the game keeps polling for a specific notification but the queue has non-matching notifications,
+    // send the requested notification after 5 consecutive no-match attempts
+    if (dwMsgFilter != 0 && !listener.notifications.empty()) {
+        bool has_match = false;
+        for (size_t i = 0; i < listener.notifications.size(); i++) {
+            if (std::get<0>(listener.notifications[i]) == dwMsgFilter) {
+                has_match = true;
+                break;
+            }
+        }
+
+        if (!has_match) {
+            no_match_count++;
+            if (no_match_count >= 5 && dwMsgFilter == 0x00000011) {
+                fprintf(stderr, "[MW05_FIX] XNotifyGetNext: Queue has %zu notifications but none match filter=0x%08X. Sending requested notification after %d attempts.\n",
+                        listener.notifications.size(), dwMsgFilter, no_match_count);
+
+                // Log what's actually in the queue
+                fprintf(stderr, "[MW05_FIX] Notifications in queue:\n");
+                for (size_t i = 0; i < listener.notifications.size() && i < 5; i++) {
+                    uint32_t id = std::get<0>(listener.notifications[i]);
+                    uint32_t param = std::get<1>(listener.notifications[i]);
+                    fprintf(stderr, "[MW05_FIX]   [%zu] id=0x%08X param=0x%08X (matches filter: %s)\n",
+                            i, id, param, (id == dwMsgFilter) ? "YES" : "NO");
+                }
+                fflush(stderr);
+
+                // Send the notification the game is waiting for
+                // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
+                listener.notifications.push_back(std::make_tuple(dwMsgFilter, 1));
+                no_match_count = 0;  // Reset counter
+
+                KernelTraceHostOpF("HOST.XNotifyGetNext NO_MATCH_FIX id=%08X param=%08X",
+                                  dwMsgFilter, 1);
+            }
+        } else {
+            no_match_count = 0;  // Reset if we found a match
+        }
+    } else {
+        no_match_count = 0;  // Reset if queue is empty or no filter
     }
 
     // Log first 10 calls and every 100th call
@@ -651,8 +702,8 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - s_startTime).count();
 
-    // Press START button between 5-10 seconds, then release
-    bool autoStart = (elapsed >= 5 && elapsed < 10);
+    // Press START button between 10-15 seconds, then release
+    bool autoStart = (elapsed >= 10 && elapsed < 15);
     if (autoStart && !s_autoStartLoggedOnce) {
         s_autoStartLoggedOnce = true;
         KernelTraceHostOpF("HOST.XamInputGetState.auto_start_press elapsed=%lld", (long long)elapsed);
@@ -752,6 +803,7 @@ uint32_t XamInputSetState(uint32_t userIndex, uint32_t flags, XAMINPUT_VIBRATION
 }
 
 // XamUser functions - needed to unblock game initialization
+PPC_FUNC_IMPL(XamUserGetSigninState);
 PPC_FUNC(XamUserGetSigninState)
 {
     uint32_t userIndex = ctx.r3.u32;
@@ -765,6 +817,50 @@ PPC_FUNC(XamUserGetSigninState)
     ctx.r3.u32 = state;
 }
 
+// XamContent functions - needed for content device management
+PPC_FUNC_IMPL(XamContentGetDeviceState);
+PPC_FUNC(XamContentGetDeviceState)
+{
+    uint32_t deviceId = ctx.r3.u32;
+    uint32_t overlappedPtr = ctx.r4.u32;
+
+    fprintf(stderr, "[HOST.XamContentGetDeviceState] deviceId=%u overlappedPtr=%08X\n", deviceId, overlappedPtr);
+    fflush(stderr);
+
+    // Device IDs (from Xenia):
+    // 1 = HDD (Hard Disk Drive)
+    // 2 = ODD (Optical Disc Drive)
+
+    // Return success for HDD and ODD, error for others
+    uint32_t result;
+    if (deviceId == 1 || deviceId == 2) {
+        // Device is connected and ready
+        if (overlappedPtr != 0) {
+            // Async mode - complete immediately with success
+            // TODO: Implement overlapped completion if needed
+            result = 0x3E6; // X_ERROR_IO_PENDING
+        } else {
+            // Sync mode - return success
+            result = 0; // X_ERROR_SUCCESS
+        }
+    } else {
+        // Unknown device
+        if (overlappedPtr != 0) {
+            // Async mode - complete immediately with error
+            result = 0x3E6; // X_ERROR_IO_PENDING
+        } else {
+            // Sync mode - return error
+            result = 0x48F; // X_ERROR_DEVICE_NOT_CONNECTED
+        }
+    }
+
+    fprintf(stderr, "[HOST.XamContentGetDeviceState] -> result=%08X\n", result);
+    fflush(stderr);
+
+    ctx.r3.u32 = result;
+}
+
+PPC_FUNC_IMPL(XamUserGetXUID);
 PPC_FUNC(XamUserGetXUID)
 {
     uint32_t userIndex = ctx.r3.u32;
@@ -787,6 +883,7 @@ PPC_FUNC(XamUserGetXUID)
     ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
 }
 
+PPC_FUNC_IMPL(XamUserGetName);
 PPC_FUNC(XamUserGetName)
 {
     uint32_t userIndex = ctx.r3.u32;
@@ -813,6 +910,7 @@ PPC_FUNC(XamUserGetName)
     ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
 }
 
+PPC_FUNC_IMPL(XamUserCheckPrivilege);
 PPC_FUNC(XamUserCheckPrivilege)
 {
     uint32_t userIndex = ctx.r3.u32;
@@ -836,6 +934,7 @@ PPC_FUNC(XamUserCheckPrivilege)
     ctx.r3.u32 = ERROR_NOT_LOGGED_ON;
 }
 
+PPC_FUNC_IMPL(XamUserAreUsersFriends);
 PPC_FUNC(XamUserAreUsersFriends)
 {
     uint32_t userIndex = ctx.r3.u32;
@@ -848,6 +947,7 @@ PPC_FUNC(XamUserAreUsersFriends)
     ctx.r3.u32 = ERROR_SUCCESS;
 }
 
+PPC_FUNC_IMPL(XamUserCreateStatsEnumerator);
 PPC_FUNC(XamUserCreateStatsEnumerator)
 {
     uint32_t titleId = ctx.r3.u32;
@@ -860,6 +960,7 @@ PPC_FUNC(XamUserCreateStatsEnumerator)
     ctx.r3.u32 = ERROR_SUCCESS;
 }
 
+PPC_FUNC_IMPL(XamUserCreateAchievementEnumerator);
 PPC_FUNC(XamUserCreateAchievementEnumerator)
 {
     uint32_t titleId = ctx.r3.u32;
@@ -872,6 +973,7 @@ PPC_FUNC(XamUserCreateAchievementEnumerator)
     ctx.r3.u32 = ERROR_SUCCESS;
 }
 
+PPC_FUNC_IMPL(XamUserCreatePlayerEnumerator);
 PPC_FUNC(XamUserCreatePlayerEnumerator)
 {
     uint32_t userIndex = ctx.r3.u32;

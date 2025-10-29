@@ -91,6 +91,9 @@ def main():
     # Set all environment variables from run_with_env.cmd
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
     env["MW05_TRACE_KERNEL"] = "1"
+    # env["MW05_FORCE_CALL_CREATEDEVICE"] = "1"
+    # env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "300"
+    # env["MW05_FORCE_RENDER_THREAD"] = "1"
 
     # env["MW05_BREAK_82813514"] = "0"
     # env["MW05_FAKE_ALLOC_SYSBUF"] = "1"

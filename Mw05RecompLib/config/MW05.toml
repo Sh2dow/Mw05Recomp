@@ -24141,4 +24141,6 @@ invalid_instructions = [
     { data = 0x8215C97C, size = 4 }, # Padding in sub_8215C838
     { data = 0x82159FD0, size = 0x70 }, # sub_82159FD0 - memory pool allocator - replaced by PPC_FUNC wrapper in mw05_trace_threads.cpp
     { data = 0x823B1298, size = 0x78 }, # sub_823B1298 - file load function - already has wrapper at line 2456 in mw05_trace_threads.cpp
+    # NOTE: invalid_instructions is for skipping PADDING/DATA between functions, NOT for skipping buggy functions!
+    # Use GUEST_FUNCTION_HOOK in mw05_trace_threads.cpp to replace buggy functions instead.
 ]

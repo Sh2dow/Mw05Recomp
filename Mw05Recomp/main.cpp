@@ -326,14 +326,12 @@ void KiSystemStartup()
     fflush(stderr);
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'update'");
 
-    // CRITICAL FIX: XamContentCreateEx for "update" hangs in PPC code!
-    // The PPC implementation appears to wait for something that never happens.
-    // Skip this call since update content is optional and already registered via XamRegisterContent.
-    fprintf(stderr, "[MAIN-DEBUG] SKIPPING XamContentCreateEx for 'update' (hangs in PPC code)\n");
+    // MW05_FIX: Try calling XamContentCreateEx for "update" - game might be waiting for this
+    fprintf(stderr, "[MAIN-DEBUG] Calling XamContentCreateEx for 'update'\n");
     fflush(stderr);
-    // XamContentCreateEx(0, "update", &updateContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+    XamContentCreateEx(0, "update", &updateContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
 
-    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'update' (skipped)\n");
+    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'update'\n");
     fflush(stderr);
 
     // OS mounts game data to D:
@@ -341,13 +339,12 @@ void KiSystemStartup()
     fflush(stderr);
     KernelTraceHostOpF("HOST.KiSystemStartup calling XamContentCreateEx for 'D'");
 
-    // CRITICAL FIX: XamContentCreateEx for "D" also hangs in PPC code!
-    // Skip this call since D: content is already registered via XamRegisterContent.
-    fprintf(stderr, "[MAIN-DEBUG] SKIPPING XamContentCreateEx for 'D' (hangs in PPC code)\n");
+    // MW05_FIX: Try calling XamContentCreateEx for "D" - game might be waiting for this
+    fprintf(stderr, "[MAIN-DEBUG] Calling XamContentCreateEx for 'D'\n");
     fflush(stderr);
-    // XamContentCreateEx(0, "D", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
+    XamContentCreateEx(0, "D", &gameContent, OPEN_EXISTING, nullptr, nullptr, 0, 0, nullptr);
 
-    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'D' (skipped)\n");
+    fprintf(stderr, "[MAIN-DEBUG] After XamContentCreateEx for 'D'\n");
     fflush(stderr);
 
     fprintf(stderr, "[MAIN-DEBUG] Before DLC directory iteration\n");
@@ -472,7 +469,7 @@ void KiSystemStartup()
     // EXPERIMENTAL: Send notification that the game is waiting for
     // Send it from a background thread with a delay to ensure the game has created listeners
     std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));  // Wait 2 seconds for game to create listeners
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));  // Wait 5 seconds for game to create listeners
 
         extern void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam);
 
@@ -482,11 +479,12 @@ void KiSystemStartup()
         // Try area 0 with message 0x11
         const uint32_t NOTIFICATION_AREA_0_MSG_0x11 = (0 << 16) | 0x11;
 
-        fprintf(stderr, "[NOTIFICATION-THREAD] Sending notification area=0 msg=0x11 (dwId=%08X)\n", NOTIFICATION_AREA_0_MSG_0x11);
+        fprintf(stderr, "[NOTIFICATION-THREAD] Sending notification area=0 msg=0x11 (dwId=%08X) param=0x00000001 (user 0 signed in)\n", NOTIFICATION_AREA_0_MSG_0x11);
         fflush(stderr);
         // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
         // KernelTraceHostOpF("HOST.NotificationThread sending notification area=0 msg=0x11 (dwId=%08X)", NOTIFICATION_AREA_0_MSG_0x11);
-        XamNotifyEnqueueEvent(NOTIFICATION_AREA_0_MSG_0x11, 0);
+        // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
+        XamNotifyEnqueueEvent(NOTIFICATION_AREA_0_MSG_0x11, 1);
 
         fprintf(stderr, "[NOTIFICATION-THREAD] Notification sent\n");
         fflush(stderr);

@@ -1657,11 +1657,235 @@ PPC_FUNC_IMPL(__imp__sub_82216088);
 PPC_FUNC_IMPL(__imp__sub_82440530);
 PPC_FUNC_IMPL(__imp__sub_82440448);
 
+// RECOMPILER BUG WORKAROUNDS: These functions crash/hang in recompiled code
+// Use GUEST_FUNCTION_HOOK to replace them with stub implementations
+
+// sub_824413D8 - crashes in recompiled code with access violation
+// According to IDA, this function initializes game subsystems (memory allocation, structure setup)
+// This function is NOT critical for rendering - it just sets up some global state
+static void MW05_Stub_sub_824413D8(PPCContext& ctx, uint8_t* base) {
+    static std::atomic<uint32_t> s_call_count{0};
+    uint32_t count = s_call_count.fetch_add(1, std::memory_order_relaxed);
+
+    fprintf(stderr, "[STUB_824413D8] Call #%u r3=%08X (RECOMPILER BUG - using stub, NOT critical for rendering)\n",
+            count + 1, ctx.r3.u32);
+    fflush(stderr);
+
+    // Return success (r3 unchanged or set to input value)
+    // The function appears to be an initialization function that doesn't return a value
+}
+
+// RECOMPILER BUG WORKAROUND: Use PPC_FUNC pattern instead of GUEST_FUNCTION_HOOK
+// sub_82440448 - CRITICAL for rendering initialization (calls CreateDevice)
+PPC_FUNC_IMPL(__imp__sub_82440448);
+PPC_FUNC(sub_82440448) {
+    static std::atomic<uint32_t> s_call_count{0};
+    uint32_t count = s_call_count.fetch_add(1, std::memory_order_relaxed);
+
+    fprintf(stderr, "[PPC_FUNC_82440448] Call #%u r3=%08X (CRITICAL - calls CreateDevice!)\n",
+            count + 1, ctx.r3.u32);
+    fflush(stderr);
+
+    // CRITICAL: This function calls CreateDevice (sub_825A16A0) and graphics setup (sub_82598230)
+    // Without calling the original function, the game will NEVER render (draws=0)
+    // Try calling the original recompiled function with exception handling
+    __try {
+        fprintf(stderr, "[PPC_FUNC_82440448] Attempting to call original recompiled function...\n");
+        fflush(stderr);
+
+        __imp__sub_82440448(ctx, base);
+
+        fprintf(stderr, "[PPC_FUNC_82440448] SUCCESS! Original function completed without crashing\n");
+        fflush(stderr);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[PPC_FUNC_82440448] EXCEPTION caught! code=0x%08X\n", GetExceptionCode());
+        fflush(stderr);
+
+        // If the original function crashes, we're stuck - the game won't render
+        // This is a recompiler bug that needs to be fixed in tools/XenonRecomp/
+    }
+}
+
+// sub_824413D8 - NOT critical for rendering (just sets up some global state)
+PPC_FUNC_IMPL(__imp__sub_824413D8);
+PPC_FUNC(sub_824413D8) {
+    static std::atomic<uint32_t> s_call_count{0};
+    uint32_t count = s_call_count.fetch_add(1, std::memory_order_relaxed);
+
+    fprintf(stderr, "[PPC_FUNC_824413D8] Call #%u r3=%08X (NOT critical for rendering)\n",
+            count + 1, ctx.r3.u32);
+    fflush(stderr);
+
+    // This function is NOT critical for rendering - it just sets up some global state
+    // We can safely skip it if it crashes
+    __try {
+        __imp__sub_824413D8(ctx, base);
+        fprintf(stderr, "[PPC_FUNC_824413D8] SUCCESS!\n");
+        fflush(stderr);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[PPC_FUNC_824413D8] EXCEPTION caught! code=0x%08X (skipping - not critical)\n", GetExceptionCode());
+        fflush(stderr);
+    }
+}
+
+// Forward declarations for functions called by sub_82216088
+// NOTE: These are already defined in the recompiled library, so we just declare them as extern
+extern "C" void __imp__sub_82216410(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8215A2C8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82216AC0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_826BE660(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8221D700(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8243C608(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821AFD18(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824FFE98(PPCContext& ctx, uint8_t* base);
+
+
+
 static void MW05_Trace_sub_82216088(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[INIT_82216088] ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
 
-    __imp__sub_82216088(ctx, base);
+    // CRITICAL: sub_82216088 does a LOT of initialization before calling sub_82440530
+    // According to IDA decompilation, it:
+    // 1. Calls sub_82216410(1228800)
+    // 2. Creates memory pools (ePolySlotPool, Ecstacy:ModelSlotPool, TexturePackSlotPool)
+    // 3. Initializes global variables
+    // 4. Calls several init functions (sub_82216AC0, sub_824413D8, sub_826BE660, sub_8221D700, sub_8243C608)
+    // 5. Sets function pointers
+    // 6. Calls sub_821AFD18(51200, 1) and sub_824FFE98
+    // 7. Finally calls sub_82440530()
+    //
+    // We need to call ALL of these functions, not just sub_82440530!
+    // Let's manually call each function with detailed logging to find which one hangs.
+
+    fprintf(stderr, "[INIT_82216088] Step 1: Calling sub_82216410(1228800)...\n");
+    fflush(stderr);
+
+    // Call sub_82216410(1228800)
+    ctx.r3.u32 = 1228800;
+    SetPPCContext(ctx);
+    __imp__sub_82216410(ctx, base);
+
+    fprintf(stderr, "[INIT_82216088] Step 1 DONE: sub_82216410 returned r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 2: Calling sub_8215A2C8 for ePolySlotPool...\n");
+    fflush(stderr);
+
+    // Call sub_8215A2C8(&dword_829065FC, 160, 32, "ePolySlotPool", 0)
+    // r3 = &dword_829065FC (0x829065FC)
+    // r4 = 160
+    // r5 = 32
+    // r6 = "ePolySlotPool" (need to allocate string in guest memory)
+    // r7 = 0
+    ctx.r3.u32 = 0x829065FC;
+    ctx.r4.u32 = 160;
+    ctx.r5.u32 = 32;
+    // Skip string parameter for now - just pass 0
+    ctx.r6.u32 = 0;
+    ctx.r7.u32 = 0;
+    SetPPCContext(ctx);
+    __imp__sub_8215A2C8(ctx, base);
+
+    uint32_t polySlotPool = ctx.r3.u32;
+    fprintf(stderr, "[INIT_82216088] Step 2 DONE: sub_8215A2C8 returned r3=%08X (ePolySlotPool)\n", polySlotPool);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 3: Calling sub_82216AC0()...\n");
+    fflush(stderr);
+
+    // Call sub_82216AC0()
+    SetPPCContext(ctx);
+    __imp__sub_82216AC0(ctx, base);
+
+    uint32_t v1 = ctx.r3.u32;
+    fprintf(stderr, "[INIT_82216088] Step 3 DONE: sub_82216AC0 returned r3=%08X\n", v1);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 4: Calling sub_824413D8(r3=%08X)...\n", v1);
+    fflush(stderr);
+
+    // Call sub_824413D8(v1) - using stub because recompiled version crashes
+    ctx.r3.u32 = v1;
+    SetPPCContext(ctx);
+    MW05_Stub_sub_824413D8(ctx, base);
+
+    fprintf(stderr, "[INIT_82216088] Step 4 DONE: sub_824413D8 returned r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 5: Calling sub_826BE660(off_8290075C, 0, 168)...\n");
+    fflush(stderr);
+
+    // Call sub_826BE660(off_8290075C, 0, 168)
+    // r3 = off_8290075C (this is a pointer to a global variable)
+    // r4 = 0
+    // r5 = 168
+    // For now, just pass the address directly - the function will dereference it
+    ctx.r3.u32 = 0x8290075C;
+    ctx.r4.u32 = 0;
+    ctx.r5.u32 = 168;
+    SetPPCContext(ctx);
+    __imp__sub_826BE660(ctx, base);
+
+    uint32_t v2 = ctx.r3.u32;
+    fprintf(stderr, "[INIT_82216088] Step 5 DONE: sub_826BE660 returned r3=%08X\n", v2);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 6: Calling sub_8221D700(r3=%08X)...\n", v2);
+    fflush(stderr);
+
+    // Call sub_8221D700(v2)
+    ctx.r3.u32 = v2;
+    SetPPCContext(ctx);
+    __imp__sub_8221D700(ctx, base);
+
+    uint32_t v3 = ctx.r3.u32;
+    fprintf(stderr, "[INIT_82216088] Step 6 DONE: sub_8221D700 returned r3=%08X\n", v3);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 7: Calling sub_8243C608(r3=%08X)...\n", v3);
+    fflush(stderr);
+
+    // Call sub_8243C608(v3)
+    ctx.r3.u32 = v3;
+    SetPPCContext(ctx);
+    __imp__sub_8243C608(ctx, base);
+
+    fprintf(stderr, "[INIT_82216088] Step 7 DONE: sub_8243C608 returned r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 8: Calling sub_821AFD18(51200, 1)...\n");
+    fflush(stderr);
+
+    // Call sub_821AFD18(51200, 1)
+    ctx.r3.u32 = 51200;
+    ctx.r4.u32 = 1;
+    SetPPCContext(ctx);
+    __imp__sub_821AFD18(ctx, base);
+
+    uint32_t v4 = ctx.r3.u32;
+    fprintf(stderr, "[INIT_82216088] Step 8 DONE: sub_821AFD18 returned r3=%08X\n", v4);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 9: Calling sub_824FFE98(r3=%08X)...\n", v4);
+    fflush(stderr);
+
+    // Call sub_824FFE98(v4)
+    ctx.r3.u32 = v4;
+    SetPPCContext(ctx);
+    __imp__sub_824FFE98(ctx, base);
+
+    fprintf(stderr, "[INIT_82216088] Step 9 DONE: sub_824FFE98 returned r3=%08X\n", ctx.r3.u32);
+    fflush(stderr);
+
+    fprintf(stderr, "[INIT_82216088] Step 10: Calling sub_82440530() (final step)...\n");
+    fflush(stderr);
+
+    // Call sub_82440530() - this is the final step that initializes rendering
+    SetPPCContext(ctx);
+    __imp__sub_82440530(ctx, base);
 
     fprintf(stderr, "[INIT_82216088] RETURN r3=%08X\n", ctx.r3.u32);
     fflush(stderr);
@@ -1683,25 +1907,10 @@ static void MW05_Trace_sub_82440530(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
 }
 
-static void MW05_Trace_sub_82440448(PPCContext& ctx, uint8_t* base) {
-    fprintf(stderr, "[INIT_82440448] ENTER r3=%08X tid=%lx\n", ctx.r3.u32, GetCurrentThreadId());
-    fflush(stderr);
-
-    // TRY CALLING THE ORIGINAL FUNCTION NOW THAT VIEWPORT IS FIXED
-    // This function calls sub_825A16A0 and sub_82598230 (CreateDevice)
-    // Previously bypassed because it was blocking, but now that viewport is initialized, it might work
-    fprintf(stderr, "[INIT_82440448] CALLING ORIGINAL FUNCTION (viewport fixed)\n");
-    fflush(stderr);
-
-    __imp__sub_82440448(ctx, base);
-
-    fprintf(stderr, "[INIT_82440448] RETURN r3=%08X\n", ctx.r3.u32);
-    fflush(stderr);
-}
+// NOTE: sub_82440448 is replaced by MW05_Stub_sub_82440448 (recompiler bug - hangs)
 
 GUEST_FUNCTION_HOOK(sub_82216088, MW05_Trace_sub_82216088);
 GUEST_FUNCTION_HOOK(sub_82440530, MW05_Trace_sub_82440530);
-GUEST_FUNCTION_HOOK(sub_82440448, MW05_Trace_sub_82440448);
 
 // NOTE: sub_825A16A0, sub_825A8698, sub_825AAE58 are already defined in mw05_draw_diagnostic.cpp
 

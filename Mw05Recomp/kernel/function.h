@@ -326,21 +326,21 @@ std::enable_if_t<(I < sizeof...(TArgs)), void> _translate_args_to_guest(PPCConte
 }
 
 template<auto Func>
-PPC_FUNC(HostToGuestFunction)
+PPC_FUNC(HostToGuestFunction) 
 {
     // Block printf-family (variadic) targets from using this generic bridge
     static_assert(!is_variadic_fp<decltype(Func)>::value,
-        "Variadic functions (printf family) cannot be routed via HostToGuestFunction. "
-        "Write a PPC_FUNC shim instead.");
+                  "Variadic functions (printf family) cannot be routed via HostToGuestFunction. "
+                  "Write a PPC_FUNC shim instead.");
 
-    if constexpr (is_ppc_func_ptr<decltype(Func)>::value)
+    if constexpr(is_ppc_func_ptr<decltype(Func)>::value) 
     {
         // Direct PPC trampoline: no argument translation
         KernelTraceHostBegin(ctx);
         Func(ctx, base);
         KernelTraceHostEnd();
-    }
-    else
+    } 
+    else 
     {
         using ret_t = typename function_traits<decltype(Func)>::return_type;
 
@@ -349,39 +349,36 @@ PPC_FUNC(HostToGuestFunction)
         // Expose ctx to host-side tracers for the duration of the host call
         KernelTraceHostBegin(ctx);
 
-    if constexpr (std::is_same_v<ret_t, void>)
-    {
-        std::apply(Func, args);
-        KernelTraceHostEnd();
-    }
-    else
-    {
-        auto v = std::apply(Func, args);
-        KernelTraceHostEnd();
+        if constexpr(std::is_same_v<ret_t, void>) {
+            std::apply(Func, args);
+            KernelTraceHostEnd();
+        } 
+        else 
+        {
+            auto v = std::apply(Func, args);
+            KernelTraceHostEnd();
 
-        if constexpr (std::is_pointer_v<ret_t>)
-        {
-            if (v != nullptr)
+            if constexpr(std::is_pointer_v<ret_t>) {
+                if(v != nullptr) {
+                    ctx.r3.u64 = static_cast<uint32_t>(
+                                     reinterpret_cast<size_t>(v) -
+                                     reinterpret_cast<size_t>(base));
+                } 
+                else 
+                {
+                    ctx.r3.u64 = 0;
+                }
+            } 
+            else if constexpr(is_precise_v<ret_t>) 
             {
-                ctx.r3.u64 = static_cast<uint32_t>(
-                    reinterpret_cast<size_t>(v) -
-                    reinterpret_cast<size_t>(base));
-            }
-            else
+                ctx.f1.f64 = v;
+            } 
+            else 
             {
-                ctx.r3.u64 = 0;
+                ctx.r3.u64 = static_cast<uint64_t>(v);
             }
-        }
-        else if constexpr (is_precise_v<ret_t>)
-        {
-            ctx.f1.f64 = v;
-        }
-        else
-        {
-            ctx.r3.u64 = static_cast<uint64_t>(v);
         }
     }
-}
 }
 
 template<typename T, typename TFunction, typename... TArgs>

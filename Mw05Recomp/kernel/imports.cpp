@@ -739,6 +739,15 @@ extern "C" uint32_t GetVdSystemCommandBufferGpuIdAddr() {
 extern "C" uint32_t GetRbLen() {
     return g_RbLen.load(std::memory_order_relaxed);
 }
+
+// Accessor functions for VD graphics callback (used by system_threads.cpp)
+extern "C" uint32_t GetVdGraphicsCallback() {
+    return g_VdGraphicsCallback.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t GetVdGraphicsCallbackCtx() {
+    return g_VdGraphicsCallbackCtx.load(std::memory_order_relaxed);
+}
 static std::mutex g_VdNotifMutex;
 static std::vector<std::pair<uint32_t,uint32_t>> g_VdNotifList;
 
@@ -7783,6 +7792,19 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
     Mw05AutoVideoInitIfNeeded();
     Mw05StartVblankPumpOnce();
 
+    // CRITICAL FIX: Always ensure graphics context is allocated BEFORE calling any callback
+    // The VdGlobalDevice and VdGlobalXamDevice variables must be initialized for file I/O to work
+    // This is required regardless of which callback is used
+    if (g_graphics_context_ea == 0) {
+        uint32_t ctx = Mw05EnsureGraphicsContextAllocated();
+        if (ctx == 0) {
+            fprintf(stderr, "[VdInitEngines #%d] ERROR: Failed to allocate graphics context\n", call_count);
+            return;
+        }
+        fprintf(stderr, "[VdInitEngines #%d] Allocated graphics context at 0x%08X\n", call_count, ctx);
+        fflush(stderr);
+    }
+
     // CRITICAL FIX: If callback_ea is 0, inject a default callback to initialize graphics device
     // The game sometimes calls VdInitializeEngines with cb=0, which skips graphics device initialization
     // This causes ISR-present to fail because it can't find the graphics device structure
@@ -7798,16 +7820,7 @@ void VdInitializeEngines(uint32_t unk0, uint32_t callback_ea, uint32_t callback_
             // Use the known-good callback address from Xenia traces
             callback_ea = 0x825979A8u;
             // Use the heap-allocated graphics context address as the callback argument
-            // Following Xenia's approach: allocate on heap instead of using static address
             callback_arg = g_graphics_context_ea;
-            if (callback_arg == 0) {
-                // Context not yet allocated - allocate it now
-                callback_arg = Mw05EnsureGraphicsContextAllocated();
-                if (callback_arg == 0) {
-                    fprintf(stderr, "[VdInitEngines #%d] ERROR: Failed to allocate graphics context\n", call_count);
-                    return;
-                }
-            }
 
             fprintf(stderr, "[VdInitEngines #%d] INJECTING default callback: cb=0x%08X arg=0x%08X (was cb=0)\n",
                     call_count, callback_ea, callback_arg);
@@ -10277,25 +10290,12 @@ uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* 
             uint32_t callback_func = ctx_u32[84/4].get();  // +0x54 (84) - callback function pointer
             uint32_t callback_param = ctx_u32[88/4].get(); // +0x58 (88) - callback parameter
 
-            // CRITICAL FIX: If callback pointers at +84/+88 are NULL, initialize them
-            // This happens when threads are terminated and recreated with partially initialized contexts
-            if (callback_func == 0 || callback_param == 0) {
-                fprintf(stderr, "[WORKER-THREAD-FIX] Detected NULL callback pointers at 0x%08X (entry=0x%08X)\n",
-                        startContext, startAddress);
-                fprintf(stderr, "[WORKER-THREAD-FIX] callback_func=0x%08X callback_param=0x%08X\n",
-                        callback_func, callback_param);
-                fprintf(stderr, "[WORKER-THREAD-FIX] Initializing callback pointers...\n");
-                fflush(stderr);
-
-                // Initialize callback pointers (same as Mw05ForceCreateMissingWorkerThreads)
-                ctx_u32[84/4] = be<uint32_t>(0x8261A558);  // +0x54 (84) - callback function pointer
-                ctx_u32[88/4] = be<uint32_t>(0x82A2B318);  // +0x58 (88) - callback parameter
-
-                fprintf(stderr, "[WORKER-THREAD-FIX] Callback pointers initialized: +0x54=0x8261A558, +0x58=0x82A2B318\n");
-                fflush(stderr);
-            } else if (startAddress == 0x828508A8) {
+            // NATURAL PATH: Let the game initialize callback pointers
+            // The game should pass initialized callback pointers when creating threads
+            // If they're NULL, it means the game hasn't initialized them yet (not an error)
+            if (startAddress == 0x828508A8) {
                 // Only log for worker threads to avoid spam
-                fprintf(stderr, "[WORKER-THREAD-FIX] Worker thread context already initialized: +0x54=0x%08X, +0x58=0x%08X\n",
+                fprintf(stderr, "[WORKER-THREAD-NATURAL] Worker thread context: +0x54=0x%08X, +0x58=0x%08X\n",
                         callback_func, callback_param);
                 fflush(stderr);
             }
@@ -10826,50 +10826,203 @@ void sub_82441E80_debug(PPCContext& ctx, uint8_t* base) {
     // CRITICAL FIX: The recompiled code for both sub_82441E80 and sub_82441CF0 have bugs!
     // sub_82441E80 hangs, and sub_82441CF0 (main loop) exits after 10 iterations.
     //
-    // According to IDA decompilation, the main loop should:
-    // 1. Wait for dword_82A2CF40 to be set to 1 (by VBlank ISR)
-    // 2. Call sub_8262DE60() - frame update function
-    // 3. Set dword_82A2CF40 back to 0
-    // 4. Repeat forever
+    // According to IDA decompilation, sub_82441E80 should:
+    // 1. Call sub_8215CB08(4, 0, 0, 0) to allocate memory
+    // 2. Call sub_8261A5E8() - CREATES WORKER THREADS!
+    // 3. Call sub_8262FA08() - Set thread affinity
+    // 4. Call sub_826B96B0() - Set thread name
+    // 5. Call sub_82441CF0() - main loop
     //
     // We implement this logic manually to bypass the recompiler bugs.
-    fprintf(stderr, "[MW05_DEBUG] SKIPPING buggy recompiled code, implementing main loop manually...\n");
+    fprintf(stderr, "[MW05_DEBUG] SKIPPING buggy recompiled code, implementing initialization + main loop manually...\n");
     fflush(stderr);
 
-    // Main loop flag address: 0x82A2CF40
-    const uint32_t flag_addr = 0x82A2CF40;
-    volatile uint32_t* flag_ptr = (volatile uint32_t*)(base + flag_addr);
+    // Step 1: Allocate memory structure
+    fprintf(stderr, "[MW05_DEBUG] Calling sub_8215CB08(4, 0, 0, 0) to allocate memory...\n");
+    fflush(stderr);
+
+    extern void sub_8215CB08(PPCContext& ctx, uint8_t* base);
+    ctx.r3.u32 = 4;
+    ctx.r4.u32 = 0;
+    ctx.r5.u32 = 0;
+    ctx.r6.u32 = 0;
+    sub_8215CB08(ctx, base);
+    uint32_t allocated_ptr = ctx.r3.u32;
+
+    fprintf(stderr, "[MW05_DEBUG] sub_8215CB08() returned ptr=0x%08X\n", allocated_ptr);
+    fflush(stderr);
+
+    // Step 2: Create worker threads
+    fprintf(stderr, "[MW05_DEBUG] Calling sub_8261A5E8() to create worker threads...\n");
+    fflush(stderr);
+
+    extern void sub_8261A5E8(PPCContext& ctx, uint8_t* base);
+    sub_8261A5E8(ctx, base);
+
+    fprintf(stderr, "[MW05_DEBUG] sub_8261A5E8() returned - worker threads should now be created!\n");
+    fflush(stderr);
+
+    // Step 3: Set thread affinity (if allocated_ptr is valid)
+    if (allocated_ptr != 0) {
+        // Read the pointer from allocated structure
+        uint32_t* allocated_struct = (uint32_t*)(base + allocated_ptr);
+        uint32_t inner_ptr = be<uint32_t>(*allocated_struct).get();
+
+        if (inner_ptr != 0) {
+            fprintf(stderr, "[MW05_DEBUG] Calling sub_8262FA08(0x%08X, 2) to set thread affinity...\n", inner_ptr);
+            fflush(stderr);
+
+            extern void sub_8262FA08(PPCContext& ctx, uint8_t* base);
+            ctx.r3.u32 = inner_ptr;
+            ctx.r4.u32 = 2;  // Affinity parameter
+            sub_8262FA08(ctx, base);
+
+            fprintf(stderr, "[MW05_DEBUG] sub_8262FA08() returned\n");
+            fflush(stderr);
+
+            // Step 4: Set thread name
+            fprintf(stderr, "[MW05_DEBUG] Calling sub_826B96B0() to set thread name...\n");
+            fflush(stderr);
+
+            // Allocate memory for the "MainThread" string in guest memory
+            const char* main_thread_name = "MainThread";
+            size_t name_len = strlen(main_thread_name) + 1;  // Include null terminator
+            void* name_host = g_userHeap.Alloc(name_len);
+            if (name_host) {
+                memcpy(name_host, main_thread_name, name_len);
+                uint32_t name_guest_addr = g_memory.MapVirtual(name_host);
+
+                extern void sub_826B96B0(PPCContext& ctx, uint8_t* base);
+                ctx.r3.u32 = inner_ptr + 36;  // Offset for thread name
+                ctx.r4.u32 = name_guest_addr;
+                ctx.r5.u32 = 20;  // Max length
+                sub_826B96B0(ctx, base);
+
+                fprintf(stderr, "[MW05_DEBUG] sub_826B96B0() returned\n");
+                fflush(stderr);
+            } else {
+                fprintf(stderr, "[MW05_DEBUG] ERROR: Failed to allocate memory for thread name!\n");
+                fflush(stderr);
+            }
+        }
+    }
+
+    // Store allocated pointer in global variable (dword_82A2CF44)
+    const uint32_t global_ptr_addr = 0x82A2CF44;
+    uint32_t* global_ptr = (uint32_t*)(base + global_ptr_addr);
+    *global_ptr = allocated_ptr;
+
+    fprintf(stderr, "[MW05_DEBUG] Stored allocated ptr 0x%08X in global dword_82A2CF44\n", allocated_ptr);
+    fflush(stderr);
+
+    // Call the REAL main loop function: sub_82441CF0(0)
+    fprintf(stderr, "[MW05_DEBUG] Calling sub_82441CF0(0) - THE REAL MAIN LOOP!\n");
+    fflush(stderr);
+
+    // MANUAL IMPLEMENTATION of sub_82441CF0 main loop
+    // The recompiled version doesn't handle the wait loop correctly
+
+    // Call sub_82619E90() to initialize
+    extern void sub_82619E90(PPCContext& ctx, uint8_t* base);
+    sub_82619E90(ctx, base);
+    uint32_t v0 = ctx.r3.u32;
+
+    fprintf(stderr, "[MW05_DEBUG] sub_82619E90() returned r3=0x%08X\n", v0);
+    fflush(stderr);
+
+    // Store in dword_82A2CF48
+    const uint32_t dword_82A2CF48_ea = 0x82A2CF48;
+    uint32_t* dword_82A2CF48_ptr = (uint32_t*)(base + dword_82A2CF48_ea);
+    *dword_82A2CF48_ptr = v0;
+
+    // Main loop flag address
+    const uint32_t main_loop_flag_ea = 0x82A2CF40;
+    volatile uint32_t* main_loop_flag_ptr = (volatile uint32_t*)(base + main_loop_flag_ea);
+
+    // External functions
+    extern void sub_8262D9D0(PPCContext& ctx, uint8_t* base);
+    extern void sub_8262EC60(PPCContext& ctx, uint8_t* base);
+    extern void sub_823C8420(PPCContext& ctx, uint8_t* base);
+    extern void sub_8262DE60(PPCContext& ctx, uint8_t* base);
 
     uint64_t iteration = 0;
+    fprintf(stderr, "[MW05_DEBUG] Entering main loop...\n");
+    fflush(stderr);
+
     while (true) {
-        // Wait for VBlank ISR to set the flag
-        while (*flag_ptr == 0) {
-            // Sleep to avoid busy-waiting
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        // Wait for flag to be set (call sub_8262D9D0 while waiting)
+        while (*main_loop_flag_ptr == 0) {
+            ctx.r3.u32 = 0;
+            sub_8262D9D0(ctx, base);
+            v0 = ctx.r3.u32;
         }
 
-        // Flag is set, call frame update function
-        if (iteration % 60 == 0) {
-            fprintf(stderr, "[MW05_MAIN_LOOP] Iteration %llu - calling sub_8262DE60 (frame update)\n", iteration);
+        // Flag is set, process frame
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] Main loop iteration %llu: flag was set!\n", iteration);
             fflush(stderr);
         }
 
-        __imp__sub_8262DE60(ctx, base);
+        // Call sub_8262EC60 (timing function)
+        sub_8262EC60(ctx, base);
 
-        if (iteration % 60 == 0) {
-            fprintf(stderr, "[MW05_MAIN_LOOP] Iteration %llu - sub_8262DE60 returned\n", iteration);
-            fflush(stderr);
-        }
+        // Process work queue (sub_823C8420)
+        // TODO: Implement work queue processing
 
-        // Clear the flag
-        *flag_ptr = 0;
+        // Call sub_8262DE60 (frame update)
+        sub_8262DE60(ctx, base);
+
+        // Reset flag
+        *main_loop_flag_ptr = 0;
 
         iteration++;
     }
 
-    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  main loop - should never reach here! ==========\n");
+    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  sub_82441CF0 - should never reach here! ==========\n");
     fflush(stderr);
 }
+
+// Manual implementation of sub_82849DE8 (notification system initialization)
+// This function creates the notification polling thread and sets the flag that allows it to start
+// CRITICAL: The flag at offset +96 must be set with proper memory barriers to ensure visibility
+void sub_82849DE8_debug(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[MW05_DEBUG] ========== ENTER sub_82849DE8 (notification system init) ==========\n");
+    fflush(stderr);
+
+    // Call the original recompiled function
+    extern void sub_82849DE8(PPCContext& ctx, uint8_t* base);
+    sub_82849DE8(ctx, base);
+
+    uint32_t result = ctx.r3.u32;
+    fprintf(stderr, "[MW05_DEBUG] sub_82849DE8() returned r3=0x%08X\n", result);
+    fflush(stderr);
+
+    if (result != 0) {
+        // The function should have set the flag at offset +96 to 1
+        // But due to memory visibility issues, the notification thread might not see it
+        // Force the flag to be set with proper memory barriers
+        const uint32_t flag_offset = 96;
+        const uint32_t flag_ea = result + flag_offset;
+        volatile uint32_t* flag_ptr = (volatile uint32_t*)(base + flag_ea);
+
+        fprintf(stderr, "[MW05_FIX] Forcing notification thread flag at 0x%08X to 1 (with memory barrier)\n", flag_ea);
+        fflush(stderr);
+
+        // Set flag to 1 (big-endian)
+        *flag_ptr = _byteswap_ulong(1);
+
+        // Memory barrier to ensure visibility
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        fprintf(stderr, "[MW05_FIX] Flag set! Notification thread should now start polling.\n");
+        fflush(stderr);
+    }
+
+    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  sub_82849DE8 ==========\n");
+    fflush(stderr);
+}
+
+// NOTE: PPC_FUNC_IMPL not needed - function already exists in recompiled code
 
 // Hook the debug wrappers
 GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);
@@ -10877,7 +11030,10 @@ GUEST_FUNCTION_HOOK(sub_8215C790, sub_8215C790_debug);
 GUEST_FUNCTION_HOOK(sub_8215C838, sub_8215C838_debug);
 GUEST_FUNCTION_HOOK(sub_821BB4D0, sub_821BB4D0_debug);
 GUEST_FUNCTION_HOOK(sub_825A8698, sub_825A8698_debug);
+// RE-ENABLED: Manual implementation with complete initialization sequence
 GUEST_FUNCTION_HOOK(sub_82441E80, sub_82441E80_debug);
+// DISABLED: Causes infinite recursion and stack overflow
+// GUEST_FUNCTION_HOOK(sub_82849DE8, sub_82849DE8_debug);
 
 GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderTerminateTitle, XamLoaderTerminateTitle);

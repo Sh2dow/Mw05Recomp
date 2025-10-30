@@ -314,19 +314,12 @@ static std::atomic<bool> g_forcedGraphicsInit{false};
 extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint32_t>* threadId, uint32_t xApiThreadStartup, uint32_t startAddress, uint32_t startContext, uint32_t creationFlags);
 extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount);
 
-// DISABLED: Force creation of missing worker threads
-// The natural initialization path now works correctly:
-// 1. _xstart calls sub_82441E80
-// 2. sub_82441E80 calls sub_8261A5E8 with work_func=sub_82441E58
-// 3. sub_8261A5E8 creates thread with callback=sub_8261A558
-// 4. Thread calls sub_828508A8 which copies callback pointers to global structure
-// 5. Thread calls sub_82850820 which reads callback from global structure
-// 6. Callback sub_8261A558 calls work_func sub_82441E58
-// 7. sub_82441E58 calls sub_823B0190 -> sub_823AF590 -> ... -> CreateDevice
+// Force creation of missing worker threads
+// The natural initialization path does NOT work - worker threads are never created!
+// This function force-creates the worker threads to unblock the game initialization.
 // NOTE: This function is called from guest_thread.cpp, so it cannot be static
 void Mw05ForceCreateMissingWorkerThreads() {
-    // DISABLED: Natural initialization now works
-    return;
+    // RE-ENABLED: Natural initialization does NOT work - worker threads never created!
 
     static std::atomic<bool> s_created{false};
     static std::atomic<int> s_check_count{0};
@@ -799,6 +792,17 @@ PPC_FUNC(sub_826B96B0) {
 
 // Trace sub_8261A5E8 - this appears to be the function that creates threads
 // Called from sub_82441E80 (main game initialization)
+//
+// CRITICAL FIX: The recompiled version has an endianness bug!
+// It stores the thread handle in guest memory without proper byte-swapping,
+// then reads it back and returns a corrupted value.
+//
+// Example:
+// - ExCreateThread returns 0xA0008810 (little-endian, host format)
+// - Recompiled code stores it in guest memory incorrectly
+// - Recompiled code reads it back and returns 0x88980366 (WRONG!)
+//
+// We override this function to fix the endianness handling.
 PPC_FUNC_IMPL(__imp__sub_8261A5E8);
 PPC_FUNC(sub_8261A5E8) {
     fprintf(stderr, "[THREAD_8261A5E8] ENTER r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X\n",
@@ -807,6 +811,40 @@ PPC_FUNC(sub_8261A5E8) {
 
     // Call the original function
     __imp__sub_8261A5E8(ctx, base);
+
+    // ENDIANNESS FIX: The return value in r3 is corrupted due to endianness bug
+    // We need to find the correct handle value from the guest memory location
+    // The function stores the handle at **a1 (r3 points to *a1)
+    //
+    // From IDA: **a1 = sub_82850930(...); return **a1;
+    // So we need to read the handle from the memory location pointed to by *r3
+
+    uint32_t a1_ptr = ctx.r3.u32;  // r3 contains the pointer to *a1
+    if (a1_ptr != 0) {
+        extern Memory g_memory;
+        void* a1_host = g_memory.Translate(a1_ptr);
+        if (a1_host) {
+            // Read *a1 (pointer to the structure)
+            be<uint32_t>* a1_guest = reinterpret_cast<be<uint32_t>*>(a1_host);
+            uint32_t struct_ptr = *a1_guest;  // Read big-endian pointer
+
+            if (struct_ptr != 0) {
+                void* struct_host = g_memory.Translate(struct_ptr);
+                if (struct_host) {
+                    // Read **a1 (the thread handle at offset 0)
+                    be<uint32_t>* struct_guest = reinterpret_cast<be<uint32_t>*>(struct_host);
+                    uint32_t correct_handle = *struct_guest;  // Read big-endian handle
+
+                    fprintf(stderr, "[THREAD_8261A5E8] ENDIANNESS FIX: r3 was %08X, corrected to %08X\n",
+                            ctx.r3.u32, correct_handle);
+                    fflush(stderr);
+
+                    // Fix the return value
+                    ctx.r3.u32 = correct_handle;
+                }
+            }
+        }
+    }
 
     fprintf(stderr, "[THREAD_8261A5E8] EXIT r3=%08X (return value)\n", ctx.r3.u32);
     fflush(stderr);

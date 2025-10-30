@@ -41,6 +41,9 @@ savevmx_64_address   = 0x826BE854
 # NOTE: This list should be populated from actual recompiler errors
 # Currently empty - let the recompiler handle everything automatically
 functions = [
+    { address = 0x8215CB08, size = 0x290 }, # allocate memory
+    { address = 0x8262FA08, size = 0xAC }, # set thread affinity
+    { address = 0x826B96B0, size = 0x58 } # set thread name
 ]
 
 # Invalid instructions (if any are discovered during testing)

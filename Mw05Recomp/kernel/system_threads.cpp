@@ -15,14 +15,29 @@ extern Memory g_memory;
 extern "C" {
     // XKEVENT is a typedef for XDISPATCHER_HEADER in xbox.h, don't redeclare it
     uint32_t KeSetEvent(XKEVENT* Event, int32_t Increment, bool Wait);
+
+    // Ring buffer accessors from imports.cpp
+    uint32_t GetRbWriteBackPtr();
+    uint32_t GetRbLen();
+
+    // From mw05_trace_shims.cpp namespace
+    uint32_t Mw05GetRingBaseEA();
 }
+
+// PM4 parser functions from pm4_parser.cpp
+extern void PM4_OnRingBufferWrite(uint32_t writePtr);
+extern uint64_t PM4_GetDrawCount();
+
+// VD callback accessors from imports.cpp
+extern "C" uint32_t GetVdGraphicsCallback();
+extern "C" uint32_t GetVdGraphicsCallbackCtx();
 
 // System thread entry points - these are stub implementations that just sleep
 // The game doesn't actually use these threads, but it expects them to exist
 
 static std::atomic<bool> g_systemThreadsRunning{false};
 
-// GPU Commands thread - signals the render thread event to wake it up
+// GPU Commands thread - processes PM4 commands from the ring buffer
 static void GpuCommandsThreadEntry()
 {
     KernelTraceHostOp("HOST.SystemThread.GPUCommands.start");
@@ -35,15 +50,96 @@ static void GpuCommandsThreadEntry()
     uint32_t ctx = ctx_str ? (uint32_t)std::strtoul(ctx_str, nullptr, 0) : 0x40009D2Cu;
     uint32_t event_ea = ctx + 0x20;  // Event is at ctx+0x20 (0x40009D4C)
 
-    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands will signal event at 0x%08X (ctx=0x%08X)\n", event_ea, ctx);
+    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands will process PM4 ring buffer and signal event at 0x%08X (ctx=0x%08X)\n", event_ea, ctx);
     fflush(stderr);
 
-    // Wait a bit for the render thread to be created and start waiting
+    // Wait a bit for the ring buffer to be initialized
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     uint32_t signal_count = 0;
+    uint32_t last_rptr = 0;
+    uint64_t last_draw_count = 0;
+    bool logged_state = false;
+
     while (g_systemThreadsRunning.load(std::memory_order_acquire))
     {
+        // Get ring buffer state
+        uint32_t wb_ea = GetRbWriteBackPtr();
+        uint32_t rb_base = Mw05GetRingBaseEA();
+        uint32_t rb_len_log2 = GetRbLen();
+
+        // Log ring buffer state once
+        if (!logged_state && wb_ea && rb_base && rb_len_log2) {
+            fprintf(stderr, "[GPU-COMMANDS] Ring buffer state: wb_ea=0x%08X rb_base=0x%08X rb_len_log2=%u\n",
+                    wb_ea, rb_base, rb_len_log2);
+            fflush(stderr);
+            logged_state = true;
+        }
+
+        if (wb_ea && rb_base && rb_len_log2) {
+            // Read current read pointer (rptr) from writeback address
+            auto* rptr_host = reinterpret_cast<uint32_t*>(g_memory.Translate(wb_ea));
+            if (rptr_host) {
+                uint32_t rptr = *rptr_host;
+
+                // Log first few rptr values
+                if (signal_count <= 5) {
+                    fprintf(stderr, "[GPU-COMMANDS] rptr=0x%08X (last=0x%08X)\n", rptr, last_rptr);
+                    fflush(stderr);
+                }
+
+                // Check if there are new commands to process (rptr changed)
+                if (rptr != last_rptr) {
+                    fprintf(stderr, "[GPU-COMMANDS] rptr changed from 0x%08X to 0x%08X, processing PM4 commands\n",
+                            last_rptr, rptr);
+                    fflush(stderr);
+
+                    // Process PM4 commands from ring buffer
+                    PM4_OnRingBufferWrite(rptr);
+
+                    // Check if we found any draw commands
+                    uint64_t draw_count = PM4_GetDrawCount();
+                    if (draw_count != last_draw_count) {
+                        fprintf(stderr, "[GPU-COMMANDS] Processed PM4 commands, draws=%llu (new: %llu)\n",
+                                draw_count, draw_count - last_draw_count);
+                        fflush(stderr);
+                        last_draw_count = draw_count;
+                    }
+
+                    // DISABLED: VD ISR source=1 call causes crash
+                    // The crash happens because we're calling from a host thread without proper guest context
+                    // Instead, we'll set a flag that the VBlank ISR can check and call VD ISR source=1 from there
+                    // This way, the VD ISR will be called from a thread with proper guest context
+                    #if 0
+                    uint32_t vd_callback = GetVdGraphicsCallback();
+                    uint32_t vd_ctx = GetVdGraphicsCallbackCtx();
+                    if (vd_callback != 0 && vd_ctx != 0) {
+                        static uint32_t s_vd_isr_call_count = 0;
+                        s_vd_isr_call_count++;
+
+                        if (s_vd_isr_call_count <= 5 || s_vd_isr_call_count % 60 == 0) {
+                            fprintf(stderr, "[GPU-COMMANDS] Calling VD ISR with source=1 (CPU interrupt) cb=0x%08X ctx=0x%08X count=%u\n",
+                                    vd_callback, vd_ctx, s_vd_isr_call_count);
+                            fflush(stderr);
+                        }
+
+                        // Call the VD ISR with source=1 (CPU interrupt)
+                        // This tells the game that PM4 commands have been processed
+                        // Wrapped in try-catch to debug crash
+                        __try {
+                            GuestToHostFunction<void>(vd_callback, 1u, vd_ctx);
+                        } __except(EXCEPTION_EXECUTE_HANDLER) {
+                            fprintf(stderr, "[GPU-COMMANDS] VD ISR source=1 crashed! Exception code: 0x%08X\n", GetExceptionCode());
+                            fflush(stderr);
+                        }
+                    }
+                    #endif
+
+                    last_rptr = rptr;
+                }
+            }
+        }
+
         // Signal the render thread event to wake it up
         if (auto* evt = reinterpret_cast<XKEVENT*>(g_memory.Translate(event_ea))) {
             KeSetEvent(evt, 1, false);
@@ -51,7 +147,8 @@ static void GpuCommandsThreadEntry()
 
             // Log first few signals for debugging
             if (signal_count <= 5 || signal_count % 60 == 0) {
-                fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event 0x%08X (count=%u)\n", event_ea, signal_count);
+                fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event 0x%08X (count=%u, draws=%llu)\n",
+                        event_ea, signal_count, PM4_GetDrawCount());
                 fflush(stderr);
             }
         }
@@ -60,7 +157,8 @@ static void GpuCommandsThreadEntry()
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
-    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event %u times total\n", signal_count);
+    fprintf(stderr, "[SYSTEM-THREAD] GPU Commands signaled event %u times total, processed %llu draws\n",
+            signal_count, PM4_GetDrawCount());
     fflush(stderr);
     KernelTraceHostOp("HOST.SystemThread.GPUCommands.exit");
 }

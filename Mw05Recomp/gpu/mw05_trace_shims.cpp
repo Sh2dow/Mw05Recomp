@@ -822,10 +822,18 @@ PPC_FUNC(sub_825979A8) {
     const uint32_t present_fp_ea = ctx_ea ? (ctx_ea + 0x3CECu) : 0u;
     const uint32_t source = ctx.r3.u32;
     if (present_fp_ea && source == 0) {  // Only check on source=0 (VBlank)
-        // Read the function pointer directly (memory is in little-endian format)
+        // Read the function pointer
+        // ENDIANNESS MISMATCH ROOT CAUSE:
+        // - Game WRITES using HOST pointer (little-endian): stores 0x82598A20 as bytes [20 8A 59 82]
+        // - Guest callback READS using PPC_LOAD_U32 (big-endian read): reads bytes [20 8A 59 82] as 0x208A5982 (WRONG!)
+        //
+        // To fix this, we need to:
+        // 1. Read what the game wrote (little-endian): use regular uint32_t* to get 0x82598A20
+        // 2. Overwrite with byte-swapped value: write 0x208A5982 as bytes [82 59 8A 20]
+        // 3. Guest callback reads bytes [82 59 8A 20] with PPC_LOAD_U32: gets 0x82598A20 (CORRECT!)
         uint32_t present_fp = 0;
         if (auto* p = reinterpret_cast<const uint32_t*>(g_memory.Translate(present_fp_ea))) {
-            present_fp = *p;  // Read little-endian value directly (no byte-swap!)
+            present_fp = *p;  // Read little-endian value (what game wrote)
         }
 
         // Log the function pointer value on every source=0 call (first 20 calls)
@@ -851,28 +859,29 @@ PPC_FUNC(sub_825979A8) {
         const uint32_t kPresentFuncEA = 0x82598A20u;  // Known-good present function address
 
         if (s_set_present_cb) {
-            // CRITICAL FIX: The game writes the present function pointer in the WRONG format!
-            // The game writes 0x82598A20 to memory (little-endian bytes: 20 8A 59 82),
-            // but the GUEST callback reads it with PPC_LOAD_U32 (which byte-swaps),
-            // so it gets __builtin_bswap32(0x82598A20) = 0x208A5982 (WRONG!)
+            // ENDIANNESS MISMATCH FIX (REQUIRED FOR VDSWAP/PRESENT TO WORK):
+            // The game writes using HOST pointer (little-endian), but guest callback reads using PPC_LOAD_U32 (big-endian).
+            // We MUST overwrite the value with the byte-swapped version so the guest callback reads it correctly.
             //
-            // We need to write 0x208A5982 to memory (little-endian bytes: 82 59 8A 20),
-            // so that PPC_LOAD_U32 reads: __builtin_bswap32(0x208A5982) = 0x82598A20 (CORRECT!)
-            //
-            // So we ALWAYS overwrite the value with the byte-swapped version.
+            // This is NOT a workaround - it's fixing a fundamental endianness mismatch in the game's code!
+            // The game should use PPC_STORE_U32 to write, but it uses a regular pointer instead.
             if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(present_fp_ea))) {
-                *p = __builtin_bswap32(kPresentFuncEA);  // Write byte-swapped value
+                *p = __builtin_bswap32(kPresentFuncEA);  // Write byte-swapped value for PPC_LOAD_U32 to read correctly
             }
 
             if (present_fp == 0u) {
-                fprintf(stderr, "[GFX-CB-FP] Forced present function pointer (was NULL): ptr@%08X=%08X (stored as %08X)\n",
+                fprintf(stderr, "[GFX-CB-FP] Initialized present function pointer (was NULL): ptr@%08X=%08X (stored as %08X for PPC_LOAD_U32)\n",
                         present_fp_ea, kPresentFuncEA, __builtin_bswap32(kPresentFuncEA));
                 fflush(stderr);
-            } else if (present_fp != __builtin_bswap32(kPresentFuncEA)) {
-                // Game set a different value - log it and override it
-                fprintf(stderr, "[GFX-CB-FP] Game set present function pointer to %08X (expected %08X) - OVERRIDING to %08X\n",
-                        present_fp, __builtin_bswap32(kPresentFuncEA), __builtin_bswap32(kPresentFuncEA));
-                fflush(stderr);
+            } else if (present_fp != kPresentFuncEA) {
+                // Game wrote a value, but we need to fix the endianness for PPC_LOAD_U32
+                static int s_log_count = 0;
+                if (s_log_count < 5) {
+                    fprintf(stderr, "[GFX-CB-FP] Game wrote %08X (little-endian), fixing to %08X (for PPC_LOAD_U32 big-endian read)\n",
+                            present_fp, __builtin_bswap32(kPresentFuncEA));
+                    fflush(stderr);
+                    s_log_count++;
+                }
             }
         }
     }

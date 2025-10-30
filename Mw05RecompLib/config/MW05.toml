@@ -42,8 +42,11 @@ savevmx_64_address   = 0x826BE854
 # Currently empty - let the recompiler handle everything automatically
 functions = [
     { address = 0x8215CB08, size = 0x290 }, # allocate memory
-    { address = 0x8262FA08, size = 0xAC }, # set thread affinity
-    { address = 0x826B96B0, size = 0x58 } # set thread name
+    { address = 0x8215C790, size = 0xA8 },  # find free pool slot (returns 64-bit value in r3:r4)
+    { address = 0x8215C838, size = 0x50 },  # initialize pool slot
+    { address = 0x821BB4D0, size = 0x90 },  # audio initialization
+    { address = 0x8262FA08, size = 0xAC },  # set thread affinity
+    { address = 0x826B96B0, size = 0x58 }   # set thread name
 ]
 
 # Invalid instructions (if any are discovered during testing)

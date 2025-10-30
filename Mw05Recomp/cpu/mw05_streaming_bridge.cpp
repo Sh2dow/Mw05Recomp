@@ -18,6 +18,8 @@
 
 #include <string>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
 
 #include <kernel/io/file_system.h>
 
@@ -42,15 +44,38 @@ namespace {
         return lr >= 0x8215BE00ull && lr < 0x8215C400ull;
     }
 
+    // THREAD-SAFE: Cache environment variables at first access to avoid race conditions
+    // std::getenv is NOT thread-safe, so we cache the values using a mutex
     inline bool ReadEnvBool(const char* name, bool defValue=false) {
+        static std::mutex s_cache_mutex;
+        static std::unordered_map<std::string, bool> s_cache;
+
+        std::lock_guard<std::mutex> lock(s_cache_mutex);
+        auto it = s_cache.find(name);
+        if (it != s_cache.end()) {
+            return it->second;
+        }
+
+        // First access - read from environment and cache
         const char* v = std::getenv(name);
-        if (!v) return defValue;
-        if (v[0]=='0' && v[1]=='\0') return false;
-        auto eq_ci = [](const char* a, const char* b){
-            for (; *a && *b; ++a, ++b) if (std::tolower(*a) != std::tolower(*b)) return false;
-            return *a == 0 && *b == 0; };
-        if (eq_ci(v, "false") || eq_ci(v, "off") || eq_ci(v, "no")) return false;
-        return true;
+        bool result = defValue;
+        if (v) {
+            if (v[0]=='0' && v[1]=='\0') {
+                result = false;
+            } else {
+                auto eq_ci = [](const char* a, const char* b){
+                    for (; *a && *b; ++a, ++b) if (std::tolower(*a) != std::tolower(*b)) return false;
+                    return *a == 0 && *b == 0; };
+                if (eq_ci(v, "false") || eq_ci(v, "off") || eq_ci(v, "no")) {
+                    result = false;
+                } else {
+                    result = true;
+                }
+            }
+        }
+
+        s_cache[name] = result;
+        return result;
     }
 
     // Best-effort clear of a scheduler block at blockEA (five u32 words)

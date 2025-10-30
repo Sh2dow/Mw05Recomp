@@ -48,6 +48,11 @@
 #include <fenv.h>
 #endif
 
+// Worker pool constants initializer
+namespace Mw05WorkerPoolInit {
+    void InitializeWorkerPoolConstants();
+}
+
 // Forward declarations for kernel functions
 extern uint32_t KeTlsAlloc();
 
@@ -210,6 +215,12 @@ void KiSystemStartup()
     // Initialize heap now that C runtime is fully ready
     g_userHeap.Init();
     g_userHeap.inGlobalConstruction = false;  // Mark that global construction is complete
+
+    // Initialize worker pool constants BEFORE running other callbacks
+    // This must run early to set up the pool structure that the game expects
+    fprintf(stderr, "[MAIN] Initializing worker pool constants...\n");
+    fflush(stderr);
+    Mw05WorkerPoolInit::InitializeWorkerPoolConstants();
 
     // Run all registered initialization callbacks in priority order
     // This replaces the old static constructor approach which caused crashes

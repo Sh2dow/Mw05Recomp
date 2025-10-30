@@ -364,23 +364,20 @@ void Mw05ForceCreateMissingWorkerThreads() {
         fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure NOT initialized yet (work_func=0x%08X)\n", work_func_ptr);
 
         // FORCE INITIALIZATION: Initialize the callback parameter structure immediately
-        // Environment variable MW05_FORCE_INIT_CALLBACK_PARAM enables this
-        static bool s_force_init_enabled = (std::getenv("MW05_FORCE_INIT_CALLBACK_PARAM") != nullptr);
+        // ALWAYS ENABLED BY DEFAULT - the game never initializes this naturally
         static bool s_force_init_done = false;
-        static bool s_logged_env = false;
+        static bool s_logged_once = false;
 
-        if (!s_logged_env) {
-            s_logged_env = true;
-            const char* env_val = std::getenv("MW05_FORCE_INIT_CALLBACK_PARAM");
-            fprintf(stderr, "[FORCE_WORKERS-ENV] MW05_FORCE_INIT_CALLBACK_PARAM=%s enabled=%d\n",
-                    env_val ? env_val : "NULL", s_force_init_enabled);
+        if (!s_logged_once) {
+            s_logged_once = true;
+            fprintf(stderr, "[FORCE_WORKERS-ENV] Force-initialization ALWAYS ENABLED (game never initializes this naturally)\n");
             fflush(stderr);
         }
 
         // CRITICAL FIX: Force-initialize IMMEDIATELY on first check
         // The game is stuck waiting for this structure to be initialized, but it never happens naturally
         // Without this initialization, the game never progresses to file loading
-        if (s_force_init_enabled && !s_force_init_done) {
+        if (!s_force_init_done) {
             s_force_init_done = true;
             fprintf(stderr, "[FORCE_WORKERS] FORCE-INITIALIZING callback parameter structure (check_count=%d)...\n", check_count);
             fflush(stderr);
@@ -411,15 +408,48 @@ void Mw05ForceCreateMissingWorkerThreads() {
 
             // Don't return - fall through to create worker threads
             work_func_ptr = 0x82441E58u;
-        } else {
-            fprintf(stderr, "[FORCE_WORKERS] Will check again in 1 second (force-initialization %s)...\n",
-                    s_force_init_enabled ? "ENABLED (waiting)" : "DISABLED");
-            fflush(stderr);
-            return;
         }
     }
 
     fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure IS initialized (work_func=0x%08X)\n", work_func_ptr);
+    fflush(stderr);
+
+    // CRITICAL FIX (2025-10-30): Patch game's heap structure for worker thread compatibility
+    // Worker threads call sub_826C52B0 which checks:
+    //   if (heap_flags & 0x40000) && (heap[379] != KeGetCurrentProcessType())
+    //     KeBugCheckEx(0xF4, ...)
+    // The game's heap handle is at 0x82C84F50
+    // We need to set heap[379] = 1 (KeGetCurrentProcessType() returns 1)
+    static bool s_heap_patched = false;
+    if (!s_heap_patched) {
+        constexpr uint32_t GAME_HEAP_HANDLE_PTR = 0x82C84F50;
+        be<uint32_t>* heap_handle_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(GAME_HEAP_HANDLE_PTR));
+        if (heap_handle_ptr) {
+            uint32_t heap_handle = *heap_handle_ptr;
+            if (heap_handle != 0) {
+                // Heap handle points to the heap structure
+                // Set process type field at offset +379 (0x17B)
+                uint8_t* heap_struct = reinterpret_cast<uint8_t*>(g_memory.Translate(heap_handle));
+                if (heap_struct) {
+                    heap_struct[379] = 1;  // KeGetCurrentProcessType() returns 1
+                    fprintf(stderr, "[FORCE_WORKERS] CRITICAL FIX: Set game heap process type to 1 (heap=0x%08X)\n", heap_handle);
+                    fprintf(stderr, "[FORCE_WORKERS]   This prevents KeBugCheckEx 0xF4 in worker threads\n");
+                    fflush(stderr);
+                    s_heap_patched = true;
+                } else {
+                    fprintf(stderr, "[FORCE_WORKERS] WARNING: Failed to translate heap address 0x%08X\n", heap_handle);
+                    fflush(stderr);
+                }
+            } else {
+                fprintf(stderr, "[FORCE_WORKERS] WARNING: Game heap handle is NULL (not initialized yet?)\n");
+                fflush(stderr);
+            }
+        } else {
+            fprintf(stderr, "[FORCE_WORKERS] WARNING: Failed to translate heap handle pointer 0x%08X\n", GAME_HEAP_HANDLE_PTR);
+            fflush(stderr);
+        }
+    }
+
     fprintf(stderr, "[FORCE_WORKERS] Creating missing worker threads...\n");
     fflush(stderr);
 
@@ -443,22 +473,25 @@ void Mw05ForceCreateMissingWorkerThreads() {
     //   +0x5C (92): 0x82A2B318  <-- CALLBACK PARAMETER!
     // We need to initialize the manually-created worker thread contexts with the same values.
 
-    // CRITICAL FIX: Use STATIC addresses in XEX data section instead of heap allocation
-    // The heap is full and g_userHeap.Alloc() returns NULL.
-    // Instead, use fixed addresses in the XEX data section (near the callback parameter at 0x82A2B318).
-    // Each context is 256 bytes (0x100), so we can place them at:
-    //   Thread #3: 0x82A2B400 (0x82A2B318 + 0xE8 = 232 bytes after callback param)
-    //   Thread #4: 0x82A2B500
-    //   Thread #5: 0x82A2B600
-    //   Thread #6: 0x82A2B700
-    //   Thread #7: 0x82A2B800
+    // CRITICAL FIX (2025-10-30): Allocate SEPARATE thread contexts!
+    // Research findings:
+    // - Worker pool slots (56 bytes each) are TOO SMALL to be thread contexts
+    // - Thread context needs callback pointers at +84 and +88 (beyond 56-byte boundary)
+    // - Thread context structure:
+    //   +84 (0x54): callback function pointer (should be 0x8261A558)
+    //   +88 (0x58): callback parameter (should point to worker pool slot)
+    // - Worker pool slots:
+    //   Slot 1: 0x82A2B350, Slot 2: 0x82A2B388, Slot 3: 0x82A2B3C0
+    //   Slot 4: 0x82A2B3F8, Slot 5: 0x82A2B430
+    // - Allocate thread contexts in heap, initialize with pointers to worker pool slots
 
-    static const uint32_t ctx_addrs[5] = {
-        0x82A2B400,  // Thread #3
-        0x82A2B500,  // Thread #4
-        0x82A2B600,  // Thread #5
-        0x82A2B700,  // Thread #6
-        0x82A2B800   // Thread #7
+    // Worker pool slot addresses (these are the callback parameters)
+    static const uint32_t worker_slots[5] = {
+        0x82A2B350,  // Worker pool slot 1
+        0x82A2B388,  // Worker pool slot 2
+        0x82A2B3C0,  // Worker pool slot 3
+        0x82A2B3F8,  // Worker pool slot 4
+        0x82A2B430   // Worker pool slot 5
     };
 
     for (int i = 0; i < 5; ++i) {  // Create 5 worker threads with entry=0x828508A8
@@ -466,31 +499,53 @@ void Mw05ForceCreateMissingWorkerThreads() {
         be<uint32_t> thread_id = 0;
         uint32_t stack_size = 0x40000;  // 256KB stack (same as other game threads)
 
-        // Use static address in XEX data section
-        uint32_t ctx_addr = ctx_addrs[i];
-        void* ctx_host = g_memory.Translate(ctx_addr);
+        // Allocate thread context from heap (need at least 92 bytes for +88 offset)
+        uint32_t ctx_size = 256;  // Allocate 256 bytes to be safe
+        void* ctx_ptr = g_userHeap.Alloc(ctx_size);
+        if (!ctx_ptr) {
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to allocate thread context for worker thread #%d\n", i + 1);
+            fflush(stderr);
+            continue;
+        }
+        uint32_t ctx_addr = g_memory.MapVirtual(ctx_ptr);
 
+        void* ctx_host = g_memory.Translate(ctx_addr);
         if (!ctx_host) {
-            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to translate context address 0x%08X for worker thread #%d\n", ctx_addr, i + 3);
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to translate thread context address 0x%08X for worker thread #%d\n", ctx_addr, i + 1);
             fflush(stderr);
             continue;
         }
 
         // Zero out the context
-        std::memset(ctx_host, 0, 256);
+        std::memset(ctx_host, 0, ctx_size);
 
-        // Initialize the context structure (in big-endian format)
-        // CRITICAL: sub_826BE3E8 returns a pointer that's 0xE0 (224) bytes AFTER the context base!
-        // So we need to store the callback at offset (0xE0 + 0x58) = 0x138 from the context base!
+        // Initialize the thread context structure (in big-endian format)
+        // Based on sub_828508A8 and sub_8261A558 decompilation:
+        //   Callback sub_8261A558 reads:
+        //     a1[4] = offset +16 (0x10) - work function pointer (should be 0x82441E58)
+        //     a1[5] = offset +20 (0x14) - work function parameter (worker pool slot)
+        //     a1[6] = offset +24 (0x18) - unknown parameter
+        //     a1[7] = offset +28 (0x1C) - flags (0 = single param, non-zero = two params)
+        //   Thread entry sub_828508A8 copies:
+        //     a1[21] = offset +84 (0x54) - callback function pointer (0x8261A558)
+        //     a1[22] = offset +88 (0x58) - callback parameter (worker pool slot address)
         be<uint32_t>* ctx_u32 = reinterpret_cast<be<uint32_t>*>(ctx_host);
         ctx_u32[0] = be<uint32_t>(0x00000000);  // +0x00
         ctx_u32[1] = be<uint32_t>(0xFFFFFFFF);  // +0x04
         ctx_u32[2] = be<uint32_t>(0x00000000);  // +0x08
-        ctx_u32[0x138/4] = be<uint32_t>(0x8261A558);  // +0x138 (312) - callback function pointer (0xE0 + 0x58)
-        ctx_u32[0x13C/4] = be<uint32_t>(0x82A2B318);  // +0x13C (316) - callback parameter (0xE0 + 0x5C)
+        ctx_u32[4] = be<uint32_t>(0x82441E58);  // +16 (0x10) - work function pointer (infinite loop)
+        ctx_u32[5] = be<uint32_t>(worker_slots[i]);  // +20 (0x14) - work function parameter (worker slot)
+        ctx_u32[6] = be<uint32_t>(0x00000000);  // +24 (0x18) - unknown parameter
+        ctx_u32[7] = be<uint32_t>(0x00000000);  // +28 (0x1C) - flags (0 = single param calling convention)
+        ctx_u32[21] = be<uint32_t>(0x8261A558);  // +84 (0x54) - callback function pointer
+        ctx_u32[22] = be<uint32_t>(worker_slots[i]);  // +88 (0x58) - callback parameter (worker pool slot)
 
-        fprintf(stderr, "[FORCE_WORKERS] Creating worker thread #%d: entry=0x828508A8 ctx=0x%08X (STATIC XEX address)\n", i + 3, ctx_addr);
-        fprintf(stderr, "[FORCE_WORKERS]   Context initialized: +0x138=0x8261A558, +0x13C=0x82A2B318 (FIXED: base+0xE0+0x58!)\n");
+        fprintf(stderr, "[FORCE_WORKERS] Creating worker thread #%d: entry=0x828508A8 ctx=0x%08X (heap-allocated)\n", i + 1, ctx_addr);
+        fprintf(stderr, "[FORCE_WORKERS]   Context structure:\n");
+        fprintf(stderr, "[FORCE_WORKERS]     +16 (work_func)  = 0x82441E58 (infinite work loop)\n");
+        fprintf(stderr, "[FORCE_WORKERS]     +20 (work_param) = 0x%08X (worker slot %d)\n", worker_slots[i], i + 1);
+        fprintf(stderr, "[FORCE_WORKERS]     +84 (callback)   = 0x8261A558\n");
+        fprintf(stderr, "[FORCE_WORKERS]     +88 (cb_param)   = 0x%08X (worker slot %d)\n", worker_slots[i], i + 1);
         fflush(stderr);
 
         uint32_t result = ExCreateThread(&thread_handle, stack_size, &thread_id, 0, 0x828508A8, ctx_addr, 0x00000000);  // NOT SUSPENDED

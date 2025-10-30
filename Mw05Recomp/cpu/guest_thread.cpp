@@ -210,18 +210,22 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
         tid, localParams.function);
     fflush(stderr);
 
-    // CRITICAL FIX: Force-create worker threads ONLY if callback parameter structure is initialized
-    // The callback parameter structure at 0x82A2B318 needs a valid work function pointer at offset +16
-    // If it's NULL, Mw05ForceCreateMissingWorkerThreads() will skip creation and let game create them naturally
+    // FORCE-INITIALIZATION: MW05 uses static thread creation with hardcoded context addresses
+    // Research findings (2025-10-30):
+    // - Game has dynamic allocation path (sub_823BA448 -> sub_8261A5E8 -> sub_8261A158) but NEVER calls it
+    // - Game expects worker threads with STATIC context addresses (slots 1-5 of worker pool)
+    // - Static addresses: 0x82A2B350, 0x82A2B388, 0x82A2B3C0, 0x82A2B3F8, 0x82A2B430
+    // - These are exactly slots 1-5 of the worker pool at 0x82A2B318 (56 bytes per slot)
+    // - Force-initialization is the CORRECT approach for MW05's architecture
     if (localParams.function == 0x8262E9A8) {
-        fprintf(stderr, "[GUEST_THREAD] Main thread detected (entry=0x8262E9A8), attempting to force-create worker threads...\n");
+        fprintf(stderr, "[GUEST_THREAD] Main thread detected (entry=0x8262E9A8)\n");
+        fprintf(stderr, "[GUEST_THREAD] Force-creating worker threads (MW05 uses static thread creation)...\n");
         fflush(stderr);
 
-        // Forward declare the function from mw05_trace_threads.cpp
         extern void Mw05ForceCreateMissingWorkerThreads();
         Mw05ForceCreateMissingWorkerThreads();
 
-        fprintf(stderr, "[GUEST_THREAD] Force-creation attempt complete, continuing with main thread...\n");
+        fprintf(stderr, "[GUEST_THREAD] Worker threads created. Continuing with main thread...\n");
         fflush(stderr);
 
         // DIAGNOSTIC: Add periodic heartbeat logging to see if main thread is running

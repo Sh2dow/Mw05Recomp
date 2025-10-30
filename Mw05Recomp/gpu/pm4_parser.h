@@ -23,6 +23,11 @@ void PM4_DebugScanAll_Force();
 // Scan a linear buffer for PM4 packets (used to inspect system command buffer)
 void PM4_ScanLinear(uint32_t addr, uint32_t bytes);
 
+// Scan system command buffer for PM4 packets (called from VdSwap)
+// CRITICAL FIX: Game writes PM4 commands to system command buffer (0x00F00000),
+// NOT the ring buffer (0x001002E0)!
+void PM4_ScanSystemCommandBuffer();
+
 // Get statistics
 uint64_t PM4_GetDrawCount();
 uint64_t PM4_GetPacketCount();

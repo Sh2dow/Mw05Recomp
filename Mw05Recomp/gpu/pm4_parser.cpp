@@ -17,6 +17,10 @@ extern "C"
     void Mw05RunHostDefaultVdIsrNudge(const char* tag);
     void Mw05DebugKickClear();
     void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
+
+    // System command buffer accessors (from kernel/imports.cpp)
+    uint32_t Mw05GetSysBufBaseEA();
+    uint32_t Mw05GetSysBufSizeBytes();
 }
 
 // Forward decls for helpers implemented later in this file
@@ -323,6 +327,58 @@ void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
             (unsigned long long)t2, (unsigned long long)t3);
     }
     PM4_DumpOpcodeHistogram();
+}
+
+// Check if system command buffer scanning is enabled
+// This is VERY expensive (scans 64 KB every frame), so only enable for deep debugging
+static inline bool IsSysBufScanEnabled() {
+    if (const char* v = std::getenv("MW05_PM4_SYSBUF_SCAN")) {
+        if (*v && *v != '0') return true;
+    }
+    return false;
+}
+
+// Scan system command buffer for PM4 packets
+// CRITICAL FIX: Game writes PM4 commands to system command buffer (0x00F00000),
+// NOT the ring buffer (0x001002E0)! This is why we were seeing DEADBEEF headers.
+// WARNING: This is VERY expensive (scans 64 KB every frame) - only enable with MW05_PM4_SYSBUF_SCAN=1
+void PM4_ScanSystemCommandBuffer() {
+    if (!IsSysBufScanEnabled()) return;
+
+    uint32_t sysBufAddr = Mw05GetSysBufBaseEA();
+    uint32_t sysBufSize = Mw05GetSysBufSizeBytes();
+
+    if (!sysBufAddr || !sysBufSize) {
+        static int s_noSysBufLogCount = 0;
+        if (s_noSysBufLogCount < 5) {
+            fprintf(stderr, "[PM4-SYSBUF] System command buffer not initialized yet (addr=%08X size=%u)\n",
+                    sysBufAddr, sysBufSize);
+            fflush(stderr);
+            s_noSysBufLogCount++;
+        }
+        return;
+    }
+
+    // Log first few scans to confirm we're scanning the right buffer
+    static int s_sysBufScanLogCount = 0;
+    if (s_sysBufScanLogCount < 10) {
+        fprintf(stderr, "[PM4-SYSBUF] Scanning system command buffer: addr=%08X size=%u (scan #%d)\n",
+                sysBufAddr, sysBufSize, s_sysBufScanLogCount);
+        fflush(stderr);
+        s_sysBufScanLogCount++;
+    }
+
+    KernelTraceHostOpF("HOST.PM4.ScanSystemCommandBuffer addr=%08X size=%u", sysBufAddr, sysBufSize);
+
+    // Scan the entire system command buffer for PM4 commands
+    PM4_ScanLinear(sysBufAddr, sysBufSize);
+
+    // Log results
+    if (s_sysBufScanLogCount <= 10) {
+        uint64_t draws = g_pm4DrawCount.load(std::memory_order_relaxed);
+        fprintf(stderr, "[PM4-SYSBUF] Scan complete: total_draws=%llu\n", (unsigned long long)draws);
+        fflush(stderr);
+    }
 }
 
 

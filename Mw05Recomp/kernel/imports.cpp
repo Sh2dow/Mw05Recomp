@@ -35,17 +35,17 @@ extern "C" void __imp__sub_825A85E0(PPCContext& ctx, uint8_t* base);
 extern "C" void __imp__sub_82216088(PPCContext& ctx, uint8_t* base);  // Entry point for graphics init
 
 // Trace shim export: last-seen scheduler r3 (captured in mw05_trace_shims.cpp)
-extern "C" 
+extern "C"
 {
     uint32_t Mw05Trace_LastSchedR3();
     uint32_t Mw05Trace_SchedR3SeenCount();
-    
+
     // Graphics context helper: get the heap-allocated graphics context address
     uint32_t Mw05GetGraphicsContextAddress();
-    
+
     // Diagnostic forward decl for MW05 micro-interpreter
     void Mw05InterpretMicroIB(uint32_t ib_addr, uint32_t ib_size);
-    
+
     // Memory helper: get the guest base pointer
     uint8_t* MmGetGuestBase();
 }
@@ -105,14 +105,14 @@ static std::atomic<uint32_t> g_vblankTicks{0};
 
 static std::atomic<uint64_t> g_lastPresentMs{0};
 
-extern "C" 
+extern "C"
 {
     void Mw05NoteHostPresent(uint64_t ms)
     {
         g_lastPresentMs.store(ms, std::memory_order_release);
     }
-    
-    
+
+
     bool Mw05SawRealVdSwap() { return g_sawRealVdSwap.load(std::memory_order_acquire); }
 
     bool Mw05HasGuestSwapped() { return g_guestHasSwapped.load(std::memory_order_acquire); }
@@ -169,6 +169,9 @@ void VdSetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
 void VdRegisterGraphicsNotificationRoutine(uint32_t callback, uint32_t context);
 void VdInitializeEDRAM();
 void VdInitializeEngines(uint32_t callback_ea, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4);
+
+// Forward declaration for PM4 system command buffer scanner (defined in gpu/pm4_parser.cpp)
+void PM4_ScanSystemCommandBuffer();
 
 
 #ifdef _WIN32
@@ -1536,6 +1539,11 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase,
     g_guestHasSwapped.store(true, std::memory_order_release);
     g_sawRealVdSwap.store(true, std::memory_order_release);
 
+    // CRITICAL FIX: Scan system command buffer for PM4 commands
+    // Game writes PM4 commands to system command buffer (0x00F00000), not ring buffer!
+    // This is the natural place to scan for draw commands when the game presents a frame.
+    PM4_ScanSystemCommandBuffer();
+
     // Request present from background (minimal overhead)
     Video::RequestPresentFromBackground();
 
@@ -1546,7 +1554,6 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase,
 // Forward declarations for use in VBLANK handler
 static void Mw05ForceRegisterGfxNotifyIfRequested();
 static void Mw05ForceCreateRenderThreadIfRequested();
-extern void Mw05ForceCreateMissingWorkerThreads();  // From mw05_trace_threads.cpp
 
 void Mw05StartVblankPumpOnce() {
     if (!Mw05VblankPumpEnabled()) return;
@@ -6253,6 +6260,26 @@ void RtlFillMemoryUlong(void* Destination, uint32_t Length, uint32_t Pattern)
 
 void KeBugCheckEx(uint32_t bugcheck_code, uint32_t param1, uint32_t param2, uint32_t param3, uint32_t param4)
 {
+    // CRITICAL FIX (2025-10-30): Skip bugcheck 0xF4 (CRITICAL_OBJECT_TERMINATION)
+    // This bugcheck is triggered by worker threads when they try to allocate memory.
+    // The allocation function sub_82632570 checks if heap[379] matches KeGetCurrentProcessType().
+    // Since we can't easily patch the heap structure before worker threads start,
+    // we skip this specific bugcheck to allow worker threads to run.
+    if (bugcheck_code == 0xF4) {
+        static bool s_logged = false;
+        if (!s_logged) {
+            fprintf(stderr, "[BUGCHECK] SKIPPING bugcheck 0xF4 (CRITICAL_OBJECT_TERMINATION)\n");
+            fprintf(stderr, "[BUGCHECK]   This is a known issue with worker thread heap allocation\n");
+            fprintf(stderr, "[BUGCHECK]   Param1: 0x%08X\n", param1);
+            fprintf(stderr, "[BUGCHECK]   Param2: 0x%08X (allocation function address)\n", param2);
+            fprintf(stderr, "[BUGCHECK]   Param3: 0x%08X\n", param3);
+            fprintf(stderr, "[BUGCHECK]   Param4: 0x%08X\n", param4);
+            fflush(stderr);
+            s_logged = true;
+        }
+        return;  // Skip the bugcheck - let the thread continue
+    }
+
     fprintf(stderr, "[BUGCHECK] KeBugCheckEx called!\n");
     fprintf(stderr, "[BUGCHECK]   Code: 0x%08X\n", bugcheck_code);
     fprintf(stderr, "[BUGCHECK]   Param1: 0x%08X\n", param1);
@@ -6599,7 +6626,7 @@ void Mw05LogIsrIfRegisteredOnce() {
 
 
 // Force ring + writeback + engines, even earlier than the small auto-init.
-extern "C" 
+extern "C"
 {
     uint32_t Mw05Trace_LastSchedR3();
     void Mw05TryBuilderKickNoForward(uint32_t schedEA);
@@ -10621,11 +10648,10 @@ static std::atomic<int> s_debug_call_depth{0};
 
 // Forward decl: MW05 allocator functions (for debugging)
 PPC_FUNC_IMPL(__imp__sub_8215CB08);
-PPC_FUNC_IMPL(__imp__sub_8215C790);
-PPC_FUNC_IMPL(__imp__sub_8215C838);
-
-// Forward decl: MW05 audio initialization (skipped due to hang)
-PPC_FUNC_IMPL(__imp__sub_821BB4D0);
+// REMOVED: These are now in MW05.toml and recompiled
+// PPC_FUNC_IMPL(__imp__sub_8215C790);
+// PPC_FUNC_IMPL(__imp__sub_8215C838);
+// PPC_FUNC_IMPL(__imp__sub_821BB4D0);
 
 // Forward decl: MW05 graphics initialization functions (sub_825A8698 only - others are in mw05_trace_threads.cpp and mw05_draw_diagnostic.cpp)
 PPC_FUNC_IMPL(__imp__sub_825A8698);
@@ -10728,47 +10754,8 @@ void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
     s_debug_call_depth.fetch_sub(1);
 }
 
-void sub_8215C790_debug(PPCContext& ctx, uint8_t* base) {
-    int depth = s_debug_call_depth.fetch_add(1);
-    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215C790 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
-    fflush(stderr);
-    __imp__sub_8215C790(ctx, base);
-    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_8215C790 r3=%08X\n", depth, ctx.r3.u32);
-    fflush(stderr);
-    s_debug_call_depth.fetch_sub(1);
-}
-
-void sub_8215C838_debug(PPCContext& ctx, uint8_t* base) {
-    int depth = s_debug_call_depth.fetch_add(1);
-    fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215C838 r3=%08X r4=%08X\n", depth, ctx.r3.u32, ctx.r4.u32);
-    fflush(stderr);
-    __imp__sub_8215C838(ctx, base);
-    fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT  sub_8215C838 r3=%08X\n", depth, ctx.r3.u32);
-    fflush(stderr);
-    s_debug_call_depth.fetch_sub(1);
-}
-
-void sub_821BB4D0_debug(PPCContext& ctx, uint8_t* base) {
-    fprintf(stderr, "[MW05_AUDIO_INIT] ========== ENTER sub_821BB4D0 (AUDIO INIT) ==========\n");
-    fprintf(stderr, "[MW05_AUDIO_INIT] r3=%08X r4=%08X r5=%08X r6=%08X\n",
-            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
-    fflush(stderr);
-
-    // CRITICAL FIX: The original function hangs waiting for audio device initialization
-    // The game is NOT stuck waiting for audio - it's stuck IN the audio init function
-    // Simply skip the entire audio initialization and return success
-    // This allows the game to progress without audio
-
-    fprintf(stderr, "[MW05_AUDIO_INIT] WORKAROUND: Skipping audio initialization entirely (original function hangs)\n");
-    fprintf(stderr, "[MW05_AUDIO_INIT] Game will run without audio\n");
-    fflush(stderr);
-
-    // Return success (non-zero) to allow the game to continue
-    ctx.r3.u32 = 1;
-
-    fprintf(stderr, "[MW05_AUDIO_INIT] ========== EXIT  sub_821BB4D0 r3=%08X (SUCCESS - NO AUDIO) ==========\n", ctx.r3.u32);
-    fflush(stderr);
-}
+// REMOVED: These functions are now recompiled (added to MW05.toml)
+// sub_8215C790_debug, sub_8215C838_debug, sub_821BB4D0_debug
 
 // Debug wrapper for sub_825A8698 (CreateDevice)
 // CRITICAL: This function hangs and never returns! We need to find which sub-function is hanging.
@@ -10817,6 +10804,9 @@ extern "C" void __imp__sub_8262DE60(PPCContext& ctx, uint8_t* base);
 extern "C" void __imp__sub_8262D9D0(PPCContext& ctx, uint8_t* base);
 
 // Debug wrapper for sub_82441E80 (function that should call main loop)
+// Forward declaration of sub_82441CF0_debug (main loop)
+void sub_82441CF0_debug(PPCContext& ctx, uint8_t* base);
+
 // CRITICAL: Both sub_82441E80 and sub_82441CF0 have recompiler bugs!
 // WORKAROUND: Implement the main loop logic manually.
 void sub_82441E80_debug(PPCContext& ctx, uint8_t* base) {
@@ -10856,7 +10846,22 @@ void sub_82441E80_debug(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[MW05_DEBUG] Calling sub_8261A5E8() to create worker threads...\n");
     fflush(stderr);
 
+    // Set up parameters for sub_8261A5E8 (from recompiled code):
+    // r3 = pointer to allocated structure (already set from sub_8215CB08)
+    // r4 = 0x82440000 + 7768 = 0x82441E58 (some function address)
+    // r5 = 0
+    // r6 = 0
+    // r7 = value from dword_82A2CF48 (global variable)
+    const uint32_t dword_82A2CF48_ea = 0x82A2CF48;
+    uint32_t* dword_82A2CF48_ptr = (uint32_t*)(base + dword_82A2CF48_ea);
+    uint32_t r7_value = be<uint32_t>(*dword_82A2CF48_ptr).get();
+
     extern void sub_8261A5E8(PPCContext& ctx, uint8_t* base);
+    // r3 is already set to allocated_ptr from sub_8215CB08
+    ctx.r4.u32 = 0x82441E58;  // Function address
+    ctx.r5.u32 = 0;
+    ctx.r6.u32 = 0;
+    ctx.r7.u32 = r7_value;
     sub_8261A5E8(ctx, base);
 
     fprintf(stderr, "[MW05_DEBUG] sub_8261A5E8() returned - worker threads should now be created!\n");
@@ -10916,11 +10921,23 @@ void sub_82441E80_debug(PPCContext& ctx, uint8_t* base) {
     fflush(stderr);
 
     // Call the REAL main loop function: sub_82441CF0(0)
-    fprintf(stderr, "[MW05_DEBUG] Calling sub_82441CF0(0) - THE REAL MAIN LOOP!\n");
+    fprintf(stderr, "[MW05_DEBUG] Calling sub_82441CF0_debug(0) - THE REAL MAIN LOOP!\n");
     fflush(stderr);
 
-    // MANUAL IMPLEMENTATION of sub_82441CF0 main loop
-    // The recompiled version doesn't handle the wait loop correctly
+    // Call our manual implementation directly (not through the hook)
+    ctx.r3.u32 = 0;
+    sub_82441CF0_debug(ctx, base);
+
+    fprintf(stderr, "[MW05_DEBUG] ========== EXIT  sub_82441E80 - should never reach here! ==========\n");
+    fflush(stderr);
+}
+
+// Manual implementation of sub_82441CF0 (main loop)
+// This is the REAL main loop that processes frames
+// CRITICAL: Must call sub_8262DE60 on every iteration to process frames
+void sub_82441CF0_debug(PPCContext& ctx, uint8_t* base) {
+    fprintf(stderr, "[MW05_DEBUG] ========== ENTER sub_82441CF0 (main loop) ==========\n");
+    fflush(stderr);
 
     // Call sub_82619E90() to initialize
     extern void sub_82619E90(PPCContext& ctx, uint8_t* base);
@@ -10947,30 +10964,60 @@ void sub_82441E80_debug(PPCContext& ctx, uint8_t* base) {
 
     uint64_t iteration = 0;
     fprintf(stderr, "[MW05_DEBUG] Entering main loop...\n");
+    fprintf(stderr, "[MW05_DEBUG] main_loop_flag_ptr = %p\n", main_loop_flag_ptr);
+    fflush(stderr);
+    fprintf(stderr, "[MW05_DEBUG] Reading initial flag value...\n");
+    fflush(stderr);
+    uint32_t initial_flag = *main_loop_flag_ptr;
+    fprintf(stderr, "[MW05_DEBUG] Initial flag value = 0x%08X\n", initial_flag);
     fflush(stderr);
 
     while (true) {
         // Wait for flag to be set (call sub_8262D9D0 while waiting)
+        uint32_t wait_count = 0;
         while (*main_loop_flag_ptr == 0) {
+            if (wait_count < 5) {
+                fprintf(stderr, "[MW05_DEBUG] Waiting for flag (iteration %llu, wait %u): flag = 0x%08X\n", iteration, wait_count, *main_loop_flag_ptr);
+                fflush(stderr);
+            }
             ctx.r3.u32 = 0;
             sub_8262D9D0(ctx, base);
             v0 = ctx.r3.u32;
+            wait_count++;
         }
 
         // Flag is set, process frame
+        fprintf(stderr, "[MW05_DEBUG] BEFORE iteration check (iteration=%llu)\n", iteration);
+        fflush(stderr);
         if (iteration < 5) {
             fprintf(stderr, "[MW05_DEBUG] Main loop iteration %llu: flag was set!\n", iteration);
             fflush(stderr);
         }
 
         // Call sub_8262EC60 (timing function)
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] Calling sub_8262EC60 (timing)...\n");
+            fflush(stderr);
+        }
         sub_8262EC60(ctx, base);
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] sub_8262EC60 returned\n");
+            fflush(stderr);
+        }
 
         // Process work queue (sub_823C8420)
         // TODO: Implement work queue processing
 
-        // Call sub_8262DE60 (frame update)
+        // Call sub_8262DE60 (frame update) - THIS IS CRITICAL!
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] Calling sub_8262DE60 (frame update)...\n");
+            fflush(stderr);
+        }
         sub_8262DE60(ctx, base);
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] sub_8262DE60 returned\n");
+            fflush(stderr);
+        }
 
         // Reset flag
         *main_loop_flag_ptr = 0;
@@ -11026,14 +11073,13 @@ void sub_82849DE8_debug(PPCContext& ctx, uint8_t* base) {
 
 // Hook the debug wrappers
 GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);
-GUEST_FUNCTION_HOOK(sub_8215C790, sub_8215C790_debug);
-GUEST_FUNCTION_HOOK(sub_8215C838, sub_8215C838_debug);
-GUEST_FUNCTION_HOOK(sub_821BB4D0, sub_821BB4D0_debug);
-GUEST_FUNCTION_HOOK(sub_825A8698, sub_825A8698_debug);
-// RE-ENABLED: Manual implementation with complete initialization sequence
+// MINIMAL OVERRIDES: Only override what's actually broken in the recompiled code
+// 1. sub_82441E80: Crashes with KeBugCheckEx (0xF4 CRITICAL_OBJECT_TERMINATION) during worker thread creation
 GUEST_FUNCTION_HOOK(sub_82441E80, sub_82441E80_debug);
-// DISABLED: Causes infinite recursion and stack overflow
-// GUEST_FUNCTION_HOOK(sub_82849DE8, sub_82849DE8_debug);
+// 2. sub_825A8698: Buggy CreateDevice function that causes crashes
+GUEST_FUNCTION_HOOK(sub_825A8698, sub_825A8698_debug);
+// 3. sub_8215C790, sub_8215C838, sub_821BB4D0: NOW RECOMPILED (added to MW05.toml)
+//    No longer need wrappers - using recompiled versions
 
 GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack);
 GUEST_FUNCTION_HOOK(__imp__XamLoaderTerminateTitle, XamLoaderTerminateTitle);

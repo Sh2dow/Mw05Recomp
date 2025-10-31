@@ -5149,7 +5149,10 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
             {
                 // XCONFIG_SECURED_AV_REGION
                 case 0x0002:
-                    data[0] = ByteSwap(0x00001000); // USA/Canada
+                    // CRITICAL FIX: Init6 (sub_8262E7F8) checks if (v8 & 0xFF00) == 0x300
+                    // This means the upper byte must be 0x03, not 0x10
+                    // The correct value is 0x00000300 (NTSC region code)
+                    data[0] = ByteSwap(0x00000300); // NTSC region (was 0x00001000)
                     break;
 
                 default:
@@ -5180,7 +5183,10 @@ uint32_t ExGetXConfigSetting(uint16_t Category, uint16_t Setting, void* Buffer, 
 
                 // XCONFIG_USER_VIDEO_FLAGS
                 case 0x000A:
-                    data[0] = ByteSwap(0x00040000);
+                    // CRITICAL FIX: Init6 (sub_8262E7F8) checks if ((v9 & 0x800000) != 0 || (v9 & 0x400000) == 0)
+                    // Bit 0x800000 = HD mode, Bit 0x400000 = widescreen
+                    // Set HD mode bit to satisfy the condition
+                    data[0] = ByteSwap(0x00840000); // HD mode + original flags (was 0x00040000)
                     break;
 
                 // XCONFIG_USER_RETAIL_FLAGS

@@ -41,7 +41,6 @@ endif()
 
 add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/msdf-atlas-gen")
 add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/nativefiledialog-extended")
-add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/o1heap")
 add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/SDL")
 add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/SDL_mixer")
 add_subdirectory("${MW05_RECOMP_THIRDPARTY_ROOT}/plume")

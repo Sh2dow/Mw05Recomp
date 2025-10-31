@@ -59,8 +59,96 @@ functions = [
 #     { data = 0x00000000, size = 4 }, # Padding
 # ]
 
-# Mid-ASM hooks (if needed for game-specific fixes)
-# [[midasm_hook]]
-# name = "ExampleMidAsmHook"
-# address = 0x82000000
-# registers = ["r3"]
+# NOTE: The OS calls the main thread entry function at 0x8262E9A8 (the 'start' function in IDA)
+# There are two instructions at 0x8262E9A0 and 0x8262E9A4 that are NOT part of the start function
+# These are likely unreachable code or part of a different function
+# The function mapping will have both 0x8262E9A0 (sub_8262E9A0) and 0x8262E9A8 (_xstart) - this is CORRECT
+# The OS only calls 0x8262E9A8, so we only need hooks at that address and beyond
+
+# Mid-ASM hooks for tracing main thread initialization
+# Hook at the actual entry point (0x8262E9A8) where the OS calls the function
+[[midasm_hook]]
+name = "MainThreadEntryTrace"
+address = 0x8262E9A8
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "Init1_sub_82630068"
+address = 0x82630068
+registers = []
+
+[[midasm_hook]]
+name = "Init2_sub_8262FDA8"
+address = 0x8262FDA8
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "Init3_sub_826BE558"
+address = 0x826BE558
+registers = []
+
+[[midasm_hook]]
+name = "Init4_sub_8262FD30"
+address = 0x8262FD30
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "Init5_sub_8262FC50"
+address = 0x8262FC50
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "Init6_sub_8262E7F8"
+address = 0x8262E7F8
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "Init7_sub_826BDA60"
+address = 0x826BDA60
+registers = []
+
+[[midasm_hook]]
+name = "Init8_sub_8262FB78"
+address = 0x8262FB78
+registers = []
+
+[[midasm_hook]]
+name = "MainThreadWrapper_sub_82441E80"
+address = 0x82441E80
+registers = ["r3", "r4", "r5"]
+
+# Hook at the flag check in the main loop
+[[midasm_hook]]
+name = "MainLoopFlagCheck"
+address = 0x82441D38
+registers = ["r9", "r27"]
+
+# Hooks INSIDE the wrapper function to trace execution
+[[midasm_hook]]
+name = "Wrapper_AfterAlloc"
+address = 0x82441EA8
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "Wrapper_BeforeCall_sub_8261A5E8"
+address = 0x82441EE0
+registers = []
+
+[[midasm_hook]]
+name = "Wrapper_AfterCall_sub_8261A5E8"
+address = 0x82441EE8
+registers = []
+
+[[midasm_hook]]
+name = "Wrapper_BeforeMainLoopCall"
+address = 0x82441F34
+registers = []
+
+# Hook in the main loop to test loader system
+[[midasm_hook]]
+name = "MainLoopLoaderTest"
+address = 0x82441D00
+registers = []
+
+# Allocation function sub_8215CB08 is recompiled normally
+# It will be overridden in C++ using PPC_FUNC_IMPL + PPC_FUNC pattern

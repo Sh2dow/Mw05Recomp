@@ -199,53 +199,25 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 
     listener->areas = qwAreas;
 
-    // Trace and optionally enqueue a benign boot notification to kick title state machines
-    // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-    // KernelTraceHostOpF("HOST.XamNotifyCreateListener areas=%016llX handle=%08X",
-    //                   (unsigned long long)qwAreas, GetKernelHandle(listener));
     fprintf(stderr, "[XAM] XamNotifyCreateListener areas=%016llX handle=%08X\n",
             (unsigned long long)qwAreas, GetKernelHandle(listener));
     fflush(stderr);
 
-    // CRITICAL FIX (2025-10-30): DO NOT send notification immediately when listener is created!
-    // The game crashes with access violation (0xC0000005) when we send the notification too early
-    // The game's callback handler is not ready yet at this point
-    // Instead, we'll send the notification later when the game polls for it (see XNotifyGetNext)
-    // if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
-    //     const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
-    //     // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
-    //     XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 1);  // param=1 (user 0 signed in)
-    //     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-    //     // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
-    //     fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED) param=1\n");
-    //     fflush(stderr);
-    // }
+    // CRITICAL FIX (2025-10-31): Send XN_SYS_SIGNINCHANGED notification when GAME creates listener
+    // The game creates listener with areas=0x2F (listening to areas 0,1,2,3,5)
+    // We need to send the notification to THIS listener, not the auto-created one
+    // Check if this is the game's listener (areas=0x2F) and send notification immediately
+    if (qwAreas == 0x2F) {
+        const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
+        fprintf(stderr, "[XAM] XamNotifyCreateListener: Game listener detected (areas=0x2F), sending XN_SYS_SIGNINCHANGED\n");
+        fflush(stderr);
 
-    // MW05 FIX: DISABLED - Don't send storage notification automatically
-    // This notification (0x14) was blocking the queue and preventing the game from receiving
-    // the signin notification (0x11) that it's actually waiting for
-    // if (qwAreas & (1ull << 2)) {  // If listening to area 2 (storage notifications)
-    //     const uint32_t XN_SYS_STORAGEDEVICESCHANGED = 0x14;  // area=0, message=20
-    //     XamNotifyEnqueueEvent(XN_SYS_STORAGEDEVICESCHANGED, 0);
-    //     fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.storage area=0 msg=0x14 (XN_SYS_STORAGEDEVICESCHANGED)\n");
-    //     fflush(stderr);
-    // }
+        // Send notification to THIS listener (param=1 for user 0 signed in)
+        listener->notifications.emplace_back(XN_SYS_SIGNINCHANGED, 1);
 
-    const char* fakeNotify = std::getenv("MW05_FAKE_NOTIFY");
-    const char* listShims = std::getenv("MW05_LIST_SHIMS");
-    if ((fakeNotify && fakeNotify[0] && fakeNotify[0] != '0') || (listShims && listShims[0] && listShims[0] != '0')) {
-        // For each requested area bit, enqueue a simple message id (number=1) with param=0.
-        // This is dev-only to test whether the title is gating on an initial XAM notification.
-        for (uint32_t area = 0; area < 64; ++area) {
-            if (qwAreas & (1ull << area)) {
-                const uint32_t msg = MSGID(area, 1);
-                XamNotifyEnqueueEvent(msg, 0);
-                // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-                // KernelTraceHostOpF("HOST.XamNotifyCreateListener.fake.enqueue area=%u msg=%08X", area, msg);
-                fprintf(stderr, "[XAM] XamNotifyCreateListener.fake.enqueue area=%u msg=%08X\n", area, msg);
-                fflush(stderr);
-            }
-        }
+        fprintf(stderr, "[XAM] XamNotifyCreateListener: Notification queued directly to listener (queue_size=%zu)\n",
+                listener->notifications.size());
+        fflush(stderr);
     }
 
     return GetKernelHandle(listener);

@@ -848,6 +848,24 @@ inline uint32_t LoadBE32_Watched(uint8_t* base, uint32_t ea) {
         }
     }
 
+    // Watch addresses in main loop that might be causing stuck behavior
+    // dword_8290965C, byte_82909658, dword_82909650, dword_82909654
+    if (ea == 0x8290965C || ea == 0x82909658 || ea == 0x82909650 || ea == 0x82909654) {
+        uint32_t val = __builtin_bswap32(*(uint32_t*)(base + ea));
+        static int log_count = 0;
+        if (log_count++ < 50) {
+#ifndef PPC_CONFIG_SKIP_LR
+            if (auto* c = GetPPCContext()) {
+                KernelTraceHostOpF("HOST.LoadBE32_Watched ea=%08X val=%08X lr=%08llX",
+                                  ea, val, (unsigned long long)c->lr);
+            } else
+#endif
+            {
+                KernelTraceHostOpF("HOST.LoadBE32_Watched ea=%08X val=%08X lr=0", ea, val);
+            }
+        }
+    }
+
     // Normal load with byte swap
     // ea is a guest address (e.g., 0x82813090)
     // The default PPC_LOAD_U32 macro does: base + ea

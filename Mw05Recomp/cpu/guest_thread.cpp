@@ -232,6 +232,54 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                     fprintf(stderr, "[MAIN-THREAD-HEARTBEAT] tid=%08X alive for %d seconds\n", tid, i+1);
                     fflush(stderr);
+
+                    // Check loader state every 5 seconds
+                    if ((i + 1) % 5 == 0) {
+                        extern Memory g_memory;
+                        uint32_t callback_param_addr = 0x82A2B318;
+                        uint32_t* callback_struct = reinterpret_cast<uint32_t*>(g_memory.base + callback_param_addr);
+
+                        uint32_t param1 = __builtin_bswap32(callback_struct[4]);
+                        uint32_t param2 = __builtin_bswap32(callback_struct[5]);
+                        uint32_t work_func = __builtin_bswap32(callback_struct[7]);
+
+                        fprintf(stderr, "[LOADER-STATE] At %d seconds: param1=0x%08X param2=0x%08X work_func=0x%08X\n",
+                                i+1, param1, param2, work_func);
+
+                        if (work_func == 0) {
+                            fprintf(stderr, "[LOADER-STATE]   NO WORK QUEUED - game waiting for loader job\n");
+                        } else {
+                            fprintf(stderr, "[LOADER-STATE]   WORK QUEUED - loader should be processing\n");
+                        }
+
+                        // Check job queue at 0x82A2CBA8 (from decompiled sub_823B0190)
+                        uint32_t job_queue_addr = 0x82A2CBA8;
+                        uint32_t* job_queue = reinterpret_cast<uint32_t*>(g_memory.base + job_queue_addr);
+                        uint32_t job_queue_head = __builtin_bswap32(*job_queue);
+
+                        fprintf(stderr, "[JOB-QUEUE] At %d seconds: job_queue_head at 0x82A2CBA8 = 0x%08X\n",
+                                i+1, job_queue_head);
+
+                        // Check main loop flag at 0x82A2CF40
+                        uint32_t main_loop_flag_addr = 0x82A2CF40;
+                        uint32_t* main_loop_flag = reinterpret_cast<uint32_t*>(g_memory.base + main_loop_flag_addr);
+                        uint32_t flag_value = __builtin_bswap32(*main_loop_flag);
+
+                        fprintf(stderr, "[MAIN-LOOP-FLAG] At %d seconds: flag at 0x82A2CF40 = 0x%08X\n",
+                                i+1, flag_value);
+
+                        // Check if there's a state variable that might indicate what the game is waiting for
+                        // Let's check a few addresses around the loader callback structure
+                        fprintf(stderr, "[GAME-STATE] Checking nearby memory for state variables:\n");
+                        for (int offset = -16; offset <= 32; offset += 4) {
+                            uint32_t addr = callback_param_addr + offset;
+                            uint32_t* ptr = reinterpret_cast<uint32_t*>(g_memory.base + addr);
+                            uint32_t value = __builtin_bswap32(*ptr);
+                            fprintf(stderr, "[GAME-STATE]   0x%08X: 0x%08X\n", addr, value);
+                        }
+
+                        fflush(stderr);
+                    }
                 }
                 fprintf(stderr, "[MAIN-THREAD-HEARTBEAT] tid=%08X heartbeat logging stopped after 60 seconds\n", tid);
                 fflush(stderr);

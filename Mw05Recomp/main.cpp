@@ -231,6 +231,12 @@ void KiSystemStartup()
             InitManager::Instance().Count());
     fflush(stderr);
 
+    // NOTE (2025-10-31): File system hooks (X* functions) are NOT being registered
+    // because the linker strips file_system.cpp (no direct references).
+    // However, the Nt* kernel functions (NtCreateFile, NtReadFile, etc.) ARE available
+    // via the import table, so file I/O should still work through the kernel path.
+    // If the game needs X* functions, we'll need to fix the linker issue.
+
     // Publish ExLoadedImageName/ExLoadedCommandLine guest pointers (needs heap)
     Mw05InitKernelVarExportsOnce();
 
@@ -477,31 +483,10 @@ void KiSystemStartup()
         }
     }
 
-    // EXPERIMENTAL: Send notification that the game is waiting for
-    // Send it from a background thread with a delay to ensure the game has created listeners
-    std::thread([]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5000));  // Wait 5 seconds for game to create listeners
-
-        extern void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam);
-
-        // The game is polling for notification message ID 0x11 (17 decimal)
-        // Listener areas = 0x2F (binary 00101111) = areas {0,1,2,3,5}
-        // Notification format: (area << 16) | message_number (NOT area << 25!)
-        // Try area 0 with message 0x11
-        const uint32_t NOTIFICATION_AREA_0_MSG_0x11 = (0 << 16) | 0x11;
-
-        fprintf(stderr, "[NOTIFICATION-THREAD] Sending notification area=0 msg=0x11 (dwId=%08X) param=0x00000001 (user 0 signed in)\n", NOTIFICATION_AREA_0_MSG_0x11);
-        fflush(stderr);
-        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-        // KernelTraceHostOpF("HOST.NotificationThread sending notification area=0 msg=0x11 (dwId=%08X)", NOTIFICATION_AREA_0_MSG_0x11);
-        // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
-        XamNotifyEnqueueEvent(NOTIFICATION_AREA_0_MSG_0x11, 1);
-
-        fprintf(stderr, "[NOTIFICATION-THREAD] Notification sent\n");
-        fflush(stderr);
-        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-        // KernelTraceHostOpF("HOST.NotificationThread notification sent");
-    }).detach();
+    // REMOVED (2025-10-31): Background thread that sent notification too early
+    // The notification was being sent to the auto-created listener (0xA0000010)
+    // but the game polls its own listener (0xB590BD40) which was created AFTER the notification
+    // Fix: Send notification directly when game creates its listener (see xam.cpp)
 }
 
 // Helper to get address of __imp__ function by name

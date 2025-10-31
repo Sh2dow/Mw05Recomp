@@ -49,7 +49,8 @@ extern "C" void __imp__sub_XXXXXXXX(PPCContext& ctx, uint8_t* base);
 ### 4. **Memory Management**
 - User heap: 0x00100000-0x7FEA0000 (1 MB start to avoid NULL pointer corruption)
 - Physical heap: 0xA0000000-0x100000000 (2.5 GB-4 GB)
-- **NEVER** allocate below 0x100000 (causes o1heap corruption)
+- Uses Xenia's BaseHeap allocator (page-based with metadata in host memory)
+- **NEVER** allocate below 0x100000 (causes heap corruption)
 
 ### 5. **Debugging Tools**
 - **IDA Pro API**: `http://127.0.0.1:5050/decompile?ea=<address>`
@@ -166,11 +167,11 @@ json_set_Redis -name "mw05:config" -path "$.render_settings" -value @{draws=0; p
 - **Fix**: Use `PPC_FUNC_IMPL` + `PPC_FUNC` pattern (see Rule #1)
 - **Result**: 1.76 GB working set, 90% reduction
 
-### ✅ Heap Corruption FIXED (2025-10-22)
-- **Problem**: o1heap corruption after 5-60 seconds
-- **Cause**: NULL pointer writes to low memory addresses
-- **Fix**: Moved heap start from 0x20000 to 0x100000
-- **Result**: Game runs 120+ seconds without crashes
+### ✅ Heap Corruption FIXED (2025-10-31)
+- **Problem**: Heap corruption after 5-60 seconds, growing from 8 MB to 2030+ MB
+- **Cause**: Game writing to guest addresses that corrupted heap metadata stored in guest memory
+- **Fix**: Migrated from o1heap to Xenia's BaseHeap with page table in HOST memory
+- **Result**: 99.85% reduction in heap usage (2030 MB → 3 MB stable), game runs 120+ seconds without crashes
 
 ### ✅ VdSwap Fixed - Signature Mismatch (2025-10-28)
 - **Problem**: VdSwap was never called, causing zero draw commands

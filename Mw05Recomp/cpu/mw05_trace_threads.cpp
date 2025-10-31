@@ -494,6 +494,31 @@ void Mw05ForceCreateMissingWorkerThreads() {
         0x82A2B430   // Worker pool slot 5
     };
 
+    // CRITICAL FIX (2025-10-30): Re-initialize worker pool slots!
+    // The game's .bss initialization zeros out the worker pool AFTER our init code runs.
+    // We need to re-initialize the worker pool slots right before creating threads.
+    fprintf(stderr, "[FORCE_WORKERS] Re-initializing worker pool slots (game zeroed them out)...\n");
+    fflush(stderr);
+    for (int i = 0; i < 5; ++i) {
+        uint8_t* slot_ptr = static_cast<uint8_t*>(g_memory.Translate(worker_slots[i]));
+        if (slot_ptr) {
+            be<uint32_t>* slot_u32 = reinterpret_cast<be<uint32_t>*>(slot_ptr);
+            slot_u32[0] = be<uint32_t>(0x00000000);  // +0x00 - thread_id
+            slot_u32[1] = be<uint32_t>(0x00000000);  // +0x04 - unknown
+            slot_u32[2] = be<uint32_t>(0x00000000);  // +0x08 - unknown
+            slot_u32[3] = be<uint32_t>(0x00000000);  // +0x0C - exit_code
+            slot_u32[4] = be<uint32_t>(0x82441E58);  // +0x10 - work_func (CRITICAL!)
+            slot_u32[5] = be<uint32_t>(0x00000000);  // +0x14 - work_param
+            slot_u32[6] = be<uint32_t>(0x00000000);  // +0x18 - unknown
+            slot_u32[7] = be<uint32_t>(0x00000000);  // +0x1C - flag
+            fprintf(stderr, "[FORCE_WORKERS]   Slot %d at 0x%08X: work_func=0x82441E58\n", i + 1, worker_slots[i]);
+            fflush(stderr);
+        } else {
+            fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to translate worker slot address 0x%08X\n", worker_slots[i]);
+            fflush(stderr);
+        }
+    }
+
     for (int i = 0; i < 5; ++i) {  // Create 5 worker threads with entry=0x828508A8
         be<uint32_t> thread_handle = 0;
         be<uint32_t> thread_id = 0;
@@ -589,14 +614,37 @@ PPC_FUNC(sub_82630068) {
 // This function iterates through a linked list at 0x828DF17C and calls each callback
 // CRITICAL FIX: Function pointer is at offset +8, not +4!
 // Assembly at 0x8262FDE4: lwz r11, 8(r11) - loads function pointer from offset +8
+// CRITICAL FIX (2025-10-31): Detect and break out of NULL-call infinite loops
 PPC_FUNC_IMPL(__imp__sub_8262FDA8);
 PPC_FUNC(sub_8262FDA8) {
     static int call_count = 0;
+    static int consecutive_null_calls = 0;
+    static uint32_t last_lr = 0;
     call_count++;
+
+    // CRITICAL FIX (2025-10-31): Detect NULL-call infinite loop
+    // If we're being called repeatedly from the same lr (0x8262FDF0) with NULL function pointers,
+    // we're stuck in an infinite loop and need to break out
+    if (ctx.lr == last_lr && ctx.lr == 0x8262FDF0) {
+        consecutive_null_calls++;
+        if (consecutive_null_calls > 5) {
+            // We're stuck in a NULL-call loop - break out
+            fprintf(stderr, "[CALLBACK-ITERATOR-FIX] Detected NULL-call loop at lr=0x%08X after %d consecutive calls, breaking out\n",
+                    ctx.lr, consecutive_null_calls);
+            fflush(stderr);
+            consecutive_null_calls = 0;
+            last_lr = 0;
+            ctx.r3.u32 = 0;  // Return success
+            return;
+        }
+    } else {
+        consecutive_null_calls = 0;
+    }
+    last_lr = ctx.lr;
 
     // Only log first 10 calls to avoid spam
     if (call_count <= 10) {
-        fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 ENTER #%d r3=%08X\n", call_count, ctx.r3.u32);
+        fprintf(stderr, "[XSTART_INIT] sub_8262FDA8 ENTER #%d r3=%08X lr=%08X\n", call_count, ctx.r3.u32, ctx.lr);
         fflush(stderr);
     }
 
@@ -1662,28 +1710,12 @@ PPC_FUNC(sub_8261EC58) {
 // - sub_82813598 waits in a loop from 0x8281359C to 0x8281365C
 // - sub_82813418 waits at loc_8281349C for a flag at r1+80 to become non-zero
 //
-// The problem is that these wait loops are waiting for the worker thread to set a flag,
-// but the worker thread can't run while we're stuck in the wait loop.
-//
-// Solution: Just return immediately with a success value. The worker thread will be
-// created asynchronously and will run in the background.
-PPC_FUNC_IMPL(__imp__sub_82813598);
-PPC_FUNC(sub_82813598) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    fprintf(stderr, "[THREAD_POOL_INIT_82813598] ENTER: count=%llu tid=%lx r3=%08X\n",
-            count, GetCurrentThreadId(), ctx.r3.u32);
-    fflush(stderr);
-
-    // Just return success immediately without calling the original function
-    // The worker thread will be created asynchronously by the game's natural code flow
-    ctx.r3.u32 = 1;  // Success
-
-    fprintf(stderr, "[THREAD_POOL_INIT_82813598] RETURN: count=%llu r3=%08X (bypassed wait loops)\n",
-            count, ctx.r3.u32);
-    fflush(stderr);
-}
+// REMOVED BYPASS: Let the game run its own thread pool initialization
+// The bypass was masking the real issue - we need to fix thread synchronization, not bypass it
+// PPC_FUNC_IMPL(__imp__sub_82813598);
+// PPC_FUNC(sub_82813598) {
+//     // BYPASS REMOVED - use original recompiled function
+// }
 
 // Wrapper for sub_8245FBD0 - called early in sub_823AF590 initialization
 // This might be hanging the initialization

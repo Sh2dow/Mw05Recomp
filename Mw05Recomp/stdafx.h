@@ -39,7 +39,8 @@ using Microsoft::WRL::ComPtr;
 #include <SDL3_mixer/SDL_mixer.h>
 #include <imgui.h>
 #include <backends/imgui_impl_sdl3.h>
-#include <o1heap.h>
+
+
 #include <cstddef>
 #include <smolv.h>
 #include <set>

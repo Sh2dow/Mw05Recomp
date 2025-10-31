@@ -5865,10 +5865,10 @@ uint32_t NtAllocateVirtualMemory(
     }
 
     // CRITICAL FIX: DO NOT zero the memory!
-    // The o1heap allocator already manages this memory, and zeroing it will corrupt the heap metadata.
+    // The heap allocator already manages this memory, and zeroing it will corrupt the heap metadata.
     // The game's own allocator (sub_8215CB08) will zero memory if needed.
-    // Zeroing here was causing heap corruption because we were zeroing memory that contains o1heap's
-    // internal data structures (free list, capacity, etc.)
+    // Zeroing here was causing heap corruption because we were zeroing memory that contains
+    // internal data structures (page table, etc.)
     //
     // if (AllocationType & MEM_COMMIT) {
     //     memset(host_ptr, 0, requested_size);  // THIS WAS CORRUPTING THE HEAP!
@@ -6068,6 +6068,14 @@ void RtlLeaveCriticalSection(XRTL_CRITICAL_SECTION* cs)
     if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
         return;
 
+    // CRITICAL FIX (2025-10-31): Reject sentinel value 0xFFFFFFFF
+    // The game uses guest address 0xFFFFFFFF as a sentinel for uninitialized/invalid critical sections
+    uint32_t guest_addr = static_cast<uint32_t>(p - g_memory.base);
+    if (guest_addr == 0xFFFFFFFF) {
+        // Silently ignore - this is a sentinel value, not a real critical section
+        return;
+    }
+
     // If recursion was never established, do not underflow; leave as-is.
     if (cs->RecursionCount <= 0)
     {
@@ -6103,6 +6111,16 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     auto* p = reinterpret_cast<uint8_t*>(cs);
     if (p < g_memory.base || p >= (g_memory.base + PPC_MEMORY_SIZE))
         return;
+
+    // CRITICAL FIX (2025-10-31): Reject sentinel value 0xFFFFFFFF
+    // The game uses guest address 0xFFFFFFFF as a sentinel for uninitialized/invalid critical sections
+    // This corresponds to host pointer (base + 0xFFFFFFFF), which is the last byte of guest memory
+    // Attempting to use this as a critical section causes repeated lazy initialization spam
+    uint32_t guest_addr = static_cast<uint32_t>(p - g_memory.base);
+    if (guest_addr == 0xFFFFFFFF) {
+        // Silently ignore - this is a sentinel value, not a real critical section
+        return;
+    }
 
     // cs is already a HOST pointer (translated by the import table patching)
     // No need to translate again - just use it directly
@@ -6394,8 +6412,18 @@ uint64_t KeQueryPerformanceFrequency()
 
 void MmFreePhysicalMemory(uint32_t type, uint32_t guestAddress)
 {
-    if (guestAddress != NULL)
-        g_userHeap.Free(g_memory.Translate(guestAddress));
+    // CRITICAL FIX: Reject invalid addresses that cause heap corruption
+    // 0x00000000 = NULL pointer
+    // 0x00000001 = sentinel value (used by game for invalid/uninitialized pointers)
+    // 0xFFFFFFFF = -1 (sentinel value used by game for uninitialized pointers)
+    // All should be ignored, not freed
+    if (guestAddress == 0 || guestAddress == 1 || guestAddress == 0xFFFFFFFF)
+        return;
+
+    // NOTE: g_userHeap.Free() automatically detects physical vs user heap addresses
+    // Physical heap addresses (0xA0000000-0x100000000) are handled as no-op (bump allocator)
+    // User heap addresses (0x00100000-0x7FEA0000) are freed normally via BaseHeap
+    g_userHeap.Free(g_memory.Translate(guestAddress));
 }
 
 bool VdPersistDisplay(uint32_t /*a1*/, uint32_t* a2)
@@ -6522,8 +6550,7 @@ void VdInitializeRingBuffer(uint32_t base, uint32_t len)
         if (p) {
             // Zero-initialize the ring buffer
             // NOTE: This is safe because the ring buffer was allocated from the user heap,
-            // and o1heap returns pointers to user-allocatable memory (NOT metadata).
-            // The first allocation starts at heap_base + ~736 bytes (o1heap metadata size).
+            // and BaseHeap returns pointers to user-allocatable memory (NOT metadata).
             memset(p, 0, size_bytes);
             fprintf(stderr, "[VD-RINGBUF] Ring buffer zeroed at base=%08X size=%u\n", base, size_bytes);
             fflush(stderr);
@@ -6969,6 +6996,17 @@ static uint32_t Mw05EnsureGraphicsContextAllocated() {
         fprintf(stderr, "[GFX-CTX] ERROR: Failed to allocate VdGlobalDevice pointer\n");
         fflush(stderr);
     }
+
+    // CRITICAL FIX: Initialize the allocator callback function pointer at offset 0x3538 (13624)
+    // The allocator sub_825968B0 calls this function pointer to allocate memory
+    // If it's NULL, all allocations fail and the game crashes with NULL-CALL errors
+    // We need to find a valid allocator function address from the game
+    // For now, set it to 0 and rely on the fallback buffer at 0x3D0C
+    be<uint32_t>* allocator_callback_ptr = reinterpret_cast<be<uint32_t>*>(static_cast<uint8_t*>(ctx_host) + 0x3538);
+    *allocator_callback_ptr = be<uint32_t>(0);  // NULL for now - will use fallback
+
+    fprintf(stderr, "[GFX-CTX] Set allocator callback at offset 0x3538 to 0x00000000 (will use fallback)\n");
+    fflush(stderr);
 
     // CRITICAL FIX: Initialize the fallback allocator pointer at offset 0x3D0C
     // The game reads this pointer when the primary allocator is NULL
@@ -8924,9 +8962,9 @@ uint32_t MmAllocatePhysicalMemoryEx
         fflush(stderr);
     } else {
         // CRITICAL FIX: DO NOT zero-initialize allocated memory!
-        // The o1heap allocator already manages this memory, and zeroing it will corrupt the heap metadata.
-        // Zeroing here was causing heap corruption because we were zeroing memory that contains o1heap's
-        // internal data structures (free list, capacity, etc.)
+        // The heap allocator already manages this memory, and zeroing it will corrupt the heap metadata.
+        // Zeroing here was causing heap corruption because we were zeroing memory that contains
+        // internal data structures (page table, etc.)
         //
         // memset(ptr, 0, size);  // THIS WAS CORRUPTING THE HEAP!
 
@@ -10694,35 +10732,8 @@ void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
         return;
     }
 
-    // CRITICAL FIX: Bypass pool allocator for large allocations (>= 512 KB)
-    // The game's pool allocator has a 345 MB pool which can get fragmented.
-    // Large allocations (600 KB) fail with "Out of memory" even when heap has space.
-    // Solution: Allocate large blocks directly from our heap instead of the pool.
-    const uint32_t LARGE_ALLOC_THRESHOLD = 512 * 1024;  // 512 KB
-
-    if (size >= LARGE_ALLOC_THRESHOLD) {
-        uint64_t count = s_largeAllocCount.fetch_add(1);
-        fprintf(stderr, "[MW05_LARGE_ALLOC] #%llu: Bypassing pool for %u KB allocation\n",
-                count, size/1024);
-        fflush(stderr);
-
-        // Allocate directly from our physical heap
-        void* host_ptr = g_userHeap.AllocPhysical(size, 16);  // 16-byte alignment
-
-        if (host_ptr == nullptr) {
-            fprintf(stderr, "[MW05_LARGE_ALLOC] ERROR: Failed to allocate %u bytes from heap!\n", size);
-            fflush(stderr);
-            ctx.r3.u32 = 0;
-        } else {
-            uint32_t guest_addr = g_memory.MapVirtual(host_ptr);
-            fprintf(stderr, "[MW05_LARGE_ALLOC] SUCCESS: Allocated %u bytes at 0x%08X (host=%p)\n",
-                    size, guest_addr, host_ptr);
-            fflush(stderr);
-            ctx.r3.u32 = guest_addr;
-        }
-        s_debug_call_depth.fetch_sub(1);
-        return;
-    }
+    // REMOVED BYPASS: Let the game use its own pool allocator for ALL allocations
+    // The bypass was masking the real issue - we need to fix the allocator, not bypass it
 
     fprintf(stderr, "[MW05_DEBUG] [depth=%d] ENTER sub_8215CB08 r3=%08X (size=%u bytes = %u KB) r4=%08X\n",
             depth, size, size, size/1024, flags);
@@ -10738,6 +10749,33 @@ void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
     fprintf(stderr, "[MW05_DEBUG] [depth=%d] EXIT sub_8215CB08 - allocated %u bytes at %08X\n",
             depth, size, result);
     fflush(stderr);
+
+    // CRITICAL FIX: If game's pool allocator returns NULL, retry with direct heap allocation
+    // After large physical allocations (4 × 345 MB), the pool may be full/fragmented
+    // This prevents heap errors from trying to free NULL pointers
+    if (result == 0 && size > 0) {
+        static std::atomic<uint64_t> s_retryCount{0};
+        uint64_t count = s_retryCount.fetch_add(1);
+        fprintf(stderr, "[MW05_POOL_FULL] #%llu: Pool allocator returned NULL for %u bytes, retrying with direct heap...\n",
+                count, size);
+        fflush(stderr);
+
+        // Allocate directly from our user heap
+        void* host_ptr = g_userHeap.Alloc(size);
+
+        if (host_ptr == nullptr) {
+            fprintf(stderr, "[MW05_POOL_FULL] ERROR: Direct heap allocation also failed for %u bytes!\n", size);
+            fflush(stderr);
+            // Leave result as 0 - let game handle the failure
+        } else {
+            uint32_t guest_addr = g_memory.MapVirtual(host_ptr);
+            fprintf(stderr, "[MW05_POOL_FULL] SUCCESS: Allocated %u bytes at 0x%08X (host=%p)\n",
+                    size, guest_addr, host_ptr);
+            fflush(stderr);
+            ctx.r3.u32 = guest_addr;
+            result = guest_addr;  // Update result for logging below
+        }
+    }
 
     // DEBUG: Check if the allocated address is valid
     if (result != 0) {
@@ -11005,8 +11043,19 @@ void sub_82441CF0_debug(PPCContext& ctx, uint8_t* base) {
             fflush(stderr);
         }
 
-        // Process work queue (sub_823C8420)
-        // TODO: Implement work queue processing
+        // Process work queue (sub_823C8420) - THIS IS CRITICAL FOR RENDERING!
+        // This function processes work items from the queue and dispatches them to worker threads
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] Calling sub_823C8420 (work queue processing)...\n");
+            fflush(stderr);
+        }
+        ctx.r3.u32 = 0;  // First parameter (unknown)
+        ctx.r4.u32 = 1;  // Second parameter (number of items to process)
+        sub_823C8420(ctx, base);
+        if (iteration < 5) {
+            fprintf(stderr, "[MW05_DEBUG] sub_823C8420 returned\n");
+            fflush(stderr);
+        }
 
         // Call sub_8262DE60 (frame update) - THIS IS CRITICAL!
         if (iteration < 5) {
@@ -11074,8 +11123,8 @@ void sub_82849DE8_debug(PPCContext& ctx, uint8_t* base) {
 // Hook the debug wrappers
 GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);
 // MINIMAL OVERRIDES: Only override what's actually broken in the recompiled code
-// 1. sub_82441E80: Crashes with KeBugCheckEx (0xF4 CRITICAL_OBJECT_TERMINATION) during worker thread creation
-GUEST_FUNCTION_HOOK(sub_82441E80, sub_82441E80_debug);
+// 1. sub_82441E80: REMOVED - Let game run naturally, worker threads now fixed
+// GUEST_FUNCTION_HOOK(sub_82441E80, sub_82441E80_debug);  // DISABLED - manual implementation hangs
 // 2. sub_825A8698: Buggy CreateDevice function that causes crashes
 GUEST_FUNCTION_HOOK(sub_825A8698, sub_825A8698_debug);
 // 3. sub_8215C790, sub_8215C838, sub_821BB4D0: NOW RECOMPILED (added to MW05.toml)

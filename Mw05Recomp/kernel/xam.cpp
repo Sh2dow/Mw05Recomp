@@ -104,6 +104,7 @@ struct XamEnumerator : XamEnumeratorBase
 
 std::array<xxHashMap<XHOSTCONTENT_DATA>, 3> gContentRegistry{};
 std::unordered_set<XamListener*> gListeners{};
+std::mutex gListenersMutex{};  // CRITICAL: Protect gListeners from race conditions
 xxHashMap<std::string> gRootMap;
 
 std::string_view XamGetRootPath(const std::string_view& root)
@@ -126,6 +127,7 @@ void XamRootCreate(const std::string_view& root, const std::string_view& path)
 
 XamListener::XamListener()
 {
+    std::lock_guard<std::mutex> lock(gListenersMutex);
     gListeners.insert(this);
     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
     // KernelTraceHostOpF("HOST.XamListener.constructor this=%p gListeners.size=%u", this, (unsigned int)gListeners.size());
@@ -135,6 +137,7 @@ XamListener::XamListener()
 
 XamListener::~XamListener()
 {
+    std::lock_guard<std::mutex> lock(gListenersMutex);
     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
     // KernelTraceHostOpF("HOST.XamListener.destructor this=%p gListeners.size=%u BEFORE erase", this, (unsigned int)gListeners.size());
     fprintf(stderr, "[XAM] XamListener.destructor this=%p gListeners.size=%u BEFORE erase\n", this, (unsigned int)gListeners.size());
@@ -204,18 +207,19 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
             (unsigned long long)qwAreas, GetKernelHandle(listener));
     fflush(stderr);
 
-    // CRITICAL FIX: Send XN_SYS_SIGNINCHANGED (0x11) notification when listener is created
-    // The game waits for this notification before progressing to file I/O and rendering
-    // This notification indicates that a user has signed in (area 0, message 17)
-    if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
-        const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
-        // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
-        XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 1);  // param=1 (user 0 signed in)
-        // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-        // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
-        fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED) param=1\n");
-        fflush(stderr);
-    }
+    // CRITICAL FIX (2025-10-30): DO NOT send notification immediately when listener is created!
+    // The game crashes with access violation (0xC0000005) when we send the notification too early
+    // The game's callback handler is not ready yet at this point
+    // Instead, we'll send the notification later when the game polls for it (see XNotifyGetNext)
+    // if (qwAreas & (1ull << 0)) {  // If listening to area 0 (system notifications)
+    //     const uint32_t XN_SYS_SIGNINCHANGED = 0x11;  // area=0, message=17
+    //     // CRITICAL FIX: Parameter is user slot mask! For user 0 signed in, param = (1 << 0) = 1
+    //     XamNotifyEnqueueEvent(XN_SYS_SIGNINCHANGED, 1);  // param=1 (user 0 signed in)
+    //     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
+    //     // KernelTraceHostOpF("HOST.XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED)");
+    //     fprintf(stderr, "[XAM] XamNotifyCreateListener.auto.signin area=0 msg=0x11 (XN_SYS_SIGNINCHANGED) param=1\n");
+    //     fflush(stderr);
+    // }
 
     // MW05 FIX: DISABLED - Don't send storage notification automatically
     // This notification (0x14) was blocking the queue and preventing the game from receiving
@@ -249,6 +253,7 @@ uint32_t XamNotifyCreateListener(uint64_t qwAreas)
 
 void XamNotifyEnqueueEvent(uint32_t dwId, uint32_t dwParam)
 {
+    std::lock_guard<std::mutex> lock(gListenersMutex);
     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
     // KernelTraceHostOpF("HOST.XamNotifyEnqueueEvent id=%08X param=%08X area=%u msg=%u listeners=%zu",
     //                   dwId, dwParam, MSG_AREA(dwId), MSG_NUMBER(dwId), gListeners.size());
@@ -324,17 +329,19 @@ bool XNotifyGetNext(uint32_t hNotification, uint32_t dwMsgFilter, be<uint32_t>* 
     }
 
     if (!dummy_notification_sent && empty_queue_count >= 10 && dwMsgFilter == 0x00000011) {
-        fprintf(stderr, "[MW05_FIX] XNotifyGetNext: Sending dummy notification id=0x%08X to unblock polling thread (call_count=%d, empty_queue_count=%d)\n", dwMsgFilter, call_count, empty_queue_count);
+        fprintf(stderr, "[MW05_FIX] XNotifyGetNext: Sending XN_SYS_SIGNINCHANGED notification id=0x%08X param=1 (user 0 signed in) to unblock polling thread (call_count=%d, empty_queue_count=%d)\n", dwMsgFilter, call_count, empty_queue_count);
         fflush(stderr);
 
-        // Send the notification the game is waiting for (id=0x00000011, param=0)
-        // This should allow the thread to exit the polling loop
-        listener.notifications.push_back(std::make_tuple(dwMsgFilter, 0));
+        // CRITICAL FIX (2025-10-30): Send the notification the game is waiting for (id=0x00000011, param=1)
+        // Parameter MUST be 1 (user slot mask for user 0 signed in), NOT 0!
+        // param=0 means no users signed in, which is incorrect
+        // param=1 means user 0 is signed in (bit 0 set)
+        listener.notifications.push_back(std::make_tuple(dwMsgFilter, 1));  // param=1 for user 0 signed in
         dummy_notification_sent = true;
         empty_queue_count = 0;  // Reset counter after sending
 
-        KernelTraceHostOpF("HOST.XNotifyGetNext DUMMY_NOTIFICATION_SENT id=%08X param=%08X",
-                          dwMsgFilter, 0);
+        KernelTraceHostOpF("HOST.XNotifyGetNext DUMMY_NOTIFICATION_SENT id=%08X param=%08X (user 0 signed in)",
+                          dwMsgFilter, 1);
     }
 
     // MW05_FIX: If the game keeps polling for a specific notification but the queue has non-matching notifications,

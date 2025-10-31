@@ -2709,11 +2709,11 @@ static void DrawProfiler()
 
         if (g_userHeap.heap != nullptr)
         {
-            O1HeapDiagnostics diagnostics;
+            uint32_t allocated, capacity;
             size_t physicalAllocated;
             {
                 std::lock_guard lock(*g_userHeap.mutex);
-                diagnostics = o1heapGetDiagnostics(g_userHeap.heap);
+                g_userHeap.GetStats(&allocated, &capacity);
             }
             {
                 std::lock_guard lock(*g_userHeap.physicalMutex);
@@ -2721,17 +2721,16 @@ static void DrawProfiler()
             }
 
             ImGui::Text("Heap Allocated: %d MB (capacity: %d MB)",
-                        int32_t(diagnostics.allocated / (1024 * 1024)),
-                        int32_t(diagnostics.capacity / (1024 * 1024)));
+                        int32_t(allocated / (1024 * 1024)),
+                        int32_t(capacity / (1024 * 1024)));
             ImGui::Text("Physical Heap Allocated: %d MB", int32_t(physicalAllocated / (1024 * 1024)));
 
             // Debug: Log heap stats once per second (every 60 frames at 60 FPS)
             static int s_heapLogFrameCount = 0;
             if (++s_heapLogFrameCount >= 60) {
-                fprintf(stderr, "[HEAP_DEBUG] User heap: allocated=%zu MB, capacity=%zu MB, peak=%zu MB\n",
-                        diagnostics.allocated / (1024 * 1024),
-                        diagnostics.capacity / (1024 * 1024),
-                        diagnostics.peak_allocated / (1024 * 1024));
+                fprintf(stderr, "[HEAP_DEBUG] User heap: allocated=%u MB, capacity=%u MB\n",
+                        allocated / (1024 * 1024),
+                        capacity / (1024 * 1024));
                 fprintf(stderr, "[HEAP_DEBUG] Physical heap: allocated=%zu MB\n",
                         physicalAllocated / (1024 * 1024));
                 fflush(stderr);

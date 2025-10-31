@@ -24,7 +24,7 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
     assert(thread == nullptr);
 
     // CRITICAL FIX: Use g_userHeap.Alloc() instead of malloc
-    // g_userHeap.Alloc() allocates memory within the PPC memory range (using o1heap, a host-side allocator)
+    // g_userHeap.Alloc() allocates memory within the PPC memory range (using BaseHeap)
     // This allows the memory to be safely mapped to guest addresses via g_memory.MapVirtual()
     // Unlike malloc, which returns host heap memory outside the PPC range
     fprintf(stderr, "[THREAD-CTX] Attempting to allocate %zu bytes for thread context (tid=%08X)\n",
@@ -32,19 +32,13 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
     fflush(stderr);
 
     // CRITICAL FIX: Log heap state BEFORE attempting allocation to diagnose failures
-    O1HeapDiagnostics diag_before = g_userHeap.GetDiagnostics();
+    uint32_t allocated_before, capacity_before;
+    g_userHeap.GetStats(&allocated_before, &capacity_before);
     fprintf(stderr, "[THREAD-CTX] BEFORE alloc: capacity=%.2f MB allocated=%.2f MB free=%.2f MB\n",
-            diag_before.capacity / (1024.0 * 1024.0),
-            diag_before.allocated / (1024.0 * 1024.0),
-            (diag_before.capacity - diag_before.allocated) / (1024.0 * 1024.0));
+            capacity_before / (1024.0 * 1024.0),
+            allocated_before / (1024.0 * 1024.0),
+            (capacity_before - allocated_before) / (1024.0 * 1024.0));
     fflush(stderr);
-
-    // CRITICAL DEBUG: Validate heap integrity BEFORE allocation
-    if (!g_userHeap.ValidateHeapIntegrity("GuestThreadContext::BEFORE_ALLOC")) {
-        fprintf(stderr, "[THREAD-CTX-ERROR] Heap corrupted BEFORE thread context allocation!\n");
-        fprintf(stderr, "[THREAD-CTX-ERROR] tid=%08lX TOTAL_SIZE=%zu\n", GetCurrentThreadId(), TOTAL_SIZE);
-        fflush(stderr);
-    }
 
     thread = (uint8_t*)g_userHeap.Alloc(TOTAL_SIZE);
     if (!thread) {
@@ -55,16 +49,17 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
                 PCR_SIZE, TLS_SIZE, TEB_SIZE, STACK_SIZE);
 
         // Get heap diagnostics to understand why allocation failed
-        O1HeapDiagnostics diag = g_userHeap.GetDiagnostics();
+        uint32_t allocated_after, capacity_after;
+        g_userHeap.GetStats(&allocated_after, &capacity_after);
         fprintf(stderr, "[HEAP-DIAG] User heap state AFTER failed allocation:\n");
-        fprintf(stderr, "[HEAP-DIAG]   capacity=%zu (%.2f MB)\n", diag.capacity, diag.capacity / (1024.0 * 1024.0));
-        fprintf(stderr, "[HEAP-DIAG]   allocated=%zu (%.2f MB)\n", diag.allocated, diag.allocated / (1024.0 * 1024.0));
-        fprintf(stderr, "[HEAP-DIAG]   peak_allocated=%zu (%.2f MB)\n", diag.peak_allocated, diag.peak_allocated / (1024.0 * 1024.0));
-        fprintf(stderr, "[HEAP-DIAG]   free_space=%zu (%.2f MB)\n",
-                diag.capacity - diag.allocated, (diag.capacity - diag.allocated) / (1024.0 * 1024.0));
-        fprintf(stderr, "[HEAP-DIAG]   oom_count=%zu\n", diag.oom_count);
+        fprintf(stderr, "[HEAP-DIAG]   capacity=%u (%.2f MB)\n", capacity_after, capacity_after / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   allocated=%u (%.2f MB)\n", allocated_after, allocated_after / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   peak_allocated=N/A (not tracked by BaseHeap)\n");
+        fprintf(stderr, "[HEAP-DIAG]   free_space=%u (%.2f MB)\n",
+                capacity_after - allocated_after, (capacity_after - allocated_after) / (1024.0 * 1024.0));
+        fprintf(stderr, "[HEAP-DIAG]   oom_count=N/A (not tracked by BaseHeap)\n");
         fprintf(stderr, "[HEAP-DIAG]   fragmentation=%.2f%%\n",
-                100.0 * (1.0 - (double)(diag.capacity - diag.allocated) / (double)diag.capacity));
+                100.0 * (1.0 - (double)allocated_after / (double)capacity_after));
 
         fflush(stderr);
         fprintf(stderr, "[ABORT] guest_thread.cpp line 63: Thread context allocation failed!\n");
@@ -108,7 +103,7 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber)
 GuestThreadContext::~GuestThreadContext()
 {
     // CRITICAL FIX: DO NOT FREE thread context memory!
-    // Freeing causes use-after-free bugs because o1heap immediately reuses the memory
+    // Freeing causes use-after-free bugs because the heap immediately reuses the memory
     // for the next thread allocation, but the previous thread may still be accessing it.
     // This causes heap corruption when multiple threads are created/destroyed rapidly.
     //
@@ -116,7 +111,7 @@ GuestThreadContext::~GuestThreadContext()
     // - Thread #8 allocates at 0x67FF20, completes, and frees memory
     // - Thread #9 immediately reuses 0x67FF20 (same address!)
     // - Race condition: thread #8 cleanup still accessing memory while thread #9 uses it
-    // - Result: o1heap instance structure gets corrupted
+    // - Result: heap corruption
     //
     // Solution: LEAK thread contexts (don't free them)
     // - Thread contexts are only 265 KB each

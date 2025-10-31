@@ -184,12 +184,12 @@ inline void StoreBE16_Watched(uint8_t* base, uint32_t ea, uint16_t v) {
 
     // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
     // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
-    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // which causes it to write zeros across the entire heap, corrupting heap metadata.
     // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
     // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
     // is clearly buggy and should not be writing to memory at all.
-    // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
+    // We ALLOW all other writes (including heap's own internal operations) to proceed normally.
 #ifndef PPC_CONFIG_SKIP_LR
     if (auto* c = GetPPCContext()) {
         uint32_t lr = c->lr;
@@ -236,12 +236,12 @@ inline void StoreBE32_Watched(uint8_t* base, uint32_t ea, uint32_t v) {
 
     // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
     // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
-    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // which causes it to write zeros across the entire heap, corrupting heap metadata.
     // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
     // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
     // is clearly buggy and should not be writing to memory at all.
-    // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
+    // We ALLOW all other writes (including heap's own internal operations) to proceed normally.
 #ifndef PPC_CONFIG_SKIP_LR
     if (auto* c = GetPPCContext()) {
         uint32_t lr = c->lr;
@@ -587,12 +587,12 @@ inline void StoreBE64_Watched(uint8_t* base, uint32_t ea, uint64_t v64)
 
     // CRITICAL FIX: BLOCK ALL writes from game's buggy memset function (lr=0x825A7DC8)
     // The game's memset function is being called with corrupted parameters (size=0xFFE8001C = 4GB)
-    // which causes it to write zeros across the entire heap, corrupting o1heap's free list.
+    // which causes it to write zeros across the entire heap, corrupting heap metadata.
     // The corruption happens at addresses like 0x001A0340 (656 KB into the heap).
     //
     // We BLOCK ALL writes from lr=0x825A7DC8 regardless of address, since this function
     // is clearly buggy and should not be writing to memory at all.
-    // We ALLOW all other writes (including o1heap's own internal operations) to proceed normally.
+    // We ALLOW all other writes (including heap's own internal operations) to proceed normally.
 
     // BLOCK ALL writes from the game's buggy memset function (lr=0x825A7DC8)
     if (lr == 0x825A7DC8) {

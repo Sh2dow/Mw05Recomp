@@ -3,38 +3,34 @@
 #include "mutex.h"
 #include <atomic>
 
+// Forward declare BaseHeap to avoid circular dependency
+namespace mw05 {
+    class BaseHeap;
+}
+
 struct Heap
 {
-    // EXACT COPY from UnleashedRecomp (with base/size fields for diagnostics)
-    // CRITICAL FIX: Use pointers to Mutex instead of direct members to avoid
-    // calling InitializeCriticalSection during global construction (before main())
+    // Uses Xenia's BaseHeap allocator (page-based with metadata in host memory)
+    // BaseHeap stores page table in HOST memory (std::vector), NOT in guest heap
+    // This prevents the game from corrupting heap metadata by writing to guest addresses
+
     Mutex* mutex{nullptr};
-    O1HeapInstance* heap;
+    void* heap;  // mw05::BaseHeap* - page-based heap allocator from Xenia
     void* heapBase{};
     size_t heapSize{};
 
     Mutex* physicalMutex{nullptr};
-    O1HeapInstance* physicalHeap;  // NOT USED - physical heap uses bump allocator
+    void* physicalHeap{nullptr};  // NOT USED - physical heap uses bump allocator
     void* physicalBase{};
     size_t physicalSize{};
     size_t physicalAllocated{};  // Track allocated bytes for bump allocator
     size_t nextPhysicalAddr{};   // Bump allocator pointer
 
-    // Flag to disable heap operations during shutdown to prevent o1heap assertions
+    // Flag to disable heap operations during shutdown
     std::atomic<bool> shutdownInProgress{false};
 
     // Flag to disable logging during global construction (before main() is called)
-    // This prevents fprintf() from being called before the C runtime is fully initialized
     bool inGlobalConstruction{true};
-
-    // Store initial diagnostics to detect heap corruption
-    O1HeapDiagnostics initialDiagnostics{};
-
-    // Memory guards (canaries) to detect heap corruption
-    static constexpr uint64_t CANARY_MAGIC = 0xDEADBEEFCAFEBABEull;
-    uint64_t* canaryBefore{nullptr};  // Canary placed before o1heap instance
-    uint64_t* canaryAfter{nullptr};   // Canary placed after o1heap instance
-    size_t canaryCheckCount{0};       // Number of times canaries have been checked
 
     // Default constructor - does nothing
     // Init() will be called manually in main() after C runtime is fully initialized
@@ -48,14 +44,11 @@ struct Heap
 
     size_t Size(void* ptr);
 
-    // Get heap diagnostics for debugging
-    O1HeapDiagnostics GetDiagnostics();
+    // Get heap statistics for debugging
+    void GetStats(uint32_t* out_allocated, uint32_t* out_capacity);
 
-    // Check if memory guards (canaries) are intact
-    bool CheckCanaries(const char* caller);
-
-    // Validate heap integrity (checks canaries + diagnostics)
-    bool ValidateHeapIntegrity(const char* caller);
+    // Dump heap map to log
+    void DumpMap();
 
     template<typename T, typename... Args>
     T* Alloc(Args&&... args)

@@ -1105,7 +1105,7 @@ int main(int argc, char *argv[])
 
     // CRITICAL FIX: Always apply debug profile by default
     // The debug profile sets critical environment variables that are required for the game to work.
-    // Without these defaults, the game hits o1heap assertion failures during import table processing.
+    // Without these defaults, the game may hit errors during import table processing.
     // Users can still override individual settings via environment variables.
     //
     // Apply debug profile UNLESS explicitly disabled via MW05_DEBUG_PROFILE=0

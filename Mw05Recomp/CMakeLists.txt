@@ -76,6 +76,7 @@ set(MW05_RECOMP_KERNEL_CXX_SOURCES
     "kernel/import_lookup.cpp"
     "kernel/xdm.cpp"
     "kernel/heap.cpp"
+    "kernel/base_heap.cpp"
     "kernel/memory.cpp"
     "kernel/trace.cpp"
     "kernel/xam.cpp"
@@ -569,7 +570,6 @@ target_link_libraries(Mw05Recomp PRIVATE
     libzstd_static
     msdf-atlas-gen::msdf-atlas-gen
     nfd::nfd
-    o1heap
     XenonUtils
     SDL3::SDL3-static            # <- was SDL2::SDL2-static
     SDL3_mixer::SDL3_mixer       # <- was SDL2_mixer

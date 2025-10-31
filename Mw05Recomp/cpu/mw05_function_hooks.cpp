@@ -14,17 +14,47 @@
 
 // sub_8215FDC0_hook: Memory pool initialization function
 // This function is called lazily by sub_8215CB08 when dword_82A2BF44 is 0
+// CRITICAL FIX (2025-10-30): The recompiled function has a bug where it doesn't set r3=0 before returning
+// The original PPC code does "li r3, 0" at 0x8215FE20, but the recompiled code doesn't execute it
+// This causes r3 to contain garbage (the return value from sub_8215C838), and all callers get the same value
+// This leads to memory corruption because multiple subsystems think they own the same memory pool!
 PPC_FUNC_IMPL(__imp__sub_8215FDC0);
 PPC_FUNC(sub_8215FDC0)
 {
     fprintf(stderr, "[HOOK-8215FDC0] Memory pool init called! lr=0x%08llX\n", (unsigned long long)ctx.lr);
     fflush(stderr);
 
+    // Check dword_82A2BF44 flag BEFORE calling the function
+    uint32_t* flag_ptr = (uint32_t*)g_memory.Translate(0x82A2BF44);
+    uint32_t flag_before = __builtin_bswap32(*flag_ptr);
+    fprintf(stderr, "[HOOK-8215FDC0] dword_82A2BF44 BEFORE = %u\n", flag_before);
+    fflush(stderr);
+
     // Call the original function
     extern void sub_8215FDC0(PPCContext& ctx, uint8_t* base);
     __imp__sub_8215FDC0(ctx, base);
 
-    fprintf(stderr, "[HOOK-8215FDC0] Memory pool init completed, r3=0x%08X\n", ctx.r3.u32);
+    // Check dword_82A2BF44 flag AFTER calling the function
+    uint32_t flag_after = __builtin_bswap32(*flag_ptr);
+    fprintf(stderr, "[HOOK-8215FDC0] dword_82A2BF44 AFTER = %u\n", flag_after);
+    fprintf(stderr, "[HOOK-8215FDC0] Memory pool init completed, r3=0x%08X (BEFORE FIX)\n", ctx.r3.u32);
+    fflush(stderr);
+
+    // CRITICAL FIX #1: The recompiled code doesn't set dword_82A2BF44 = 1 (recompiler bug!)
+    // The original PPC code sets this flag at the end of the function to indicate initialization is complete
+    // Without this flag, the allocator keeps calling sub_8215FDC0 on every allocation!
+    if (flag_after == 0) {
+        *flag_ptr = __builtin_bswap32(1);
+        fprintf(stderr, "[HOOK-8215FDC0] RECOMPILER BUG FIX: Manually set dword_82A2BF44 = 1\n");
+        fflush(stderr);
+    }
+
+    // CRITICAL FIX #2: The original PPC code sets r3=0 before returning (see 0x8215FE20: li r3, 0)
+    // But the recompiled code doesn't execute this instruction, leaving r3 with garbage
+    // Force r3=0 to match the original behavior
+    ctx.r3.u32 = 0;
+
+    fprintf(stderr, "[HOOK-8215FDC0] Memory pool init completed, r3=0x%08X (AFTER FIX)\n", ctx.r3.u32);
     fflush(stderr);
 }
 

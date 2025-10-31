@@ -5,13 +5,12 @@ Detects and clicks "Ignore" button on any messagebox.
 """
 
 import subprocess
-import time
 import sys
 import os
 from pathlib import Path
 from pywinauto import Desktop
-import psutil
-import win32process
+from pywinauto.keyboard import send_keys
+import psutil, win32process, time
 
 # Add pywinauto to path if needed
 try:
@@ -30,35 +29,34 @@ TARGET_PROCESSES = ["Mw05Recomp.exe"]
 def find_and_click_messagebox():
     try:
         for backend in ("win32", "uia"):
-            for win in Desktop(backend=backend).windows():
-                if win.class_name() != "#32770":
-                    continue  # only dialog boxes
-
-                # ↓ inside the same loop now!
+            for win in Desktop(backend=backend).windows(visible_only=False):
                 try:
                     _, pid = win32process.GetWindowThreadProcessId(win.handle)
-                    proc = psutil.Process(pid)
-                    pname = proc.name()
+                    pname = psutil.Process(pid).name().lower()
                 except Exception:
                     continue
 
                 if pname not in TARGET_PROCESSES:
                     continue
 
-                print(f"[MSGBOX] Found dialog: '{win.window_text()}' (pid={pid}, process={pname}, backend={backend})")
+                title = win.window_text().lower()
+                if "microsoft visual c++ runtime library" not in title:
+                    continue
 
-                # Try clicking common buttons
-                for btn in win.descendants(control_type="Button"):
-                    caption = btn.window_text().strip("&").lower()
-                    if caption in ["ignore", "ok", "yes", "continue", "retry", "abort"]:
-                        print(f"[MSGBOX] Clicking '{caption}' via backend={backend}")
-                        btn.click_input()
-                        time.sleep(0.3)
-                        return True
+                print(f"[MSGBOX] Found VC++ Runtime dialog (pid={pid}, backend={backend})")
+
+                try:
+                    win.set_focus()
+                    # Move focus two times right → "Abort", then press Enter
+                    send_keys("{ENTER}")
+                    time.sleep(0.3)
+                    print("[MSGBOX] Sent keystrokes to hit 'Ignore'")
+                    return True
+                except Exception as e:
+                    print(f"[WARN] Failed to send keys: {e}")
     except Exception as e:
         print(f"[WARN] Exception in find_and_click_messagebox: {e}")
     return False
-
 
 def main():
     """Run game and auto-handle messageboxes."""
@@ -93,8 +91,8 @@ def main():
     # Set all environment variables from run_with_env.cmd
     env["MW05_HOST_TRACE_FILE"] = "mw05_host_trace.log"
     env["MW05_TRACE_KERNEL"] = "1"
-    env["MW05_PM4_TRACE"] = "1"  # Enable PM4 command tracing
-    env["MW05_PM4_TRACE_INTERESTING"] = "1"  # Trace interesting PM4 registers
+    env["MW05_PM4_TRACE"] = "0"  # Enable PM4 command tracing
+    env["MW05_PM4_TRACE_INTERESTING"] = "0"  # Trace interesting PM4 registers
     # env["MW05_FORCE_CALL_CREATEDEVICE"] = "1"
     # env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "300"
     # env["MW05_FORCE_RENDER_THREAD"] = "1"

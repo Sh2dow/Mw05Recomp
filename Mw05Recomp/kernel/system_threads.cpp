@@ -82,14 +82,28 @@ static void GpuCommandsThreadEntry()
             if (rptr_host) {
                 uint32_t rptr = *rptr_host;
 
+                // CRITICAL FIX (2025-10-31): Validate rptr to prevent reading corrupted memory
+                // If rptr is 0xFFFFFFFF, the memory is uninitialized or corrupted
+                // Valid rptr values should be within the ring buffer range (0 to ring_size-1)
+                uint32_t ring_size = (1u << rb_len_log2);
+                bool rptr_valid = (rptr != 0xFFFFFFFF) && (rptr < ring_size);
+
                 // Log first few rptr values
                 if (signal_count <= 5) {
-                    fprintf(stderr, "[GPU-COMMANDS] rptr=0x%08X (last=0x%08X)\n", rptr, last_rptr);
+                    fprintf(stderr, "[GPU-COMMANDS] rptr=0x%08X (last=0x%08X) valid=%d ring_size=0x%X\n",
+                            rptr, last_rptr, rptr_valid, ring_size);
                     fflush(stderr);
                 }
 
-                // Check if there are new commands to process (rptr changed)
-                if (rptr != last_rptr) {
+                // Only process if rptr is valid
+                if (!rptr_valid) {
+                    if (signal_count <= 5) {
+                        fprintf(stderr, "[GPU-COMMANDS] ⚠️ Invalid rptr=0x%08X detected, skipping PM4 processing\n", rptr);
+                        fflush(stderr);
+                    }
+                    // Don't update last_rptr, wait for valid value
+                } else if (rptr != last_rptr) {
+                    // Check if there are new commands to process (rptr changed)
                     fprintf(stderr, "[GPU-COMMANDS] rptr changed from 0x%08X to 0x%08X, processing PM4 commands\n",
                             last_rptr, rptr);
                     fflush(stderr);

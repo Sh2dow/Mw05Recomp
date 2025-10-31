@@ -577,7 +577,7 @@ static inline void DumpGuestStackWindow(uint8_t* base, uint32_t spEA, int count 
 //         fprintf(stderr, "[HEAP-FREE-SKIP] Skipping free of invalid pointer: r4=0x%08X (NULL or out of range)\n", freed_block_ptr);
 //         fprintf(stderr, "[HEAP-FREE-SKIP]   r3=0x%08X r5=0x%08X lr=0x%08X\n",
 //                 ctx.r3.u32, ctx.r5.u32, ctx.lr);
-//         fprintf(stderr, "[HEAP-FREE-SKIP]   This prevents corruption of o1heap capacity field at 0x100208\n");
+//         fprintf(stderr, "[HEAP-FREE-SKIP]   This prevents heap corruption\n");
 //         fflush(stderr);
 // 
 //         // Return without calling the original function
@@ -595,8 +595,8 @@ static inline void DumpGuestStackWindow(uint8_t* base, uint32_t spEA, int count 
 
 // CRITICAL FIX: Wrapper for sub_8215BC78 (memory allocator free function)
 // This function fills freed memory with 0xEE pattern, but it has a bug where it tries to
-// free NULL pointers, causing it to write to address 0x10 (NULL + 16), which corrupts
-// the o1heap capacity field at 0x100208.
+// free NULL pointers, causing it to write to low memory addresses, which can corrupt
+// heap metadata.
 //
 // Root cause: The game's memory allocator is being called with r31=NULL (freed block pointer),
 // and when it calculates the fill address as r31+16, it results in 0x10 instead of a valid address.

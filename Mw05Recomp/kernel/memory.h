@@ -83,8 +83,8 @@ struct Memory
         // Log AFTER write
         PPCFunc* new_value = *funcPtrAddr;
 
-        // Only log for the graphics callback to reduce spam
-        if (guest == 0x825979A8) {
+        // Log for graphics callback AND worker thread entry point
+        if (guest == 0x825979A8 || guest == 0x828508A8) {
             fprintf(stderr, "[INSERT-FUNC] guest=0x%08X host=%p\n", guest, (void*)host);
             fprintf(stderr, "[INSERT-FUNC]   code_offset=0x%llX table_offset=0x%llX\n",
                     (unsigned long long)code_offset, (unsigned long long)table_offset);

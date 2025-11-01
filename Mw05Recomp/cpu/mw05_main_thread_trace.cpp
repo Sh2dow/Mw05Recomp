@@ -75,6 +75,18 @@ void Init6_sub_8262E7F8(PPCRegister& r3)
     fflush(stderr);
 }
 
+// Hook AFTER Init6 to see its return value
+void Init6_Return(PPCRegister& r3)
+{
+    fprintf(stderr, "[MAIN-THREAD-INIT] Init6 RETURNED r3=%08X (%s)\n",
+            r3.u32, r3.u32 ? "TRUE - will call Init7" : "FALSE - will skip Init7");
+    fflush(stderr);
+}
+
+// NOTE: _xstart override removed - the recompiled version works correctly
+// The main loop IS being called and IS running. The issue is that the game
+// is not issuing draw commands yet, which is a different problem.
+
 // Initialization function 7 (conditional)
 void Init7_sub_826BDA60()
 {

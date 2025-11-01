@@ -11,10 +11,14 @@
 #include <chrono>
 #include <thread>
 #include <unordered_set>
+#include <unordered_map>
 #include <mutex>
 #include <kernel/trace.h>
 
 extern std::atomic<uint32_t> g_watchEA;
+
+// Forward declaration for worker thread slot registration
+void RegisterWorkerThreadSlot(DWORD threadId, uint32_t slotAddr);
 
 PPC_FUNC_IMPL(__imp__sub_82442080);
 PPC_FUNC(sub_82442080)
@@ -315,11 +319,14 @@ extern uint32_t ExCreateThread(be<uint32_t>* handle, uint32_t stackSize, be<uint
 extern uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount);
 
 // Force creation of missing worker threads
-// The natural initialization path does NOT work - worker threads are never created!
-// This function force-creates the worker threads to unblock the game initialization.
+// CRITICAL FIX: The game NEVER creates worker threads naturally!
+// The game also NEVER initializes the callback parameter structure!
+// We need to:
+// 1. Force-initialize the callback parameter structure (game never does this)
+// 2. Create worker threads ONLY AFTER work is queued (not before!)
 // NOTE: This function is called from guest_thread.cpp, so it cannot be static
 void Mw05ForceCreateMissingWorkerThreads() {
-    // RE-ENABLED: Natural initialization does NOT work - worker threads never created!
+    // RE-ENABLED: Game never creates workers OR initializes callback structure!
 
     static std::atomic<bool> s_created{false};
     static std::atomic<int> s_check_count{0};
@@ -412,6 +419,30 @@ void Mw05ForceCreateMissingWorkerThreads() {
     }
 
     fprintf(stderr, "[FORCE_WORKERS] Callback parameter structure IS initialized (work_func=0x%08X)\n", work_func_ptr);
+    fflush(stderr);
+
+    // CRITICAL FIX (2025-10-31): Only create workers AFTER work is queued!
+    // The workers check the queue ONCE and exit if no work is found.
+    // We need to wait until the game has added work to the queue before creating workers.
+    // Check if work is queued by reading the loader state at 0x82A2B334
+    uint32_t loader_state_addr = 0x82A2B334;  // This is where the game stores loader work
+    be<uint32_t>* loader_state_ptr = reinterpret_cast<be<uint32_t>*>(g_memory.Translate(loader_state_addr));
+    if (!loader_state_ptr) {
+        fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to translate loader state address 0x%08X\n", loader_state_addr);
+        fflush(stderr);
+        return;
+    }
+
+    // Read the work function pointer at the loader state
+    // If it's 0x0300CC20, work is queued and we can create workers
+    uint32_t loader_work_func = loader_state_ptr[4];  // +0x10 offset (work_func)
+    if (loader_work_func == 0 || loader_work_func == 0xFFFFFFFF) {
+        fprintf(stderr, "[FORCE_WORKERS] Work NOT queued yet (loader_work_func=0x%08X), waiting...\n", loader_work_func);
+        fflush(stderr);
+        return;  // Don't create workers yet - work not queued
+    }
+
+    fprintf(stderr, "[FORCE_WORKERS] Work IS queued (loader_work_func=0x%08X), creating workers now!\n", loader_work_func);
     fflush(stderr);
 
     // CRITICAL FIX (2025-10-30): Patch game's heap structure for worker thread compatibility
@@ -578,6 +609,9 @@ void Mw05ForceCreateMissingWorkerThreads() {
         if (result == 0) {  // STATUS_SUCCESS
             fprintf(stderr, "[FORCE_WORKERS] Worker thread #%d created: handle=0x%08X tid=0x%08X\n", i + 3, (uint32_t)thread_handle, (uint32_t)thread_id);
             fflush(stderr);
+
+            // Register the worker slot for this thread so sub_826BE3E8 can initialize offset +88
+            RegisterWorkerThreadSlot((DWORD)thread_id, worker_slots[i]);
         } else {
             fprintf(stderr, "[FORCE_WORKERS] ERROR: Failed to create worker thread #%d: status=0x%08X\n", i + 3, result);
             fflush(stderr);
@@ -768,29 +802,10 @@ PPC_FUNC(sub_8262E7F8) {
 }
 
 // sub_826BDA60 - Called conditionally if sub_8262E7F8 returns true
-PPC_FUNC_IMPL(__imp__sub_826BDA60);
-PPC_FUNC(sub_826BDA60) {
-    fprintf(stderr, "[XSTART_INIT] sub_826BDA60 ENTER\n");
-    fflush(stderr);
-    __imp__sub_826BDA60(ctx, base);
-    fprintf(stderr, "[XSTART_INIT] sub_826BDA60 EXIT\n");
-    fflush(stderr);
-}
+// MOVED TO mw05_main_thread_trace.cpp to fix __noreturn issue
 
 // Trace _xstart (0x8262E9A8) - C runtime startup function
-// This is the main thread entry point that parses command line and calls sub_82441E80
-PPC_FUNC_IMPL(__imp___xstart);
-PPC_FUNC(_xstart) {
-    fprintf(stderr, "[XSTART] ENTER r3=%08X r4=%08X r5=%08X lr=%08X\n",
-            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
-    fflush(stderr);
-
-    // Call the original function
-    __imp___xstart(ctx, base);
-
-    fprintf(stderr, "[XSTART] EXIT (should never return)\n");
-    fflush(stderr);
-}
+// MOVED TO mw05_main_thread_trace.cpp to fix __noreturn issue
 
 // Called from _xstart() (0x8262E9A8)
 // Using recompiled version directly - no wrapper needed
@@ -998,8 +1013,14 @@ PPC_FUNC(sub_8284F548) {
     fflush(stderr);
 }
 
-PPC_FUNC_IMPL(__imp__sub_828508A8);
-PPC_FUNC(sub_828508A8)
+// CRITICAL FIX (2025-10-31): Worker thread entry point wrapper
+// The generated ppc_func_mapping.cpp contains a weak symbol for sub_828508A8 that points
+// to the buggy recompiled version. We need to create a wrapper with a DIFFERENT name
+// to avoid linker confusion, then manually register it with g_memory.InsertFunction().
+
+// Wrapper function with a unique name to avoid linker conflicts
+// We do NOT use PPC_FUNC_IMPL here because that would create a duplicate symbol
+void sub_828508A8_wrapper(PPCContext& ctx, uint8_t* base)
 {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
@@ -1263,8 +1284,10 @@ PPC_FUNC(sub_828508A8)
         ctx.r3.u32 = 0;
     } else {
         KernelTraceHostOp("HOST.ThreadEntry.828508A8.calling_original");
-        // Call the original thread entry point
-        __imp__sub_828508A8(ctx, base);
+        // Call the original recompiled function from the generated code
+        // We can't use __imp__sub_828508A8 directly because we didn't declare it with PPC_FUNC_IMPL
+        // Instead, we'll call sub_82850820 which is what the original function does anyway
+        sub_82850820(ctx, base);
     }
 
     KernelTraceHostOpF("HOST.ThreadEntry.828508A8.exit count=%llu tid=%lx r3=%08X", count, GetCurrentThreadId(), ctx.r3.u32);
@@ -1350,34 +1373,85 @@ PPC_FUNC(sub_8261A558) {
     fflush(stderr);
 }
 
-// Wrapper for sub_826BE3E8 - Returns pointer to structure containing callback pointer
+// Thread ID to worker slot mapping
+// Each worker thread is created with a specific worker slot address
+static std::unordered_map<DWORD, uint32_t> s_threadToWorkerSlot;
+static std::mutex s_threadToWorkerSlotMutex;
+
+// Register a worker thread's slot address
+void RegisterWorkerThreadSlot(DWORD threadId, uint32_t slotAddr) {
+    std::lock_guard<std::mutex> lock(s_threadToWorkerSlotMutex);
+    s_threadToWorkerSlot[threadId] = slotAddr;
+    fprintf(stderr, "[WORKER-SLOT-MAP] Registered tid=0x%08lX -> slot=0x%08X\n", threadId, slotAddr);
+    fflush(stderr);
+}
+
+// Get the worker slot address for the current thread
+uint32_t GetWorkerSlotForCurrentThread() {
+    DWORD tid = GetCurrentThreadId();
+    std::lock_guard<std::mutex> lock(s_threadToWorkerSlotMutex);
+    auto it = s_threadToWorkerSlot.find(tid);
+    if (it != s_threadToWorkerSlot.end()) {
+        return it->second;
+    }
+    return 0;  // Not a worker thread
+}
+
+// Wrapper for sub_826BE3E8 - Get worker context structure
+// CRITICAL FIX: Initialize callback function pointer at offset +84 and parameter at offset +88
+// Disassembly shows: lwz r11, 0x54(r11) - loads function pointer from offset +0x54 (84)
+//                    lwz r3, 0x58(r11)  - loads parameter from offset +0x58 (88)
 PPC_FUNC_IMPL(__imp__sub_826BE3E8);
 PPC_FUNC(sub_826BE3E8) {
     static std::atomic<uint64_t> s_callCount{0};
     uint64_t count = s_callCount.fetch_add(1);
 
-    fprintf(stderr, "[826BE3E8] ENTER: count=%llu tid=%lx\n",
-            count, GetCurrentThreadId());
+    fprintf(stderr, "[826BE3E8] ENTER: count=%llu tid=%lx\n", count, GetCurrentThreadId());
     fflush(stderr);
 
-    // Call the original
+    // Call the original function to get the worker context structure
     __imp__sub_826BE3E8(ctx, base);
 
-    fprintf(stderr, "[826BE3E8] RETURN: count=%llu r3=%08X (structure pointer)\n",
-            count, ctx.r3.u32);
+    uint32_t struct_addr = ctx.r3.u32;
+    fprintf(stderr, "[826BE3E8] RETURN: count=%llu r3=%08X (structure pointer)\n", count, struct_addr);
     fflush(stderr);
 
-    // DEBUG: Log the callback pointers in the structure returned by sub_826BE3E8
-    // This structure should now have the callback pointers copied by sub_828508A8
-    if (ctx.r3.u32 != 0) {
-        extern Memory g_memory;
-        void* struct_ptr = g_memory.Translate(ctx.r3.u32);
-        if (struct_ptr) {
-            be<uint32_t>* struct_u32 = reinterpret_cast<be<uint32_t>*>(struct_ptr);
-            uint32_t callback_func = struct_u32[84/4];  // +0x54 (84) - callback function
-            uint32_t callback_param = struct_u32[88/4];  // +0x58 (88) - callback parameter
+    // CRITICAL FIX: Initialize callback function pointer at offset +84 and parameter at offset +88
+    // Disassembly of sub_82850820 shows:
+    //   lwz r11, 0x54(r11)  # Load function pointer from offset +0x54 (84)
+    //   lwz r3, 0x58(r11)   # Load parameter from offset +0x58 (88)
+    //   mtspr CTR, r11      # Move function pointer to CTR
+    //   bctrl               # Call function with r3 as parameter
+    if (struct_addr != 0) {
+        uint8_t* struct_ptr = base + struct_addr;
+        uint32_t* struct_u32 = (uint32_t*)struct_ptr;
 
-            fprintf(stderr, "[826BE3E8] Callback function at +84: 0x%08X, parameter at +88: 0x%08X\n", callback_func, callback_param);
+        // Check if function pointer at offset +84 is NULL
+        uint32_t func_ptr = __builtin_bswap32(struct_u32[84/4]);
+        uint32_t param_ptr = __builtin_bswap32(struct_u32[88/4]);
+
+        if (func_ptr == 0 || param_ptr == 0) {
+            // Get the worker slot address for this thread
+            uint32_t worker_slot = GetWorkerSlotForCurrentThread();
+
+            if (worker_slot != 0) {
+                // Initialize function pointer to 0x8261A558 (the work processing function)
+                struct_u32[84/4] = __builtin_bswap32(0x8261A558);
+
+                // Initialize parameter to point to the worker slot for this thread
+                struct_u32[88/4] = __builtin_bswap32(worker_slot);
+
+                fprintf(stderr, "[826BE3E8] INITIALIZED: func_ptr at +84 = 0x8261A558, param at +88 = 0x%08X (worker slot)\n",
+                        worker_slot);
+                fflush(stderr);
+            } else {
+                fprintf(stderr, "[826BE3E8] WARNING: Not a worker thread (tid=%lx), skipping initialization\n",
+                        GetCurrentThreadId());
+                fflush(stderr);
+            }
+        } else {
+            fprintf(stderr, "[826BE3E8] Already initialized: func=0x%08X param=0x%08X\n",
+                    func_ptr, param_ptr);
             fflush(stderr);
         }
     }
@@ -1393,6 +1467,37 @@ PPC_FUNC(sub_82850820) {
     fprintf(stderr, "[THREAD1_LOOP] sub_82850820 ENTER: count=%llu r3=%08X tid=%lx\n",
             count, ctx.r3.u32, GetCurrentThreadId());
     fflush(stderr);
+
+    // CRITICAL DEBUG: Check what sub_826BE3E8 returns and what's at offset +88
+    // According to IDA: sub_82850820 calls sub_826BE3E8(), then calls callback at offset +88
+    extern void sub_826BE3E8(PPCContext& ctx, uint8_t* base);
+
+    // Save r3 before calling sub_826BE3E8
+    uint32_t saved_r3 = ctx.r3.u32;
+
+    // Call sub_826BE3E8 to get worker context structure
+    sub_826BE3E8(ctx, base);
+    uint32_t worker_ctx_addr = ctx.r3.u32;
+
+    fprintf(stderr, "[THREAD1_LOOP] sub_826BE3E8 returned: 0x%08X\n", worker_ctx_addr);
+    fflush(stderr);
+
+    if (worker_ctx_addr != 0) {
+        uint8_t* worker_ctx_ptr = base + worker_ctx_addr;
+        uint32_t* worker_ctx_u32 = (uint32_t*)worker_ctx_ptr;
+
+        // Read callback pointer at offset +88 (0x58)
+        uint32_t callback_ptr = __builtin_bswap32(worker_ctx_u32[88/4]);
+        uint32_t callback_param = __builtin_bswap32(worker_ctx_u32[88/4]);  // Same offset for param
+
+        fprintf(stderr, "[THREAD1_LOOP] Worker context at 0x%08X:\n", worker_ctx_addr);
+        fprintf(stderr, "[THREAD1_LOOP]   +0x58 (88): callback_ptr=0x%08X callback_param=0x%08X\n",
+                callback_ptr, callback_param);
+        fflush(stderr);
+    }
+
+    // Restore r3 before calling original function
+    ctx.r3.u32 = saved_r3;
 
     // CRITICAL DEBUG: Wrap in SEH to catch crashes
     #if defined(_WIN32)

@@ -8428,6 +8428,30 @@ void RegisterMw05VideoManualHooks()
 
     // Additional PM4 builder and present-path helpers
     g_memory.InsertFunction(0x82597650, sub_82597650);
+
+    // CRITICAL FIX (2025-10-31): Worker thread entry point wrapper
+    // The wrapper is named sub_828508A8_wrapper to avoid linker conflicts with the weak symbol
+    // in the generated ppc_func_mapping.cpp. We manually register it at address 0x828508A8.
+    extern void sub_828508A8_wrapper(PPCContext& ctx, uint8_t* base);
+    fprintf(stderr, "[VIDEO-CTOR] Registering 0x828508A8 (Worker thread entry point wrapper)\n");
+    fflush(stderr);
+    g_memory.InsertFunction(0x828508A8, sub_828508A8_wrapper);
+    fprintf(stderr, "[VIDEO-CTOR] Registered 0x828508A8 successfully\n");
+    fflush(stderr);
+
+    // CRITICAL DEBUG: Verify that the function was registered correctly
+    auto* registered_func = g_memory.FindFunction(0x828508A8);
+    fprintf(stderr, "[VIDEO-CTOR] Wrapper address: %p\n", (void*)sub_828508A8_wrapper);
+    fprintf(stderr, "[VIDEO-CTOR] FindFunction(0x828508A8) returned: %p\n", (void*)registered_func);
+    if (registered_func == sub_828508A8_wrapper) {
+        fprintf(stderr, "[VIDEO-CTOR] VERIFIED: FindFunction(0x828508A8) returns our wrapper!\n");
+    } else if (registered_func == nullptr) {
+        fprintf(stderr, "[VIDEO-CTOR] ERROR: FindFunction(0x828508A8) returns nullptr!\n");
+    } else {
+        fprintf(stderr, "[VIDEO-CTOR] ERROR: FindFunction(0x828508A8) returns DIFFERENT function! (expected=%p got=%p)\n",
+                (void*)sub_828508A8_wrapper, (void*)registered_func);
+    }
+    fflush(stderr);
     g_memory.InsertFunction(0x825976D8, sub_825976D8);
     g_memory.InsertFunction(0x825A54F0, sub_825A54F0);
     g_memory.InsertFunction(0x825A6DF0, sub_825A6DF0);

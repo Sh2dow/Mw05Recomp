@@ -93,6 +93,9 @@ def main():
     env["MW05_TRACE_KERNEL"] = "1"
     env["MW05_PM4_TRACE"] = "1"  # Enable PM4 command tracing
     env["MW05_PM4_TRACE_INTERESTING"] = "1"  # Trace interesting PM4 registers
+    # DISABLE MW05_STREAM_ACK_NO_PATH to see if the game is actually waiting for files
+    # If it's waiting for files, it will hang. If it's waiting for something else, we'll see different behavior.
+    env["MW05_STREAM_ACK_NO_PATH"] = "0"  # Let the game handle blocks via its native path
     # env["MW05_FORCE_CALL_CREATEDEVICE"] = "1"
     # env["MW05_FORCE_CREATEDEVICE_DELAY_TICKS"] = "300"
     # env["MW05_FORCE_RENDER_THREAD"] = "1"

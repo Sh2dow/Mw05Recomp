@@ -5591,9 +5591,21 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
 }
 
 // Some titles gate functionality behind kernel privilege checks. Be permissive by default.
-uint32_t XexCheckExecutablePrivilege()
+// CRITICAL FIX: Init6 (sub_8262E7F8) calls XexCheckExecutablePrivilege(0xAu) to check privilege 10
+// Privilege 10 = XEX_PRIVILEGE_INSECURE_SOCKETS (allows network access)
+// Most Wanted uses this to check if it can access online features
+// We need to return TRUE (1) for this privilege to allow Init7 to be called
+uint32_t XexCheckExecutablePrivilege(uint32_t Privilege)
 {
-    return 1; // present
+    KernelTraceHostOpF("HOST.XexCheckExecutablePrivilege privilege=%u", Privilege);
+
+    // Be permissive - allow all privileges
+    // Privilege 10 (0xA) = XEX_PRIVILEGE_INSECURE_SOCKETS
+    // This is required for Init6 to return TRUE and call Init7
+    const uint32_t result = 1; // present
+
+    KernelTraceHostOpF("HOST.XexCheckExecutablePrivilege -> %u (privilege granted)", result);
+    return result;
 }
 
 void NtQueryInformationFile()

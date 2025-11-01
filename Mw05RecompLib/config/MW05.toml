@@ -48,7 +48,6 @@ functions = [
     { address = 0x8262FA08, size = 0xAC },  # set thread affinity
     { address = 0x826B96B0, size = 0x58 },  # set thread name
     # DISABLED - Causes crashes, need to investigate which one
-    # { address = 0x82441E80, size = 0xBC },  # main thread entry (calls main loop)
     # { address = 0x82441CF0, size = 0x168 }, # main loop
     # { address = 0x8261A5E8, size = 0x1EC }, # create worker threads
     { address = 0x823C8420, size = 0x90 }   # work queue processing - TEST THIS FIRST
@@ -107,11 +106,21 @@ name = "Init7_sub_826BDA60"
 address = 0x826BDA60
 registers = []
 
+# CRITICAL FIX: sub_826BD8D0 is marked as __noreturn in IDA, but it CAN return when a3=1
+# Init7 calls sub_826BD8D0(0, 0, 1), so it WILL return
+# We need to override the __noreturn annotation to prevent the compiler from optimizing away
+# the code after Init7 (which includes the main loop call to sub_82441E80)
+[[functions]]
+address = 0x826BD8D0
+name = "sub_826BD8D0"
+force_return = true  # Override IDA's __noreturn annotation
+
 [[midasm_hook]]
 name = "Init8_sub_8262FB78"
 address = 0x8262FB78
 registers = []
 
+# main thread entry (calls main loop)
 [[midasm_hook]]
 name = "MainThreadWrapper_sub_82441E80"
 address = 0x82441E80
@@ -152,3 +161,7 @@ registers = []
 
 # Allocation function sub_8215CB08 is recompiled normally
 # It will be overridden in C++ using PPC_FUNC_IMPL + PPC_FUNC pattern
+#
+# NOTE (2025-10-31): Worker thread function 0x828508A8 uses GUEST_FUNCTION_HOOK instead of midasm_hook
+# midasm_hook doesn't work because it generates a stub that the linker can't find
+# GUEST_FUNCTION_HOOK properly overrides the function in the lookup table

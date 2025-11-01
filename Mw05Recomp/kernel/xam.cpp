@@ -167,6 +167,12 @@ void XamRegisterContent(const XCONTENT_DATA& data, const std::string_view& root)
         return;
     }
     const size_t idx = static_cast<size_t>(idx_raw);
+
+    fprintf(stderr, "[XAM-CONTENT] XamRegisterContent: content='%s' type=%u root='%.*s' hash=%016llX\n",
+            data.szFileName, (uint32_t)data.dwContentType, (int)root.size(), root.data(),
+            (unsigned long long)StringHash(data.szFileName));
+    fflush(stderr);
+
     gContentRegistry[idx].emplace(StringHash(data.szFileName), XHOSTCONTENT_DATA{ data }).first->second.szRoot = root;
 }
 
@@ -605,12 +611,21 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
             if (pdwDisposition)
                 *pdwDisposition = XCONTENT_EXISTING;
 
-            XamRootCreate(szRootName, registry.find(StringHash(pContentData->szFileName))->second.szRoot);
+            const std::string& rootPath = registry.find(StringHash(pContentData->szFileName))->second.szRoot;
+            fprintf(stderr, "[XAM-CONTENT] XamContentCreateEx OPEN_EXISTING: root='%s' content='%s' rootPath='%s'\n",
+                    szRootName, pContentData->szFileName, rootPath.c_str());
+            fflush(stderr);
+
+            XamRootCreate(szRootName, rootPath);
 
             return ERROR_SUCCESS;
         }
         else
         {
+            fprintf(stderr, "[XAM-CONTENT] XamContentCreateEx OPEN_EXISTING FAILED: root='%s' content='%s' NOT FOUND in registry\n",
+                    szRootName, pContentData->szFileName);
+            fflush(stderr);
+
             if (pdwDisposition)
                 *pdwDisposition = XCONTENT_NEW;
 

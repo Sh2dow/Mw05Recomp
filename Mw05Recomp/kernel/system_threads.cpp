@@ -104,9 +104,13 @@ static void GpuCommandsThreadEntry()
                     // Don't update last_rptr, wait for valid value
                 } else if (rptr != last_rptr) {
                     // Check if there are new commands to process (rptr changed)
-                    fprintf(stderr, "[GPU-COMMANDS] rptr changed from 0x%08X to 0x%08X, processing PM4 commands\n",
+                    // Reduced spam: only log every 100th rptr change
+                    static std::atomic<int> s_rptr_change_count{0};
+                    if (s_rptr_change_count.fetch_add(1) % 100 == 0) {
+                        fprintf(stderr, "[GPU-COMMANDS] rptr changed from 0x%08X to 0x%08X, processing PM4 commands (logged every 100 changes)\n",
                             last_rptr, rptr);
-                    fflush(stderr);
+                        fflush(stderr);
+                    }
 
                     // Process PM4 commands from ring buffer
                     PM4_OnRingBufferWrite(rptr);

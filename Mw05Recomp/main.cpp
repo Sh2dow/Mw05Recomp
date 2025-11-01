@@ -1573,9 +1573,12 @@ int main(int argc, char *argv[])
     //     reinterpret_cast<const void*>(sub_826346A8),
     //     reinterpret_cast<const void*>(g_memory.FindFunction(0x826346A8)));
 
-    fprintf(stderr, "[MAIN] before_sub_828508A8_install\n"); fflush(stderr);
-    g_memory.InsertFunction(0x828508A8, sub_828508A8);
-    fprintf(stderr, "[MAIN] after_sub_828508A8_install\n"); fflush(stderr);
+    // CRITICAL FIX (2025-11-01): DO NOT install sub_828508A8 here!
+    // The worker thread wrapper is registered in RegisterMw05VideoManualHooks() in video.cpp
+    // Installing the buggy recompiled version here would overwrite the wrapper
+    // fprintf(stderr, "[MAIN] before_sub_828508A8_install\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x828508A8, sub_828508A8);
+    // fprintf(stderr, "[MAIN] after_sub_828508A8_install\n"); fflush(stderr);
 
     fprintf(stderr, "[MAIN] before_sub_82812ED0_install\n"); fflush(stderr);
     g_memory.InsertFunction(0x82812ED0, sub_82812ED0);

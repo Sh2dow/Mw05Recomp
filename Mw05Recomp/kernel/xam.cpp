@@ -687,7 +687,7 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
     if (hid::IsInputAllowed())
         hid::GetState(userIndex, state);
 
-    // AUTO-PRESS START BUTTON: Simulate START button press after 5 seconds to get past title screen
+    // AUTO-PRESS START BUTTON: Simulate START button press to get past title screen
     // This allows the game to progress from the title screen to the main menu/gameplay
     static auto s_startTime = std::chrono::steady_clock::now();
     static bool s_autoStartPressed = false;
@@ -696,11 +696,12 @@ uint32_t XamInputGetState(uint32_t userIndex, uint32_t flags, XAMINPUT_STATE* st
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - s_startTime).count();
 
-    // Press START button between 10-15 seconds, then release
+    // Press START button after 10-15 seconds
     bool autoStart = (elapsed >= 10 && elapsed < 15);
     if (autoStart && !s_autoStartLoggedOnce) {
         s_autoStartLoggedOnce = true;
-        KernelTraceHostOpF("HOST.XamInputGetState.auto_start_press elapsed=%lld", (long long)elapsed);
+        fprintf(stderr, "[XAM-INPUT] Auto-pressing START button at %lld seconds\n", (long long)elapsed);
+        fflush(stderr);
     }
     if (autoStart) {
         s_autoStartPressed = true;

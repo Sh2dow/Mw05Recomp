@@ -89,10 +89,7 @@ name = "Init4_sub_8262FD30"
 address = 0x8262FD30
 registers = ["r3"]
 
-[[midasm_hook]]
-name = "Init5_sub_8262FC50"
-address = 0x8262FC50
-registers = ["r3"]
+# Init5 is overridden in mw05_main_thread_trace.cpp - no hook needed
 
 [[midasm_hook]]
 name = "Init6_sub_8262E7F8"

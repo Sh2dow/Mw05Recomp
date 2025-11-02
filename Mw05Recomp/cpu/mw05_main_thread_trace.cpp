@@ -61,14 +61,108 @@ void Init4_sub_8262FD30(PPCRegister& r3)
     fflush(stderr);
 }
 
-// Initialization function 5
-void Init5_sub_8262FC50(PPCRegister& r3)
+// Initialization function 5 - FUNCTION POINTER TABLE ITERATOR
+// This function iterates through a table of function pointers and calls each one
+// Table 1: 0x828DF0FC to 0x828DF108 (2 functions)
+// Table 2: 0x828D0010 to 0x828DF0F8 (15,418 functions - C++ static constructors!)
+// One of these functions is stuck and never returns!
+
+// OVERRIDE Init5 to add logging for each function call
+PPC_FUNC_IMPL(__imp__sub_8262FC50);
+PPC_FUNC(sub_8262FC50)
 {
-    fprintf(stderr, "[MAIN-THREAD-INIT] Init5 0x8262FC50 called, r3=%08X\n", r3.u32);
+    fprintf(stderr, "[INIT5] START - will iterate through function pointer tables\n");
+    fprintf(stderr, "[INIT5]   Table 1: 0x828DF0FC-0x828DF108 (2 functions)\n");
+    fprintf(stderr, "[INIT5]   Table 2: 0x828D0010-0x828DF0F8 (15,418 C++ static constructors!)\n");
     fflush(stderr);
+
+    // First function pointer (off_828E14F8)
+    uint32_t first_func_ptr_addr = 0x828E14F8;
+    uint32_t first_func = *(uint32_t*)(base + first_func_ptr_addr);
+    if (first_func != 0) {
+        fprintf(stderr, "[INIT5] Calling first function at 0x%08X\n", first_func);
+        fflush(stderr);
+        PPC_CALL_INDIRECT_FUNC(first_func);
+        fprintf(stderr, "[INIT5] First function returned\n");
+        fflush(stderr);
+    }
+
+    // Table 1: 0x828DF0FC to 0x828DF108
+    uint32_t table1_start = 0x828DF0FC;
+    uint32_t table1_end = 0x828DF108;
+    uint32_t result = 0;
+
+    fprintf(stderr, "[INIT5] Processing Table 1 (0x828DF0FC-0x828DF108)\n");
+    fflush(stderr);
+
+    for (uint32_t addr = table1_start; addr < table1_end; addr += 4) {
+        if (result != 0) break;
+
+        uint32_t func_ptr = *(uint32_t*)(base + addr);
+        if (func_ptr != 0) {
+            fprintf(stderr, "[INIT5] Table1[0x%08X] = 0x%08X - calling...\n", addr, func_ptr);
+            fflush(stderr);
+
+            ctx.lr = 0x8262FCBC;
+            PPC_CALL_INDIRECT_FUNC(func_ptr);
+            result = ctx.r3.u32;
+
+            fprintf(stderr, "[INIT5] Table1[0x%08X] returned r3=%08X\n", addr, result);
+            fflush(stderr);
+        }
+    }
+
+    if (result != 0) {
+        fprintf(stderr, "[INIT5] Table 1 returned non-zero (%08X), exiting early\n", result);
+        fflush(stderr);
+        ctx.r3.u32 = result;
+        return;
+    }
+
+    // Table 2: 0x828D0010 to 0x828DF0F8 (15,418 C++ static constructors!)
+    uint32_t table2_start = 0x828D0010;
+    uint32_t table2_end = 0x828DF0F8;
+
+    fprintf(stderr, "[INIT5] Processing Table 2 (0x828D0010-0x828DF0F8) - 15,418 constructors!\n");
+    fprintf(stderr, "[INIT5] Will log every 100th constructor to avoid spam...\n");
+    fflush(stderr);
+
+    uint32_t count = 0;
+    for (uint32_t addr = table2_start; addr < table2_end; addr += 4) {
+        uint32_t func_ptr = *(uint32_t*)(base + addr);
+        if (func_ptr != 0 && func_ptr != 0xFFFFFFFF) {
+            count++;
+
+            // Log every 100th constructor to avoid spam
+            if (count % 100 == 0) {
+                fprintf(stderr, "[INIT5] Table2[%u/15418] addr=0x%08X func=0x%08X - calling...\n",
+                        count, addr, func_ptr);
+                fflush(stderr);
+            }
+
+            ctx.lr = 0x8262FD08;
+            PPC_CALL_INDIRECT_FUNC(func_ptr);
+
+            if (count % 100 == 0) {
+                fprintf(stderr, "[INIT5] Table2[%u/15418] returned\n", count);
+                fflush(stderr);
+            }
+        }
+    }
+
+    fprintf(stderr, "[INIT5] COMPLETE - processed %u constructors, returning 0\n", count);
+    fflush(stderr);
+
+    ctx.r3.u32 = 0;
 }
 
-// Initialization function 6
+// Initialization function 6 - REGION/PRIVILEGE CHECK
+// This function checks Xbox executable privileges and config settings (region, language)
+// If it returns 1 (true), the game calls sub_826BDA60 (XamLoaderTerminateTitle) and exits
+// If it returns 0 (false), the game continues to sub_82441E80 (main game function)
+//
+// ROOT CAUSE FIXED: XexCheckExecutablePrivilege now returns 0 for privilege 0xA
+// This makes the region check fail and return 0, so game continues to main loop
 void Init6_sub_8262E7F8(PPCRegister& r3)
 {
     fprintf(stderr, "[MAIN-THREAD-INIT] Init6 0x8262E7F8 called, r3=%08X\n", r3.u32);
@@ -79,18 +173,17 @@ void Init6_sub_8262E7F8(PPCRegister& r3)
 void Init6_Return(PPCRegister& r3)
 {
     fprintf(stderr, "[MAIN-THREAD-INIT] Init6 RETURNED r3=%08X (%s)\n",
-            r3.u32, r3.u32 ? "TRUE - will call Init7" : "FALSE - will skip Init7");
+            r3.u32, r3.u32 ? "FAIL - will terminate" : "PASS - will continue");
     fflush(stderr);
 }
 
-// NOTE: _xstart override removed - the recompiled version works correctly
-// The main loop IS being called and IS running. The issue is that the game
-// is not issuing draw commands yet, which is a different problem.
-
-// Initialization function 7 (conditional)
+// Initialization function 7 (conditional) - TERMINATION FUNCTION
+// This function calls XamLoaderTerminateTitle to exit the game
+// It should NEVER be called if our region check fix is working
 void Init7_sub_826BDA60()
 {
-    fprintf(stderr, "[MAIN-THREAD-INIT] Init7 0x826BDA60 called (conditional)\n");
+    fprintf(stderr, "[MAIN-THREAD-INIT] Init7 0x826BDA60 called (TERMINATION FUNCTION - SHOULD NOT BE CALLED!)\n");
+    fprintf(stderr, "[ERROR] Region check fix failed! Game is terminating!\n");
     fflush(stderr);
 }
 

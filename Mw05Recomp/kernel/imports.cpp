@@ -5518,21 +5518,28 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE /*Mode*/,
     return STATUS_SUCCESS;
 }
 
-// Some titles gate functionality behind kernel privilege checks. Be permissive by default.
-// CRITICAL FIX: Init6 (sub_8262E7F8) calls XexCheckExecutablePrivilege(0xAu) to check privilege 10
-// Privilege 10 = XEX_PRIVILEGE_INSECURE_SOCKETS (allows network access)
-// Most Wanted uses this to check if it can access online features
-// We need to return TRUE (1) for this privilege to allow Init7 to be called
+// CRITICAL FIX (2025-11-02): Init6 (sub_8262E7F8) region check logic is BACKWARDS!
+//
+// The function checks:
+//   if (XexCheckExecutablePrivilege(0xA) && region==0x300 && HD_mode && ...)
+//       return 1;  // Terminate game
+//   return 0;      // Continue to main loop
+//
+// So if ALL checks PASS, the game TERMINATES! This is a region-lock mechanism.
+// The game terminates for specific regions/configurations (probably Japanese region with HD mode).
+//
+// PROPER FIX: Make ONE check FAIL so the function returns 0 (continue).
+// We'll make XexCheckExecutablePrivilege return 0 (privilege NOT present) for privilege 0xA.
 uint32_t XexCheckExecutablePrivilege(uint32_t Privilege)
 {
     KernelTraceHostOpF("HOST.XexCheckExecutablePrivilege privilege=%u", Privilege);
 
-    // Be permissive - allow all privileges
-    // Privilege 10 (0xA) = XEX_PRIVILEGE_INSECURE_SOCKETS
-    // This is required for Init6 to return TRUE and call Init7
-    const uint32_t result = 1; // present
+    // CRITICAL FIX: Return 0 (NOT present) for privilege 0xA to bypass region lock
+    // Privilege 0xA = XEX_PRIVILEGE_INSECURE_SOCKETS
+    // If this returns 0, the region check fails and game continues to main loop
+    const uint32_t result = (Privilege == 0xA) ? 0 : 1;
 
-    KernelTraceHostOpF("HOST.XexCheckExecutablePrivilege -> %u (privilege granted)", result);
+    KernelTraceHostOpF("HOST.XexCheckExecutablePrivilege -> %u (%s)", result, result ? "present" : "NOT present");
     return result;
 }
 
@@ -6602,11 +6609,13 @@ static void Mw05ApplyVdPokesOnce() {
     apply_env_poke("MW05_VD_POKE_E70", 0x00060E70u, "e70");
 }
 
-// ---- forced VD bring-up (enabled by default, disable with MW05_FORCE_VD_INIT=0) ----
+// ---- forced VD bring-up (WORKAROUND - disabled by default) ----
+// WORKAROUND: This manually initializes VD system, but causes FPS drops (15-25 FPS instead of 60+ FPS)
+// Game calls VdSwap naturally, so this is NOT needed for basic operation
 static inline bool Mw05ForceVdInitEnabled() {
     if (const char* v = std::getenv("MW05_FORCE_VD_INIT"))
         return !(v[0]=='0' && v[1]=='\0');
-    return true;  // CHANGED: Enable by default to ensure graphics initialization
+    return false;  // DISABLED by default - game should initialize VD naturally
 }
 
 static std::atomic<bool> g_forceVdInitDone{false};
@@ -6633,12 +6642,11 @@ extern "C"
 }
 
 void Mw05ForceVdInitOnce() {
+    // WORKAROUND: This function manually initializes VD system
+    // TODO: Find why game doesn't naturally initialize VD and fix root cause
+    // This should NOT be needed - game should initialize VD on its own
+
     if (!Mw05ForceVdInitEnabled()) {
-        static std::atomic<bool> s_logged_disabled{false};
-        if (!s_logged_disabled.exchange(true, std::memory_order_relaxed)) {
-            fprintf(stderr, "[VD-INIT] Mw05ForceVdInitOnce DISABLED by MW05_FORCE_VD_INIT=0\n");
-            fflush(stderr);
-        }
         return;
     }
 

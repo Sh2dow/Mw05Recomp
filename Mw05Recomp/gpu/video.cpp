@@ -3294,6 +3294,13 @@ void Video::Present()
         fflush(stderr);
     }
 
+    // INIT UNBLOCKING (2025-11-02): Monitor initialization progress - DISABLED FOR NOW
+    // This helps detect and fix stuck initialization states
+    // {
+    //     extern void Mw05InitUnblockTick();
+    //     Mw05InitUnblockTick();
+    // }
+
     // NOTE: System command buffer is initialized by Mw05ForceVdInitOnce() in kernel/imports.cpp
     // which is called from KeWaitForSingleObject and other kernel functions.
     // No need to initialize it here - it will be initialized when the game calls VdGetSystemCommandBuffer.
@@ -3367,8 +3374,15 @@ void Video::Present()
             KernelTraceHostOpF("HOST.VideoPresent.skip ready=%u dev=%p q=%p", g_rendererReady ? 1u : 0u, (void*)g_device.get(), (void*)g_queue.get());
             s_loggedSkip = true;
         }
+
+        // SAFETY: Early return to avoid crashes when renderer isn't ready
+        // The code below (PM4 scanning) should only run when renderer is ready
+        return;
+    }
+
     // Optionally bridge System Command Buffer -> Ring buffer on present if no draws seen yet
-    {
+    // SAFETY: Wrap in try-catch to prevent crashes from memory translation failures
+    try {
         static const bool s_sysbuf_to_ring = [](){ if (const char* v = std::getenv("MW05_PM4_SYSBUF_TO_RING")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
         if (s_sysbuf_to_ring && PM4_GetDrawCount() == 0) {
             uint32_t sysEA  = Mw05GetSysBufBaseEA();
@@ -3429,12 +3443,22 @@ void Video::Present()
         KernelTraceHostOpF("HOST.PM4.ScanAllOnPresent draws=%llu pkts=%llu (early)",
             (unsigned long long)PM4_GetDrawCount(), (unsigned long long)PM4_GetPacketCount());
 
+    } catch (const std::exception& e) {
+        static int s_crashCount = 0;
+        if (++s_crashCount <= 3) {
+            fprintf(stderr, "[PRESENT-CRASH-EARLY] Exception in PM4 sysbuf bridge: %s\n", e.what());
+            fflush(stderr);
+        }
+        // Continue execution - this is not critical
+    } catch (...) {
+        static int s_crashCount = 0;
+        if (++s_crashCount <= 3) {
+            fprintf(stderr, "[PRESENT-CRASH-EARLY] Unknown exception in PM4 sysbuf bridge\n");
+            fflush(stderr);
+        }
+        // Continue execution - this is not critical
     }
 
-        // NOTE: Profiler is already updated at the START of Present() (line 3240)
-        // No need to update it again here - that was causing the FPS to go stale
-        return;
-    }
     // Mark that at least one Present occurred so the boot banner can clear
     g_anyPresentSeen.store(true, std::memory_order_release);
     g_readyForCommands = false;
@@ -3590,6 +3614,8 @@ void Video::Present()
                             ++microDraws;
                             if (firstOff == 0xFFFFFFFFu) firstOff = off;
                         }
+                    }
+
                     // Search for MW05 micro-IB magic and hand off to interpreter (host-side bridge)
                     {
                         uint32_t hits = 0;
@@ -3611,8 +3637,9 @@ void Video::Present()
                             KernelTraceHostOpF("HOST.MW05.Scan.magic hits=%u first=%08X", hits, magicEA);
                         }
                     }
-                        // Also look for descriptor sentinel 0xFFFAFEFD and try to recover <ea, off, size>
-                        {
+
+                    // Also look for descriptor sentinel 0xFFFAFEFD and try to recover <ea, off, size>
+                    {
                             for (uint32_t off = 0; off + 16 <= payload; off += 4) {
                                 uint32_t s0 = (uint32_t)sysHostBytes[headSkip + off + 0] << 24 |
                                               (uint32_t)sysHostBytes[headSkip + off + 1] << 16 |
@@ -3639,7 +3666,6 @@ void Video::Present()
                                     }
                                 }
                             }
-                        }
 
 
                     }
@@ -3677,28 +3703,43 @@ void Video::Present()
             }
         } // end if (s_enable_micro_scan)
 
+    } // end PM4 scanning block (line 3550)
+
+    // SAFETY: Wrap render commands in try-catch to identify crash point
+    RenderCommand cmd; // Declare outside try-catch so it can be used later
+    try {
+        cmd.type = RenderCommandType::ExecutePendingStretchRectCommands;
+        g_renderQueue.enqueue(cmd);
+
+        DrawImGui();
+
+        cmd.type = RenderCommandType::ExecuteCommandList;
+        g_renderQueue.enqueue(cmd);
+
+        // All the shaders are available at this point. We can precompile embedded PSOs then.
+        if (g_shouldPrecompilePipelines)
+        {
+            EnqueuePipelineTask(PipelineTaskType::PrecompilePipelines, {});
+            g_shouldPrecompilePipelines = false;
+        }
+
+        g_executedCommandList.wait(false);
+        g_executedCommandList = false;
+    } catch (const std::exception& e) {
+        static int s_crashCount = 0;
+        if (++s_crashCount <= 3) {
+            fprintf(stderr, "[PRESENT-CRASH] Exception in render commands: %s\n", e.what());
+            fflush(stderr);
+        }
+        return; // Early return to avoid further crashes
+    } catch (...) {
+        static int s_crashCount = 0;
+        if (++s_crashCount <= 3) {
+            fprintf(stderr, "[PRESENT-CRASH] Unknown exception in render commands\n");
+            fflush(stderr);
+        }
+        return; // Early return to avoid further crashes
     }
-
-    RenderCommand cmd;
-    cmd.type = RenderCommandType::ExecutePendingStretchRectCommands;
-    g_renderQueue.enqueue(cmd);
-
-    DrawImGui();
-
-
-    cmd.type = RenderCommandType::ExecuteCommandList;
-    g_renderQueue.enqueue(cmd);
-
-    // All the shaders are available at this point. We can precompile embedded PSOs then.
-    if (g_shouldPrecompilePipelines)
-    {
-        EnqueuePipelineTask(PipelineTaskType::PrecompilePipelines, {});
-        g_shouldPrecompilePipelines = false;
-    }
-
-
-    g_executedCommandList.wait(false);
-    g_executedCommandList = false;
 
     if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE))
     {
@@ -3714,34 +3755,13 @@ void Video::Present()
         }
     }
 
-    // Emulate GPU interrupt callback if guest registered one via VdSetGraphicsInterruptCallback.
-    // Guard against forced-present bring-up paths: avoid invoking guest ISR until the
-    // guest has progressed far enough, or unless explicitly enabled via MW05_VBLANK_CB.
-    {
-        bool cb_enabled = true;
-        if (const char* v = std::getenv("MW05_VBLANK_CB")) {
-            cb_enabled = !(v[0]=='0' && v[1]=='\0');
-        } else {
-            // Default: when forcing presents or kicking video early, do not invoke ISR.
-            if (std::getenv("MW05_FORCE_PRESENT") || std::getenv("MW05_FORCE_PRESENT_BG") || std::getenv("MW05_KICK_VIDEO"))
-                cb_enabled = false;
-        }
-        if (cb_enabled) {
-            if (auto cb = VdGetGraphicsInterruptCallback())
-            {
-                if (SDL_GetHintBoolean("MW_VERBOSE", SDL_FALSE)) {
-                    printf("[vd] GPU interrupt cb=0x%08X ctx=0x%08X\n", cb, VdGetGraphicsInterruptContext());
-                    fflush(stdout);
-                }
-                if (cb == Mw05GetHostDefaultVdIsrMagic()) {
-                    KernelTraceHostOp("HOST.VideoPresent.host_isr");
-                    Mw05RunHostDefaultVdIsrNudge("present");
-                } else {
-                    GuestToHostFunction<void>(cb, 0u, VdGetGraphicsInterruptContext());
-                }
-            }
-        }
-    }
+    // REMOVED (2025-11-02): GPU interrupt callback invocation from Present function
+    // This was a workaround that tried to call guest callbacks from the host's Present thread
+    // Problem: Video::Present() runs on the main thread (host thread with no PPC context)
+    // The guest callback expects to run on a guest thread with PPC context
+    // Solution: Let the VBlank pump (imports.cpp:2395-2400) handle callback invocation properly
+    // The VBlank pump runs on a background thread and calls EnsureGuestContextForThisThread
+    // before invoking guest callbacks, which is the correct way to do it.
 
     if (g_swapChainValid && g_swapChain)
     {

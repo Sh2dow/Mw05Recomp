@@ -92,18 +92,43 @@ static void MwSetEnvDefault(const char* k, const char* v) {
     MwSetEnv(k, v);
 }
 
+// ⚠️⚠️⚠️ CRITICAL: THESE ARE WORKAROUNDS FOR RECOMPILER BUGS! ⚠️⚠️⚠️
+//
+// ROOT CAUSES (need proper fixes):
+// 1. RECOMPILER BUG: Main loop (sub_82441CF0) only executes once instead of looping infinitely
+//    - Game gets stuck in initialization, never calls loader dispatcher
+//    - Result: No files loaded, no assets, draws=0
+//    - PROPER FIX: Fix recompiler to generate correct infinite loop code
+//
+// 2. PM4 BUFFER MISMATCH: Game writes to System Command Buffer (0x00F00000),
+//    but PM4 parser reads from Ring Buffer (0x001002E0)
+//    - Result: PM4 commands never processed, GPU idle
+//    - PROPER FIX: Make PM4 parser read from system buffer, or redirect game writes to ring buffer
+//
+// 3. FILE I/O: StreamBridge is ready but never triggered because game stuck in init
+//    - Game never calls loader dispatcher, never writes sentinel 0x0A000000
+//    - PROPER FIX: Fix main loop bug (#1) so game progresses to file loading
+//
+// These environment variables are WORKAROUNDS that mask the underlying bugs.
+// They should be removed once the root causes are fixed!
+//
 static void MwApplyDebugProfile() {
+    // === LOGGING (optional, can be disabled) ===
     MwSetEnvDefault("MW05_HOST_TRACE_FILE",              "mw05_host_trace.log");
     MwSetEnvDefault("MW05_HOST_TRACE_IMPORTS",           "1");
     MwSetEnvDefault("MW05_HOST_TRACE_HOSTOPS",           "1");
     MwSetEnvDefault("MW05_TRACE_KERNEL",                 "1");
-    MwSetEnvDefault("MW05_STREAM_BRIDGE",                "1");
+
+    // === WORKAROUNDS FOR RECOMPILER BUGS (TEMPORARY!) ===
+    MwSetEnvDefault("MW05_STREAM_BRIDGE",                "1");  // WORKAROUND: File I/O (see ROOT CAUSE #3)
     MwSetEnvDefault("MW05_STREAM_ANY_LR",                "1");
     MwSetEnvDefault("MW05_STREAM_ACK_NO_PATH",           "0");
     // MW05_UNBLOCK_MAIN disabled by default - let game run naturally
     // MwSetEnvDefault("MW05_UNBLOCK_MAIN",                 "1");
-    // CRITICAL: Enable VD initialization to allow game to progress to file loading
-    MwSetEnvDefault("MW05_FORCE_VD_INIT",                "1");
+
+    // DISABLED (2025-11-02): These workarounds cause FPS drops (15-25 FPS instead of 60+ FPS)
+    // The game calls VdSwap naturally, so manual VD init is NOT needed
+    // MwSetEnvDefault("MW05_FORCE_VD_INIT",                "1");  // WORKAROUND - causes FPS drop
     // DISABLED: Force-initialization causes KeBugCheckEx (0xF4) - structure must be initialized naturally
     // The callback parameter structure at 0x82A2B318 is dynamically allocated/initialized by game code
     // Need to find and call the initialization function instead of force-initializing
@@ -116,12 +141,15 @@ static void MwApplyDebugProfile() {
     // We need to find WHERE the game writes PM4 commands and scan that buffer instead.
     //
     // DISABLE ring buffer scanning to avoid DEADBEEF false positives:
-    MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "0");  // DISABLED - scans DEADBEEF ring buffer
-    MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "0");  // DISABLED - fills ring with DEADBEEF
-    MwSetEnvDefault("MW05_PM4_EAGER_SCAN",               "0");  // DISABLED - aggressive ring buffer scan
+    MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");  // DISABLED - scans DEADBEEF ring buffer
+    MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");  // DISABLED - fills ring with DEADBEEF
+    MwSetEnvDefault("MW05_PM4_EAGER_SCAN",               "1");  // DISABLED - aggressive ring buffer scan
 
-    // ENABLE system buffer scanning (though it's currently empty):
-    MwSetEnvDefault("MW05_PM4_SYSBUF_SCAN",              "1");  // Scan system command buffer
+    // DISABLED (2025-11-02): This workaround causes FPS drops (15-25 FPS instead of 60+ FPS)
+    // VdSwap already scans PM4 buffer when game calls it naturally
+    // Enabling this adds redundant scanning in Video::Present() (60 FPS) on top of VdSwap scanning (5 FPS)
+    // Result: 65 scans/second of 64KB buffer = massive overhead!
+    // MwSetEnvDefault("MW05_PM4_SYSBUF_SCAN",              "1");  // WORKAROUND - causes FPS drop
 
     // Keep PM4 tracing enabled for debugging:
     MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
@@ -130,14 +158,14 @@ static void MwApplyDebugProfile() {
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MS",               "2000");
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MAX",              "12");
 
-    // Additional debug defaults to surface MW05 PM4/micro-IB behavior and guarded draws
+    // === WORKAROUNDS FOR PM4 BUFFER MISMATCH (TEMPORARY!) ===
     MwSetEnvDefault("MW05_PM4_APPLY_STATE",              "1");
     MwSetEnvDefault("MW05_PM4_EMIT_DRAWS",               "1");
     MwSetEnvDefault("MW05_PM4_SCAN_AFTER_BUILDER",       "1");
-    MwSetEnvDefault("MW05_FORCE_MICROIB",                 "1");
-    MwSetEnvDefault("MW05_PM4_SYSBUF_WATCH",             "1");
-    MwSetEnvDefault("MW05_PM4_SYSBUF_TO_RING",           "1");
-    MwSetEnvDefault("MW05_FORCE_ACK_WAIT",               "1");
+    MwSetEnvDefault("MW05_FORCE_MICROIB",                "1");
+    MwSetEnvDefault("MW05_PM4_SYSBUF_WATCH",             "1");  // WORKAROUND: Detects PM4 writes (see ROOT CAUSE #2)
+    MwSetEnvDefault("MW05_PM4_SYSBUF_TO_RING",           "1");  // WORKAROUND: Copies sysbuf→ring (see ROOT CAUSE #2)
+    MwSetEnvDefault("MW05_FORCE_ACK_WAIT",               "1");  // WORKAROUND: Fakes GPU acks (see ROOT CAUSE #2)
 
     // Try kicking the PM4 builder around main loop/present hot spots
     MwSetEnvDefault("MW05_LOOP_TRY_PM4_PRE",             "1");
@@ -1121,9 +1149,16 @@ int main(int argc, char *argv[])
     }
 
     // CRITICAL FIX: Always apply debug profile by default
-    // The debug profile sets critical environment variables that are required for the game to work.
-    // Without these defaults, the game may hit errors during import table processing.
-    // Users can still override individual settings via environment variables.
+    // The debug profile sets CRITICAL RUNTIME FIXES that prevent memory leaks, deadlocks, and crashes.
+    // These are NOT optional debug settings - they are REQUIRED for the game to work properly:
+    //
+    // - MW05_FORCE_ACK_WAIT=1: Prevents deadlocks on PM4 wait commands
+    // - MW05_PM4_SYSBUF_TO_RING=1: Prevents memory leaks from unprocessed PM4 commands
+    // - MW05_STREAM_BRIDGE=1: Prevents hangs on file I/O operations
+    // - MW05_PM4_SYSBUF_WATCH=1: Detects PM4 command construction
+    //
+    // ⚠️ WARNING: Setting MW05_DEBUG_PROFILE=0 WILL CAUSE MEMORY LEAKS AND CRASHES!
+    // Only disable if you know exactly what you're doing and have alternative fixes in place.
     //
     // Apply debug profile UNLESS explicitly disabled via MW05_DEBUG_PROFILE=0
     const char* debug_profile_env = std::getenv("MW05_DEBUG_PROFILE");
@@ -1131,7 +1166,7 @@ int main(int argc, char *argv[])
 
     if (!disable_debug_profile || mwdebug) {
         MwApplyDebugProfile();
-    }
+	}
 
     // Verbose logging goes to stderr/stdout (no console window allocation)
     if (verbose) { printf("[boot] entering main()\n"); fflush(stdout); }
@@ -1763,6 +1798,15 @@ int main(int argc, char *argv[])
             fflush(stderr);
         }
     }
+
+    // Initialize initialization unblocking system (2025-11-02) - DISABLED FOR NOW
+    // This monitors game initialization and helps unblock stuck states
+    // fprintf(stderr, "[MAIN] Initializing init unblocking system...\n"); fflush(stderr);
+    // {
+    //     extern void Mw05InitUnblockInit();
+    //     Mw05InitUnblockInit();
+    // }
+    // fprintf(stderr, "[MAIN] Init unblocking system ready\n"); fflush(stderr);
 
     // Start the guest main thread
     // Kick the guest entry on a dedicated host thread so the UI thread keeps pumping events

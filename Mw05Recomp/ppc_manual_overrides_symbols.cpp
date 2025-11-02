@@ -107,6 +107,11 @@ PPC_FUNC(sub_825968B0)
 
     // Check if r3 (first parameter) is NULL
     if (ctx.r3.u32 == 0) {
+        static int null_count = 0;
+        if (null_count++ < 3) {
+            fprintf(stderr, "[sub_825968B0] NULL pointer detected (call #%d), returning NULL\n", null_count);
+            fflush(stderr);
+        }
         // Return NULL to trigger fallback path in caller
         ctx.r3.u32 = 0;
         return;

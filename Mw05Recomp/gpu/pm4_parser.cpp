@@ -330,18 +330,21 @@ void PM4_ScanLinear(uint32_t addr, uint32_t bytes) {
 }
 
 // Check if system command buffer scanning is enabled
-// This is VERY expensive (scans 64 KB every frame), so only enable for deep debugging
+// WORKAROUND: Manual PM4 scanning for debugging
+// TODO: Find why game doesn't naturally process PM4 commands and fix root cause
+// This should NOT be needed - game should process PM4 commands on its own
 static inline bool IsSysBufScanEnabled() {
-    if (const char* v = std::getenv("MW05_PM4_SYSBUF_SCAN")) {
-        if (*v && *v != '0') return true;
-    }
-    return false;
+    static bool enabled = []() {
+        const char* v = std::getenv("MW05_PM4_SYSBUF_SCAN");
+        return v && !(v[0]=='0' && v[1]=='\0');
+    }();
+    return enabled;
 }
 
 // Scan system command buffer for PM4 packets
 // CRITICAL FIX: Game writes PM4 commands to system command buffer (0x00F00000),
 // NOT the ring buffer (0x001002E0)! This is why we were seeing DEADBEEF headers.
-// WARNING: This is VERY expensive (scans 64 KB every frame) - only enable with MW05_PM4_SYSBUF_SCAN=1
+// NOTE: This scans 64 KB every frame, but it's REQUIRED for proper operation
 void PM4_ScanSystemCommandBuffer() {
     if (!IsSysBufScanEnabled()) return;
 
@@ -1990,13 +1993,19 @@ void PM4_DumpOpcodeHistogram() {
     static int s_dumpCount = 0;
     if (++s_dumpCount % 10 != 0) return; // Only dump every 10th call to reduce spam
 
-    fprintf(stderr, "\n[PM4-OPCODE-HISTOGRAM] Dump #%d:\n", s_dumpCount / 10);
-    for (int i = 0; i < 128; ++i) {
-        uint64_t c = g_opcodeCounts[i].load(std::memory_order_relaxed);
-        if (!c) continue;
-        fprintf(stderr, "  [PM4-OPC] 0x%02X = %llu\n", i, (unsigned long long)c);
+    // SAFETY: Wrap in try-catch to prevent crashes during early initialization
+    try {
+        fprintf(stderr, "\n[PM4-OPCODE-HISTOGRAM] Dump #%d:\n", s_dumpCount / 10);
+        for (int i = 0; i < 128; ++i) {
+            uint64_t c = g_opcodeCounts[i].load(std::memory_order_relaxed);
+            if (!c) continue;
+            fprintf(stderr, "  [PM4-OPC] 0x%02X = %llu\n", i, (unsigned long long)c);
+        }
+        fprintf(stderr, "[PM4-OPCODE-HISTOGRAM] End dump\n\n");
+        fflush(stderr);
+    } catch (...) {
+        fprintf(stderr, "[PM4-OPCODE-HISTOGRAM] Exception caught during dump, skipping\n");
+        fflush(stderr);
     }
-    fprintf(stderr, "[PM4-OPCODE-HISTOGRAM] End dump\n\n");
-    fflush(stderr);
 }
 

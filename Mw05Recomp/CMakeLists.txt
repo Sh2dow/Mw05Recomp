@@ -120,6 +120,7 @@ set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/mw05_boot_shims.cpp"
     "cpu/mw05_streaming_bridge.cpp"
     "cpu/mw05_main_thread_trace.cpp"
+    # "cpu/mw05_init_unblock.cpp"  # Disabled for now - causing build issues
 )
 
 set(MW05_RECOMP_GPU_CXX_SOURCES

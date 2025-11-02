@@ -391,16 +391,32 @@ bool BaseHeap::FindFreePage(uint32_t page_count, uint32_t alignment_pages,
 
 // Helper: Commit pages
 bool BaseHeap::CommitPages(uint32_t page_index, uint32_t page_count, uint32_t protect) {
-    // NOTE: In MW05Recomp, the entire 4GB guest memory is already committed by Memory class
-    // (VirtualAlloc with MEM_COMMIT | MEM_RESERVE in memory.cpp)
-    // So we don't need to call VirtualAlloc again - memory is already committed and accessible
+    // CRITICAL: Memory class now uses MEM_RESERVE only (like Xbox 360)
+    // We MUST commit pages explicitly using VirtualAlloc!
 
-    // Just apply protection if needed (memory is already PAGE_READWRITE by default)
+    void* host_addr = TranslateRelative(page_index << page_size_shift_);
+    size_t size = static_cast<size_t>(page_count) << page_size_shift_;
+
+    // Commit the pages
+    void* result = VirtualAlloc(host_addr, size, MEM_COMMIT, PAGE_READWRITE);
+    if (result == nullptr) {
+        fprintf(stderr, "[BASEHEAP] VirtualAlloc MEM_COMMIT FAILED: addr=%p size=%zu error=%lu\n",
+                host_addr, size, GetLastError());
+        fflush(stderr);
+        return false;
+    }
+
+    // Track total committed memory
+    static std::atomic<size_t> total_committed{0};
+    size_t committed = total_committed.fetch_add(size) + size;
+
+    fprintf(stderr, "[BASEHEAP] Committed %u pages (%zu KB) at 0x%p - Total committed: %.2f MB\n",
+            page_count, size / 1024, host_addr, committed / (1024.0 * 1024.0));
+    fflush(stderr);
+
+    // Apply protection if needed
     if (protect != (kMemoryProtectRead | kMemoryProtectWrite)) {
-        void* host_addr = TranslateRelative(page_index << page_size_shift_);
-        size_t size = static_cast<size_t>(page_count) << page_size_shift_;
         DWORD win32_protect = ToWin32Protect(protect);
-
         DWORD old_protect;
         if (!VirtualProtect(host_addr, size, win32_protect, &old_protect)) {
             fprintf(stderr, "[BASEHEAP] VirtualProtect FAILED: addr=%p size=%zu error=%lu\n",

@@ -145,6 +145,8 @@ void Wrapper_AfterCall_sub_8261A5E8()
 void Wrapper_BeforeMainLoopCall()
 {
     fprintf(stderr, "[WRAPPER-TRACE] About to call main loop sub_82441CF0(0) - wrapper initialization complete!\n");
+    fprintf(stderr, "[CRITICAL] Main loop is an infinite loop - if you see this message but no logs from inside the loop, the loop is NOT executing!\n");
+    fprintf(stderr, "[CRITICAL] Expected logs: MAIN-LOOP-FLAG-CHECK, sub_8262D9D0 (sleep), sub_8262DE60 (frame update)\n");
     fflush(stderr);
 }
 

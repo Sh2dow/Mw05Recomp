@@ -3314,8 +3314,9 @@ void Video::Present()
             ctx.r3.u32 = seed;
             if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
             uint8_t* base = g_memory.base;
-            KernelTraceHostOpF("HOST.VideoPresent.pm4_force_once r3=%08X r4=%08X", ctx.r3.u32, ctx.r4.u32);
-            sub_825972B0(ctx, base);
+            KernelTraceHostOpF("HOST.VideoPresent.pm4_force_once DISABLED (function not recompiled)");
+            // DISABLED (2025-11-02): sub_825972B0 not recompiled
+            // sub_825972B0(ctx, base);
         }
     }
 
@@ -3341,12 +3342,10 @@ void Video::Present()
                     ctx.r3.u32 = seed;
                     if (ctx.r4.u32 == 0) ctx.r4.u32 = 0x40;
                     uint8_t* base = g_memory.base;
-                    // Fallback: call guest builder directly in case shim symbol was not linked
-                    KernelTraceHostOpF("HOST.VideoPresent.pm4_forward.guest_only r3=%08X r4=%08X try=%u", ctx.r3.u32, ctx.r4.u32, s_pm4KickTries);
-                    __imp__sub_825972B0(ctx, base);
-
-                    KernelTraceHostOpF("HOST.VideoPresent.pm4_forward r3=%08X r4=%08X try=%u", ctx.r3.u32, ctx.r4.u32, s_pm4KickTries);
-                    sub_825972B0(ctx, base);
+                    // DISABLED (2025-11-02): sub_825972B0 not recompiled
+                    KernelTraceHostOpF("HOST.VideoPresent.pm4_forward DISABLED (function not recompiled)");
+                    // __imp__sub_825972B0(ctx, base);
+                    // sub_825972B0(ctx, base);
                 }
 
                 ++s_pm4KickTries;
@@ -8401,76 +8400,56 @@ void RegisterMw05VideoManualHooks()
     // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
     // KernelTraceHostOpF("HOST.MW05.RegisterManualHooks CreateDevice=%08X Present=%08X Res=%08X",
     //                    0x82598230, 0x82598A20, 0x825A8460);
-    // Probes used for discovery; these addresses might not be emitted by this XEX's recompiler table
-    fprintf(stderr, "[VIDEO-CTOR] Registering 0x825979A8 (VD graphics callback)\n");
+    // DISABLED (2025-11-02): These functions are no longer recompiled (only 7 functions in MW05.toml)
+    // The game will use kernel imports for these functions instead
+    fprintf(stderr, "[VIDEO-CTOR] DISABLED all manual function hooks - using kernel imports\n");
     fflush(stderr);
-    g_memory.InsertFunction(0x825979A8, sub_825979A8); // VD graphics notify callback (log and forward)
-    fprintf(stderr, "[VIDEO-CTOR] Registered 0x825979A8 successfully\n");
-    fflush(stderr);
+    // g_memory.InsertFunction(0x825979A8, sub_825979A8);
+    // g_memory.InsertFunction(0x82598068, sub_82598068);
+    // g_memory.InsertFunction(0x825981A0, sub_825981A0);
+    // g_memory.InsertFunction(0x825981E8, sub_825981E8);
+    // g_memory.InsertFunction(0x82598230, sub_82598230);
+    // g_memory.InsertFunction(0x82598A20, sub_82598A20);
+    // g_memory.InsertFunction(0x825A8460, sub_825A8460);
+    // g_memory.InsertFunction(0x82595FC8, sub_82595FC8);
+    // g_memory.InsertFunction(0x825972B0, sub_825972B0);
+    // g_memory.InsertFunction(0x82596E40, sub_82596E40);
+    // g_memory.InsertFunction(0x825968B0, sub_825968B0);
+    // g_memory.InsertFunction(0x825960B8, sub_825960B8);
+    // g_memory.InsertFunction(0x82597650, sub_82597650);
 
-    // Additional candidate probes near present/renderer
-    g_memory.InsertFunction(0x82598068, sub_82598068);
-    g_memory.InsertFunction(0x825981A0, sub_825981A0);
-    g_memory.InsertFunction(0x825981E8, sub_825981E8);
+    // REMOVED (2025-11-01): Worker thread wrapper was interfering with natural game flow
+    // Let the recompiled sub_828508A8 run naturally without any wrapper
+    // The wrapper was creating infinite loops and forcing thread creation
+    // which broke the game's natural initialization sequence
 
-    // Key video entry points (idempotent; will override to our hook implementations)
-    g_memory.InsertFunction(0x82598230, sub_82598230); // CreateDevice
-    g_memory.InsertFunction(0x82598A20, sub_82598A20); // Present pass-through
-    g_memory.InsertFunction(0x825A8460, sub_825A8460); // SetResolution (ensure)
-
-    // CRITICAL: PM4 builder shims must be manually registered to seed scheduler state
-    // These addresses route to MW05Shim_* wrappers that install allocator and seed syscmd pointers
-    g_memory.InsertFunction(0x82595FC8, sub_82595FC8); // Pre-present helper (seeds scheduler)
-    g_memory.InsertFunction(0x825972B0, sub_825972B0); // PM4 builder (CRITICAL: seeds allocator/syscmd)
-    g_memory.InsertFunction(0x82596E40, sub_82596E40); // Builder variant
-    g_memory.InsertFunction(0x825968B0, sub_825968B0); // Builder variant
-    g_memory.InsertFunction(0x825960B8, sub_825960B8); // Allocator wrapper (checks a1[4] validity)
-
-    // Additional PM4 builder and present-path helpers
-    g_memory.InsertFunction(0x82597650, sub_82597650);
-
-    // CRITICAL FIX (2025-10-31): Worker thread entry point wrapper
-    // The wrapper is named sub_828508A8_wrapper to avoid linker conflicts with the weak symbol
-    // in the generated ppc_func_mapping.cpp. We manually register it at address 0x828508A8.
-    extern void sub_828508A8_wrapper(PPCContext& ctx, uint8_t* base);
-    fprintf(stderr, "[VIDEO-CTOR] Registering 0x828508A8 (Worker thread entry point wrapper)\n");
-    fflush(stderr);
-    g_memory.InsertFunction(0x828508A8, sub_828508A8_wrapper);
-    fprintf(stderr, "[VIDEO-CTOR] Registered 0x828508A8 successfully\n");
-    fflush(stderr);
-
-    // CRITICAL DEBUG: Verify that the function was registered correctly
+    // CRITICAL DEBUG: Verify that the recompiled function is available
     auto* registered_func = g_memory.FindFunction(0x828508A8);
-    fprintf(stderr, "[VIDEO-CTOR] Wrapper address: %p\n", (void*)sub_828508A8_wrapper);
-    fprintf(stderr, "[VIDEO-CTOR] FindFunction(0x828508A8) returned: %p\n", (void*)registered_func);
-    if (registered_func == sub_828508A8_wrapper) {
-        fprintf(stderr, "[VIDEO-CTOR] VERIFIED: FindFunction(0x828508A8) returns our wrapper!\n");
-    } else if (registered_func == nullptr) {
+    fprintf(stderr, "[VIDEO-CTOR] FindFunction(0x828508A8) returned: %p (should be recompiled function)\n", (void*)registered_func);
+    if (registered_func == nullptr) {
         fprintf(stderr, "[VIDEO-CTOR] ERROR: FindFunction(0x828508A8) returns nullptr!\n");
     } else {
-        fprintf(stderr, "[VIDEO-CTOR] ERROR: FindFunction(0x828508A8) returns DIFFERENT function! (expected=%p got=%p)\n",
-                (void*)sub_828508A8_wrapper, (void*)registered_func);
+        fprintf(stderr, "[VIDEO-CTOR] OK: FindFunction(0x828508A8) returns recompiled function at %p\n", (void*)registered_func);
     }
     fflush(stderr);
-    g_memory.InsertFunction(0x825976D8, sub_825976D8);
-    g_memory.InsertFunction(0x825A54F0, sub_825A54F0);
-    g_memory.InsertFunction(0x825A6DF0, sub_825A6DF0);
-    g_memory.InsertFunction(0x825A65A8, sub_825A65A8);
 
-    // Dynamic discovery traces (log + forward)
-    g_memory.InsertFunction(0x825986F8, sub_825986F8);
-    g_memory.InsertFunction(0x825987E0, sub_825987E0);
-    g_memory.InsertFunction(0x825988B0, sub_825988B0);
-    g_memory.InsertFunction(0x82599010, sub_82599010);
-    g_memory.InsertFunction(0x82599208, sub_82599208);
-    g_memory.InsertFunction(0x82599338, sub_82599338);
-    g_memory.InsertFunction(0x825A7A40, sub_825A7A40);
-    g_memory.InsertFunction(0x825A7DE8, sub_825A7DE8);
-
-    // Additional probes
-    g_memory.InsertFunction(0x8262F248, sub_8262F248);
-    g_memory.InsertFunction(0x8262F2A0, sub_8262F2A0);
-    g_memory.InsertFunction(0x8262F330, sub_8262F330);
+    // DISABLED (2025-11-02): All manual function hooks disabled
+    // g_memory.InsertFunction(0x8284DEA0, sub_8284DEA0);
+    // g_memory.InsertFunction(0x825976D8, sub_825976D8);
+    // g_memory.InsertFunction(0x825A54F0, sub_825A54F0);
+    // g_memory.InsertFunction(0x825A6DF0, sub_825A6DF0);
+    // g_memory.InsertFunction(0x825A65A8, sub_825A65A8);
+    // g_memory.InsertFunction(0x825986F8, sub_825986F8);
+    // g_memory.InsertFunction(0x825987E0, sub_825987E0);
+    // g_memory.InsertFunction(0x825988B0, sub_825988B0);
+    // g_memory.InsertFunction(0x82599010, sub_82599010);
+    // g_memory.InsertFunction(0x82599208, sub_82599208);
+    // g_memory.InsertFunction(0x82599338, sub_82599338);
+    // g_memory.InsertFunction(0x825A7A40, sub_825A7A40);
+    // g_memory.InsertFunction(0x825A7DE8, sub_825A7DE8);
+    // g_memory.InsertFunction(0x8262F248, sub_8262F248);
+    // g_memory.InsertFunction(0x8262F2A0, sub_8262F2A0);
+    // g_memory.InsertFunction(0x8262F330, sub_8262F330);
 
     // MW05 render/draw hooks: manually register addresses so GUEST_FUNCTION_HOOK macros take effect
     

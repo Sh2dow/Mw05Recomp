@@ -236,6 +236,16 @@ void* Heap::AllocPhysical(size_t size, size_t alignment)
         return nullptr;
     }
 
+    // CRITICAL: Commit the memory before returning it!
+    // The physical heap is reserved but not committed, so we need to commit pages on allocation
+    void* committed = VirtualAlloc((void*)aligned, size, MEM_COMMIT, PAGE_READWRITE);
+    if (committed == nullptr) {
+        fprintf(stderr, "[AllocPhysical] ERROR: Failed to commit memory! addr=%p size=%zu error=%lu\n",
+                (void*)aligned, size, GetLastError());
+        fflush(stderr);
+        return nullptr;
+    }
+
     // Update next available address and track allocated bytes
     nextPhysicalAddr = endAddr;
     physicalAllocated = nextPhysicalAddr - (size_t)physicalBase;

@@ -48,10 +48,8 @@
 #include <fenv.h>
 #endif
 
-// Worker pool constants initializer
-namespace Mw05WorkerPoolInit {
-    void InitializeWorkerPoolConstants();
-}
+// Worker pool constants initializer - REMOVED (was a workaround)
+// The game initializes the worker pool naturally, we don't need to pre-initialize it
 
 // Forward declarations for kernel functions
 extern uint32_t KeTlsAlloc();
@@ -110,14 +108,28 @@ static void MwApplyDebugProfile() {
     // The callback parameter structure at 0x82A2B318 is dynamically allocated/initialized by game code
     // Need to find and call the initialization function instead of force-initializing
     // MwSetEnvDefault("MW05_FORCE_INIT_CALLBACK_PARAM",    "1");
+
+    // CRITICAL FIX (2025-11-01): PM4 Ring Buffer Corruption Fix
+    // The ring buffer is filled with DEADBEEF pattern (MW05_PM4_ARM_RING_SCRATCH=1)
+    // and scanned (MW05_PM4_SCAN_ALL=1), which causes all packets to show as corrupted.
+    // The game writes PM4 commands to a DIFFERENT buffer (not the ring buffer or system buffer).
+    // We need to find WHERE the game writes PM4 commands and scan that buffer instead.
+    //
+    // DISABLE ring buffer scanning to avoid DEADBEEF false positives:
+    MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "0");  // DISABLED - scans DEADBEEF ring buffer
+    MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "0");  // DISABLED - fills ring with DEADBEEF
+    MwSetEnvDefault("MW05_PM4_EAGER_SCAN",               "0");  // DISABLED - aggressive ring buffer scan
+
+    // ENABLE system buffer scanning (though it's currently empty):
+    MwSetEnvDefault("MW05_PM4_SYSBUF_SCAN",              "1");  // Scan system command buffer
+
+    // Keep PM4 tracing enabled for debugging:
     MwSetEnvDefault("MW05_PM4_TRACE",                    "1");
-    MwSetEnvDefault("MW05_PM4_SCAN_ALL",                 "1");
-    MwSetEnvDefault("MW05_PM4_ARM_RING_SCRATCH",         "1");
-    MwSetEnvDefault("MW05_PM4_SCAN_SYSBUF",              "1");
     MwSetEnvDefault("MW05_PM4_SYSBUF_DUMP_ON_GET",       "1");
     MwSetEnvDefault("MW05_ALLOW_FLAG_CLEAR_AFTER_MS",    "300000");
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MS",               "2000");
     MwSetEnvDefault("MW05_UNBLOCK_LOG_MAX",              "12");
+
     // Additional debug defaults to surface MW05 PM4/micro-IB behavior and guarded draws
     MwSetEnvDefault("MW05_PM4_APPLY_STATE",              "1");
     MwSetEnvDefault("MW05_PM4_EMIT_DRAWS",               "1");
@@ -137,9 +149,6 @@ static void MwApplyDebugProfile() {
     MwSetEnvDefault("MW05_INNER_TRY_PM4_DEEP",           "0");
     MwSetEnvDefault("MW05_PRES_TRY_PM4_DEEP",            "0");
 
-    // Scanning aggressiveness
-    MwSetEnvDefault("MW05_PM4_EAGER_SCAN",               "1");
-
 }
 
 PPC_EXTERN_FUNC(sub_82621640);
@@ -152,7 +161,6 @@ PPC_EXTERN_FUNC(sub_824411E0);
 
 extern "C" void HostSchedulerWake(PPCContext& ctx, uint8_t* /*base*/); // declaration with exact signature
 extern "C" bool Mw05HasGuestSwapped();
-extern "C" void UnblockMainThreadEarly(); // Workaround to set flag before main thread starts
 
 
 #ifdef _WIN32
@@ -215,12 +223,6 @@ void KiSystemStartup()
     // Initialize heap now that C runtime is fully ready
     g_userHeap.Init();
     g_userHeap.inGlobalConstruction = false;  // Mark that global construction is complete
-
-    // Initialize worker pool constants BEFORE running other callbacks
-    // This must run early to set up the pool structure that the game expects
-    fprintf(stderr, "[MAIN] Initializing worker pool constants...\n");
-    fflush(stderr);
-    Mw05WorkerPoolInit::InitializeWorkerPoolConstants();
 
     // Run all registered initialization callbacks in priority order
     // This replaces the old static constructor approach which caused crashes
@@ -455,31 +457,36 @@ void KiSystemStartup()
         // We need to set this to point to a function that sets dword_82A2CF40
         // For now, we'll set the flag directly during initialization
         {
-            const uint32_t game_gfx_context_ea = 0x00061000;  // Game's graphics context (static variable)
-            const uint32_t frame_callback_ptr_ea = game_gfx_context_ea + 0x3CEC;  // context[3899]
-            const uint32_t main_loop_flag_ea = 0x82A2CF40;
+            // REMOVED: Manual main loop flag initialization
+            // Let the game's VBlank callback handle flag setting naturally
+        }
 
-            // Set the main loop flag to 1 to unblock the main loop
-            uint32_t* main_loop_flag_ptr = static_cast<uint32_t*>(g_memory.Translate(main_loop_flag_ea));
-            if (main_loop_flag_ptr) {
+        // CRITICAL FIX: Patch game heap process type to prevent KeBugCheckEx 0xF4
+        // This must be done BEFORE worker threads start allocating memory
+        {
+            const uint32_t GAME_HEAP_HANDLE_PTR = 0x82A2CBA0;
+
+            uint32_t* heap_handle_ptr = static_cast<uint32_t*>(g_memory.Translate(GAME_HEAP_HANDLE_PTR));
+            if (heap_handle_ptr) {
+                // Read heap handle (big-endian)
                 #if defined(_MSC_VER)
-                    *main_loop_flag_ptr = _byteswap_ulong(1);  // Set flag (big-endian)
+                    uint32_t heap_handle = _byteswap_ulong(*heap_handle_ptr);
                 #else
-                    *main_loop_flag_ptr = __builtin_bswap32(1);  // Set flag (big-endian)
+                    uint32_t heap_handle = __builtin_bswap32(*heap_handle_ptr);
                 #endif
-                fprintf(stderr, "[INIT] Set main loop flag at 0x%08X to 1 (unblocks main loop)\n", main_loop_flag_ea);
-                fflush(stderr);
-                // CRITICAL FIX: KernelTraceHostOpF hangs in natural path! Skip it.
-                // KernelTraceHostOpF("HOST.Init.MainLoopFlag addr=%08X value=1", main_loop_flag_ea);
-            } else {
-                fprintf(stderr, "[INIT] ERROR: Failed to translate main loop flag address 0x%08X\n", main_loop_flag_ea);
-                fflush(stderr);
-            }
 
-            // TODO: Find the real frame callback function and set it at frame_callback_ptr_ea
-            // For now, the main loop flag is set once during initialization
-            // The game might clear it and expect the VD ISR to set it again each frame
-            // If that happens, we'll need to implement a proper frame callback
+                if (heap_handle != 0) {
+                    // Heap handle points to the heap structure
+                    // Set process type field at offset +379 (0x17B)
+                    uint8_t* heap_struct = reinterpret_cast<uint8_t*>(g_memory.Translate(heap_handle));
+                    if (heap_struct) {
+                        heap_struct[379] = 1;  // KeGetCurrentProcessType() returns 1
+                        fprintf(stderr, "[HEAP-FIX] Set game heap process type to 1 (heap=0x%08X)\n", heap_handle);
+                        fprintf(stderr, "[HEAP-FIX]   This prevents KeBugCheckEx 0xF4 in worker threads\n");
+                        fflush(stderr);
+                    }
+                }
+            }
         }
     }
 
@@ -809,6 +816,31 @@ uint32_t LdrLoadModule(const std::filesystem::path &path)
 
     auto srcData = loadResult.data() + header->headerSize.get();
     auto destData = reinterpret_cast<uint8_t*>(g_memory.Translate(security->loadAddress.get()));
+
+    // CRITICAL FIX: Commit the image memory BEFORE writing to it!
+    // The XEX loader uses memcpy/memset to write the image, which will fault if memory is not committed.
+    // We need to commit imageSize bytes at loadAddress.
+    uint32_t xex_load_addr = security->loadAddress.get();
+    uint32_t xex_image_size = security->imageSize.get();
+
+    fprintf(stderr, "[XEX-LOAD] Committing image memory: addr=0x%08X size=0x%08X (%.2f MB)\n",
+            xex_load_addr, xex_image_size, xex_image_size / (1024.0 * 1024.0));
+    fflush(stderr);
+
+    void* committed = VirtualAlloc(destData, xex_image_size, MEM_COMMIT, PAGE_READWRITE);
+    if (committed == nullptr) {
+        fprintf(stderr, "[XEX-LOAD] ERROR: Failed to commit image memory! Error: %lu\n", GetLastError());
+        fflush(stderr);
+        std::abort();
+    }
+
+    fprintf(stderr, "[XEX-LOAD] Image memory committed successfully\n");
+    fflush(stderr);
+
+    // TEMPORARILY DISABLED: Pre-commit to see actual access pattern
+    // We need to understand WHAT is accessing this memory before we commit it
+    fprintf(stderr, "[XEX-LOAD] VEH will log ALL page faults to identify access pattern\n");
+    fflush(stderr);
 
     if (fileFormatInfo->compressionType.get() == XEX_COMPRESSION_NONE)
     {
@@ -1615,22 +1647,16 @@ int main(int argc, char *argv[])
     // g_memory.InsertFunction(0x82813598, sub_82813598);  // DISABLED - recompiler bugs fixed
     fprintf(stderr, "[MAIN] DISABLED sub_82813678 hook - letting recompiled code run naturally\n"); fflush(stderr);
     // g_memory.InsertFunction(0x82813678, sub_82813678);  // DISABLED - recompiler bugs fixed
-    fprintf(stderr, "[MAIN] before_sub_82814068_install (init func)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x82814068, sub_82814068);
-    fprintf(stderr, "[MAIN] before_sub_8284E6C0_install (event create)\n"); fflush(stderr);
-    g_memory.InsertFunction(0x8284E6C0, sub_8284E6C0);
-    fprintf(stderr, "[MAIN] after_sub_8284E6C0_install\n"); fflush(stderr);
-    fprintf(stderr, "[MAIN] after_sub_82813678_install\n"); fflush(stderr);
-
-    // Install wrapper for string formatting function to detect infinite loops
-    fprintf(stderr, "[MAIN] before_sub_8262DD80_install\n"); fflush(stderr);
-    g_memory.InsertFunction(0x8262DD80, sub_8262DD80);
-    fprintf(stderr, "[MAIN] after_sub_8262DD80_install\n"); fflush(stderr);
-
-    // Install wrapper for CRT init function that calls sub_8262DD80 in a loop
-    fprintf(stderr, "[MAIN] before_sub_8262DE60_install\n"); fflush(stderr);
-    g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
-    fprintf(stderr, "[MAIN] after_sub_8262DE60_install\n"); fflush(stderr);
+    // DISABLED (2025-11-02): These functions are no longer recompiled (only 7 functions in MW05.toml)
+    // The game will use kernel imports for these functions instead
+    fprintf(stderr, "[MAIN] DISABLED sub_82814068 hook - using kernel import\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x82814068, sub_82814068);
+    fprintf(stderr, "[MAIN] DISABLED sub_8284E6C0 hook - using kernel import\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x8284E6C0, sub_8284E6C0);
+    fprintf(stderr, "[MAIN] DISABLED sub_8262DD80 hook - using kernel import\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x8262DD80, sub_8262DD80);
+    fprintf(stderr, "[MAIN] DISABLED sub_8262DE60 hook - using kernel import\n"); fflush(stderr);
+    // g_memory.InsertFunction(0x8262DE60, sub_8262DE60);
 
     // Graphics callback function is registered via weak alias in ppc_func_mapping.cpp
     // The weak alias sub_825979A8 should resolve to __imp__sub_825979A8 at link time
@@ -1656,10 +1682,7 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[MAIN] before_unblock (trace)\n");
     fflush(stderr);
 
-    // Workaround: Set the flag that the main thread will wait for
-    fprintf(stderr, "[MAIN] before_UnblockMainThreadEarly\n"); fflush(stderr);
-    UnblockMainThreadEarly();
-    fprintf(stderr, "[MAIN] after_UnblockMainThreadEarly\n"); fflush(stderr);
+    // REMOVED: UnblockMainThreadEarly() - let game run naturally
 
     // DEBUG: Check work queue state BEFORE guest starts
     fprintf(stderr, "[MAIN] Checking work queue state BEFORE guest starts...\n"); fflush(stderr);

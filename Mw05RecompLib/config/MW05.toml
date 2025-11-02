@@ -47,10 +47,8 @@ functions = [
     { address = 0x821BB4D0, size = 0x90 },  # audio initialization
     { address = 0x8262FA08, size = 0xAC },  # set thread affinity
     { address = 0x826B96B0, size = 0x58 },  # set thread name
-    # DISABLED - Causes crashes, need to investigate which one
-    # { address = 0x82441CF0, size = 0x168 }, # main loop
-    # { address = 0x8261A5E8, size = 0x1EC }, # create worker threads
-    { address = 0x823C8420, size = 0x90 }   # work queue processing - TEST THIS FIRST
+    { address = 0x823C8420, size = 0x90 },  # work queue processing
+    { address = 0x8262E9A8, size = 0x1B0 }, # main thread entry point (_xstart)
 ]
 
 # Invalid instructions (if any are discovered during testing)

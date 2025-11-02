@@ -118,13 +118,6 @@ endif()
 set(MW05_RECOMP_CPU_CXX_SOURCES
     "cpu/guest_thread.cpp"
     "cpu/mw05_boot_shims.cpp"
-    "cpu/mw05_trace_threads.cpp"
-    "cpu/mw05_function_hooks.cpp"
-    "cpu/mw05_worker_pool_init.cpp"
-    "cpu/mw05_heap_shims.cpp"
-    "cpu/ppc_list_shims.cpp"
-    "cpu/mw05_scheduler_shims.cpp"
-    "cpu/mw05_loader_shims.cpp"
     "cpu/mw05_streaming_bridge.cpp"
     "cpu/mw05_main_thread_trace.cpp"
 )

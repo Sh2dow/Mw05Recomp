@@ -7,16 +7,11 @@
 #include <kernel/init_manager.h>
 
 
+// DISABLED (2025-11-02): These functions are no longer recompiled (only 7 functions in MW05.toml)
+// The game will use kernel imports for these functions instead
 static void RegisterIndirectHardfixes() {
-    // From log: [ppc][indirect-miss] target=0x82181688
-    // Redirect to nearest function start at 0x821816F8
-    g_memory.InsertFunction(0x82181688, sub_821816F8);
-
-    // From log: target=0x821D6F80 → sub_821D6FF8
-    g_memory.InsertFunction(0x821D6F80, sub_821D6FF8);
-
-    // From log: target=0x821D64B0 → sub_821D6528
-    g_memory.InsertFunction(0x821D64B0, sub_821D6528);
+    // All indirect hardfixes disabled - using kernel imports
+    fprintf(stderr, "[MAIN] DISABLED indirect hardfixes - using kernel imports\n");
 }
 
 // Register with InitManager (priority 100 = default, runs after core systems)

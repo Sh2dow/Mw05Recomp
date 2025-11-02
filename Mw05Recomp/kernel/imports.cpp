@@ -1529,10 +1529,30 @@ void VdSwap(uint32_t pWriteCur, uint32_t pParams, uint32_t pRingBase,
     static std::atomic<uint32_t> s_vdswap_count{0};
     uint32_t count = s_vdswap_count.fetch_add(1, std::memory_order_relaxed);
 
-    // Log first few calls for debugging
-    if (count < 5) {
-        fprintf(stderr, "[VDSWAP-STUB] Call #%u (simple stub like UnleashedRecomp)\n", count + 1);
+    // CRITICAL FIX (2025-11-01): Log VdSwap parameters to find where game writes PM4 commands
+    // The game is NOT writing to system buffer (0x00F00000) or ring buffer
+    // It must be writing to a different buffer - r3 (pWriteCur) is the command buffer write cursor!
+    static const bool s_log_params = [](){
+        if (const char* v = std::getenv("MW05_VDSWAP_LOG_PARAMS"))
+            return !(v[0]=='0' && v[1]=='\0');
+        return true; // DEFAULT: ON - we need to find the PM4 buffer!
+    }();
+
+    if (s_log_params && count < 10) {
+        fprintf(stderr, "[VDSWAP-PARAMS] Call #%u: r3(WriteCur)=%08X r4(Params)=%08X r5(RingBase)=%08X r6(SysCmdBuf)=%08X r7=%08X r8(Surface)=%08X r9(Format)=%08X r10=%08X\n",
+                count + 1, pWriteCur, pParams, pRingBase, pSysCmdBuf, param5, pSurfaceAddr, pFormat, param8);
         fflush(stderr);
+
+        // Try to scan the buffer pointed to by r3 (pWriteCur)
+        // This is likely where the game writes PM4 commands!
+        if (GuestOffsetInRange(pWriteCur, 4)) {
+            // Read the write cursor value
+            if (auto* p = reinterpret_cast<uint32_t*>(g_memory.Translate(pWriteCur))) {
+                uint32_t write_ptr = *p; // May be native or big-endian
+                fprintf(stderr, "[VDSWAP-PARAMS] WriteCur points to: %08X (raw value at %08X)\n", write_ptr, pWriteCur);
+                fflush(stderr);
+            }
+        }
     }
 
     // Mark that the guest performed a swap
@@ -2189,90 +2209,8 @@ void Mw05StartVblankPumpOnce() {
                 KernelTraceHostOpF("HOST.VblankPump.after_sleep_skip_block tick=%u", currentTick);
             }
 
-            // CRITICAL: Set main loop flag once per VBlank (60 Hz)
-            // The game polls address 0x82A2CF40 in function sub_82441CF0 (main game loop)
-            // Game uses consume-and-clear pattern: reads flag, processes frame, clears flag
-            // Setting it once per VBlank synchronizes game loop with rendering
-            {
-                // CRITICAL DEBUG: Log every 100 ticks
-                if (currentTick % 100 == 0) {
-                    KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_section tick=%u", currentTick);
-                }
-
-                const uint32_t main_loop_flag_ea = 0x82A2CF40;
-                volatile uint32_t* main_loop_flag_ptr = static_cast<volatile uint32_t*>(g_memory.Translate(main_loop_flag_ea));
-
-                // CRITICAL DEBUG: Log translate result
-                if (currentTick % 100 == 0) {
-                    KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_translate ea=%08X ptr=%p tick=%u",
-                                      main_loop_flag_ea, main_loop_flag_ptr, currentTick);
-                }
-
-                if (main_loop_flag_ptr) {
-                    // Read current value before setting (volatile read)
-                    // NOTE: Memory is already in big-endian format, so we need to byte-swap when reading
-                    #if defined(_MSC_VER)
-                        uint32_t current_value = _byteswap_ulong(*main_loop_flag_ptr);
-                    #else
-                        uint32_t current_value = __builtin_bswap32(*main_loop_flag_ptr);
-                    #endif
-
-                    // CRITICAL DEBUG: Log the value we read
-                    if (currentTick % 100 == 0) {
-                        KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_read value=%08X tick=%u", current_value, currentTick);
-                    }
-
-                    // Set flag to 1 (write in big-endian format for PowerPC)
-                    // Memory is stored in big-endian, so we byte-swap the value before writing
-                    #if defined(_MSC_VER)
-                        *main_loop_flag_ptr = _byteswap_ulong(1);
-                    #else
-                        *main_loop_flag_ptr = __builtin_bswap32(1);
-                    #endif
-
-                    // CRITICAL: Memory fence to ensure the write is visible to all threads
-                    // Without this, the main thread's CPU cache may not see the update
-                    // Use seq_cst (strongest) fence to force cache invalidation
-                    std::atomic_thread_fence(std::memory_order_seq_cst);
-
-                    // CRITICAL: Also use Windows-specific memory barrier to ensure cache coherency
-                    #if defined(_MSC_VER)
-                        _ReadWriteBarrier();
-                        MemoryBarrier();
-                    #endif
-
-                    // CRITICAL DEBUG: Log that we set the flag
-                    if (currentTick % 100 == 0) {
-                        KernelTraceHostOpF("HOST.VblankPump.main_loop_flag_set was=%08X now=00000001 tick=%u", current_value, currentTick);
-                    }
-
-                    // Log first few sets and any changes for debugging
-                    static uint32_t s_flag_set_count = 0;
-                    static uint32_t s_last_value = 0;
-                    s_flag_set_count++;
-                    if (s_flag_set_count <= 10 || (s_flag_set_count % 60 == 0) || current_value != s_last_value) {
-                        fprintf(stderr, "[VBLANK] Main loop flag: was=0x%08X now=0x00000001 (tick=%u count=%u)\n",
-                                current_value, currentTick, s_flag_set_count);
-                        fflush(stderr);
-                    }
-                    s_last_value = current_value;
-
-                    // DISABLED: Force-create render thread at VBlank 75
-                    // The game should create this thread naturally when the context at 0x40009D2C is initialized
-                    // Force-creating it too early with NULL context causes it to not function properly
-                    // Let the game create it naturally via the proper initialization chain
-                    if (false && s_flag_set_count == 75) {
-                        extern void Mw05ForceCreateRenderThread();
-                        Mw05ForceCreateRenderThread();
-                    }
-                }
-            }
-
-            // CRITICAL DEBUG: Log after main loop flag section
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-AFTER-MAIN-LOOP-FLAG] tick=%u after setting main loop flag\n", currentTick);
-                fflush(stderr);
-            }
+            // REMOVED: Manual VBlank flag-setting workaround
+            // Let the game's VBlank callback handle this naturally
 
             // CRITICAL FIX: Force-call CreateDevice to bypass blocked state machine
             // The game is stuck in TitleState loop and never calls CreateDevice naturally
@@ -2289,12 +2227,6 @@ void Mw05StartVblankPumpOnce() {
                 Mw05ForceCallCreateRenderThreadIfRequested();
             }
 
-            // CRITICAL DEBUG: Log before ring buffer section
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-BEFORE-RINGBUF] tick=%u about to advance ring buffer\n", currentTick);
-                fflush(stderr);
-            }
-
             // Advance the ring-buffer write-back pointer a bit so guest
             // polling sees steady GPU progress even before the first present.
             uint32_t wb = g_RbWriteBackPtr.load(std::memory_order_relaxed);
@@ -2306,12 +2238,6 @@ void Mw05StartVblankPumpOnce() {
                     uint32_t next = (cur + 0x40u) & mask; // smaller step than present
                     *rptr = next ? next : 0x20u;
                 }
-            }
-
-            // CRITICAL DEBUG: Log after ring buffer section
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-AFTER-RINGBUF] tick=%u after ring buffer advance\n", currentTick);
-                fflush(stderr);
             }
 
             // Grace check: if no graphics ISR registered after a while, log once
@@ -2329,11 +2255,7 @@ void Mw05StartVblankPumpOnce() {
                 s_isr_missing_logged = true;
             }
 
-            // CRITICAL DEBUG: Log after ISR grace check
-            if (currentTick < 20) {
-                fprintf(stderr, "[VBLANK-AFTER-ISR-CHECK] tick=%u after ISR grace check\n", currentTick);
-                fflush(stderr);
-            }
+
 
             // Optional: diff-based write-watch on the System Command Buffer to detect PM4 construction
             static const bool s_sysbuf_watch = [](){
@@ -5249,7 +5171,13 @@ uint32_t NtQueryVirtualMemory(
         const size_t base_sz = static_cast<size_t>(BaseAddress);
         const uint32_t base = static_cast<uint32_t>(base_sz);
         const uint32_t alloc_base = base & ~0xFFFu;
-        const uint32_t region_size = (base_sz < PPC_MEMORY_SIZE) ? static_cast<uint32_t>(PPC_MEMORY_SIZE - base_sz) : 0;
+
+        // CRITICAL FIX: Return realistic region size (512 MB) instead of full 4 GB address space!
+        // The game uses this to determine how much memory to zero during initialization.
+        // Xbox 360 had 512 MB total RAM, so we should report a similar amount.
+        // This prevents the game from trying to zero 4 GB of memory!
+        constexpr uint32_t XBOX_360_RAM = 0x20000000;  // 512 MB (Xbox 360 total RAM)
+        const uint32_t region_size = (base_sz < PPC_MEMORY_SIZE) ? XBOX_360_RAM : 0;
 
         // Fields: BaseAddress, AllocationBase, AllocationProtect, RegionSize, State, Protect, Type
         info[0] = base;
@@ -5874,10 +5802,13 @@ uint32_t NtAllocateVirtualMemory(
         return 0xC000000DL; // STATUS_INVALID_PARAMETER
     }
 
-    // Allocate from user heap (like RtlAllocateHeap)
-    void* host_ptr = g_userHeap.Alloc(requested_size);
+    // CRITICAL FIX (2025-11-01): Allocate from PHYSICAL heap, not user heap!
+    // NtAllocateVirtualMemory is used for large allocations (textures, models, etc.)
+    // These should go to physical heap (800 MB) to avoid exhausting user heap (2045 MB)
+    // The game was allocating 100+ MB buffers via NtAllocateVirtualMemory, filling the user heap
+    void* host_ptr = g_userHeap.AllocPhysical(requested_size, 0x1000);  // 4KB alignment
     if (!host_ptr) {
-        fprintf(stderr, "[NtAllocateVirtualMemory] FAILED to allocate %u bytes\n", requested_size);
+        fprintf(stderr, "[NtAllocateVirtualMemory] FAILED to allocate %u bytes from physical heap\n", requested_size);
         fflush(stderr);
         return 0xC0000017L; // STATUS_NO_MEMORY
     }
@@ -6180,6 +6111,7 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
     // CRITICAL FIX: Use atomic compare-exchange to acquire the lock
     // This prevents race conditions where multiple threads try to acquire the lock simultaneously
     uint32_t expected = 0;
+    uint32_t spin_count = 0;
     while (true)
     {
         // Try to atomically acquire the lock if it's free (owner == 0)
@@ -6205,6 +6137,29 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
         }
 
         // Lock is held by another thread, yield and retry
+        spin_count++;
+        if (spin_count == 1000000) {
+            // After 1 million spins, print a warning
+            uint32_t guest_addr = static_cast<uint32_t>((uint8_t*)cs - g_memory.base);
+            fprintf(stderr, "[RtlEnterCS] WARNING: Spinning for 1M iterations on CS at 0x%08X (owner=0x%08X, this=0x%08X)\n",
+                    guest_addr, expected, thisThread);
+            fflush(stderr);
+        }
+        else if (spin_count > 10000000) {
+            // After 10 million spins, this is likely a deadlock - break out
+            uint32_t guest_addr = static_cast<uint32_t>((uint8_t*)cs - g_memory.base);
+            fprintf(stderr, "[RtlEnterCS] ERROR: Deadlock detected on CS at 0x%08X (owner=0x%08X, this=0x%08X) - BREAKING LOCK!\n",
+                    guest_addr, expected, thisThread);
+            fflush(stderr);
+
+            // Force-acquire the lock to break the deadlock
+            cs->OwningThread = thisThread;
+            cs->RecursionCount = 1;
+            cs->LockCount = (cs->LockCount < -1) ? -1 : cs->LockCount;
+            cs->LockCount++;
+            return;
+        }
+
         std::this_thread::yield();
     }
 }
@@ -8416,53 +8371,8 @@ void VdCallGraphicsNotificationRoutines(uint32_t source) {
                         }
                     }
 
-                    // If frame callback is not registered yet, manually set the main loop flag
-                    // This is a temporary workaround until the game initializes the callback
-                    if(!frame_callback_invoked) {
-                        // DEBUG: Log that we're about to set the flag
-                        static uint32_t s_debug_set_flag_count = 0;
-                        if(s_debug_set_flag_count < 3) {
-                            fprintf(stderr, "[VD-ISR-DEBUG] About to set main loop flag (count=%u)\n", s_debug_set_flag_count);
-                            fflush(stderr);
-                            s_debug_set_flag_count++;
-                        }
-
-                        const uint32_t main_loop_flag_ea = 0x82A2CF40;
-                        void* flag_ptr = g_memory.Translate(main_loop_flag_ea);
-
-                        // DEBUG: Log translation result
-                        static uint32_t s_debug_translate_count = 0;
-                        if(s_debug_translate_count < 3) {
-                            fprintf(stderr, "[VD-ISR-DEBUG] Translate(0x%08X) = %p (count=%u)\n",
-                                    main_loop_flag_ea, flag_ptr, s_debug_translate_count);
-                            fflush(stderr);
-                            s_debug_translate_count++;
-                        }
-
-                        if(flag_ptr) {
-#if defined(_MSC_VER)
-                            *static_cast<uint32_t*>(flag_ptr) = _byteswap_ulong(1);
-#else
-                            *static_cast<uint32_t*>(flag_ptr) = __builtin_bswap32(1);
-#endif
-                            // Only log the first few times to avoid spam
-                            static uint32_t s_flag_set_count = 0;
-                            if(s_flag_set_count < 5) {
-                                fprintf(stderr, "[VD-ISR] Set main loop flag at 0x%08X to 1 (frame #%u)\n",
-                                        main_loop_flag_ea, s_callback_count);
-                                fflush(stderr);
-                                s_flag_set_count++;
-                            }
-                        } else {
-                            // DEBUG: Log translation failure
-                            static bool s_logged_translate_fail = false;
-                            if(!s_logged_translate_fail) {
-                                s_logged_translate_fail = true;
-                                fprintf(stderr, "[VD-ISR-ERROR] Failed to translate main loop flag address 0x%08X!\n", main_loop_flag_ea);
-                                fflush(stderr);
-                            }
-                        }
-                    }
+                    // REMOVED: Manual flag-setting workaround
+                    // Let the game's VBlank callback (0x82598A20) handle flag setting naturally
                 }
 
                 s_callback_count++;
@@ -9070,13 +8980,31 @@ static Mutex g_tlsAllocationMutex;
 
 static uint32_t& KeTlsGetValueRef(size_t index)
 {
-    // Having this a global thread_local variable
-    // for some reason crashes on boot in debug builds.
-    thread_local std::vector<uint32_t> s_tlsValues;
+    // FIXED: Use fixed-size array instead of std::vector to avoid debug build assertions
+    // Xbox 360 supports up to 1088 TLS slots (0x440), but we'll use 256 for safety
+    constexpr size_t MAX_TLS_SLOTS = 256;
+    thread_local std::array<uint32_t, MAX_TLS_SLOTS> s_tlsValues{};
 
-    if (s_tlsValues.size() <= index)
+    // Bounds check - if index is out of range, return a dummy value
+    // This prevents crashes but logs an error (only once per unique index to reduce spam)
+    if (index >= MAX_TLS_SLOTS)
     {
-        s_tlsValues.resize(index + 1, 0);
+        static thread_local uint32_t s_dummyValue = 0;
+
+        // Only log unique invalid indices to avoid spam (951 errors -> massive FPS drops!)
+        static std::unordered_set<size_t> s_loggedIndices;
+        static std::mutex s_logMutex;
+
+        {
+            std::lock_guard<std::mutex> lock(s_logMutex);
+            if (s_loggedIndices.insert(index).second) {
+                fprintf(stderr, "[KeTlsGetValueRef] ERROR: TLS index %zu (0x%zX) exceeds MAX_TLS_SLOTS (%zu) - FIRST OCCURRENCE\n",
+                        index, index, MAX_TLS_SLOTS);
+                fflush(stderr);
+            }
+        }
+
+        return s_dummyValue;
     }
 
     return s_tlsValues[index];
@@ -9084,6 +9012,21 @@ static uint32_t& KeTlsGetValueRef(size_t index)
 
 uint32_t KeTlsGetValue(uint32_t dwTlsIndex)
 {
+    // CRITICAL FIX: The game loads TLS index from 0x828F2910 which contains garbage (0x69D7401B)
+    // This is likely an uninitialized global variable or memory corruption
+    // For now, treat obviously invalid indices (> 1088) as index 0 to prevent spam and crashes
+    if (dwTlsIndex > 1088) {
+        // Log this once for debugging
+        static std::atomic<bool> s_logged{false};
+        if (!s_logged.exchange(true)) {
+            fprintf(stderr, "[KeTlsGetValue] WARNING: Invalid TLS index %u (0x%08X) - treating as index 0\n",
+                    dwTlsIndex, dwTlsIndex);
+            fprintf(stderr, "[KeTlsGetValue] This is likely from uninitialized global at 0x828F2910\n");
+            fflush(stderr);
+        }
+        dwTlsIndex = 0;  // Use index 0 as fallback
+    }
+
     return KeTlsGetValueRef(dwTlsIndex);
 }
 
@@ -10703,7 +10646,8 @@ static std::atomic<int> s_debug_call_depth{0};
 
 
 // Forward decl: MW05 allocator functions (for debugging)
-PPC_FUNC_IMPL(__imp__sub_8215CB08);
+// CRITICAL FIX (2025-11-01): sub_8215CB08 is now recompiled - no need for PPC_FUNC_IMPL or debug wrapper
+// PPC_FUNC_IMPL(__imp__sub_8215CB08);  // DISABLED - function is recompiled
 // REMOVED: These are now in MW05.toml and recompiled
 // PPC_FUNC_IMPL(__imp__sub_8215C790);
 // PPC_FUNC_IMPL(__imp__sub_8215C838);
@@ -10712,7 +10656,8 @@ PPC_FUNC_IMPL(__imp__sub_8215CB08);
 // Forward decl: MW05 graphics initialization functions (sub_825A8698 only - others are in mw05_trace_threads.cpp and mw05_draw_diagnostic.cpp)
 PPC_FUNC_IMPL(__imp__sub_825A8698);
 
-
+// DISABLED (2025-11-01): sub_8215CB08_debug causes infinite recursion - function is now recompiled
+/*
 void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
     int depth = s_debug_call_depth.fetch_add(1);
     uint32_t size = ctx.r3.u32;
@@ -10809,6 +10754,7 @@ void sub_8215CB08_debug(PPCContext& ctx, uint8_t* base) {
 
     s_debug_call_depth.fetch_sub(1);
 }
+*/  // End of disabled sub_8215CB08_debug function
 
 // REMOVED: These functions are now recompiled (added to MW05.toml)
 // sub_8215C790_debug, sub_8215C838_debug, sub_821BB4D0_debug
@@ -11139,7 +11085,10 @@ void sub_82849DE8_debug(PPCContext& ctx, uint8_t* base) {
 // NOTE: PPC_FUNC_IMPL not needed - function already exists in recompiled code
 
 // Hook the debug wrappers
-GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);
+// CRITICAL FIX (2025-11-01): REMOVED sub_8215CB08 hook - causes infinite recursion!
+// The debug wrapper calls __imp__sub_8215CB08, which gets redirected back to the debug wrapper
+// This creates infinite recursion and stack overflow, preventing the main loop from running
+// GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug);  // DISABLED - infinite recursion bug
 // MINIMAL OVERRIDES: Only override what's actually broken in the recompiled code
 // 1. sub_82441E80: REMOVED - Let game run naturally, worker threads now fixed
 // GUEST_FUNCTION_HOOK(sub_82441E80, sub_82441E80_debug);  // DISABLED - manual implementation hangs

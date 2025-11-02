@@ -227,10 +227,7 @@ static void GuestThreadFunc(GuestThreadHandle* hThread)
                     fprintf(stderr, "[MAIN-THREAD-HEARTBEAT] tid=%08X alive for %d seconds\n", tid, i+1);
                     fflush(stderr);
 
-                    // CRITICAL FIX (2025-10-31): Call worker creation check every second
-                    // The worker creation function needs to be called periodically to detect when work is queued
-                    extern void Mw05ForceCreateMissingWorkerThreads();
-                    Mw05ForceCreateMissingWorkerThreads();
+                    // REMOVED: Mw05ForceCreateMissingWorkerThreads() - let game create threads naturally
 
                     // Check loader state every 5 seconds
                     if ((i + 1) % 5 == 0) {
@@ -417,13 +414,7 @@ uint32_t GuestThread::Start(const GuestThreadParams& params)
     {
         fprintf(stderr, "[DEBUG] Thread %lx: entryFunc=%p (found for guest=0x%08X)\n", GetCurrentThreadId(), (void*)entryFunc, entry_function);
 
-        // CRITICAL DEBUG: Check if this is the worker thread entry point
-        if (entry_function == 0x828508A8) {
-            extern void sub_828508A8_wrapper(PPCContext& ctx, uint8_t* base);
-            fprintf(stderr, "[DEBUG] Thread %lx: Worker thread entry! Wrapper=%p Found=%p Match=%d\n",
-                    GetCurrentThreadId(), (void*)sub_828508A8_wrapper, (void*)entryFunc,
-                    (entryFunc == sub_828508A8_wrapper) ? 1 : 0);
-        }
+        // REMOVED: Worker thread wrapper debug code
         fflush(stderr);
 
         fprintf(stderr, "[DEBUG] About to call entryFunc...\n");

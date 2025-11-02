@@ -65,19 +65,11 @@ PPC_FUNC(sub_825CEE28)
 
 static void RegisterHookOverridesManual() {
     KernelTraceHostOp("HOST.ManualOverridesCtor");
-    // Safety guard
-    g_memory.InsertFunction(0x82625D60, sub_82625D60);
-
-    // CRITICAL: These shims are required for PM4 queue processing and scheduler management
-    // g_memory.InsertFunction(0x82812E20, sub_82812E20);
-    // NOTE: The following functions are now auto-registered via PPC_FUNC pattern:
-    // - sub_82595FC8, sub_825972B0, sub_8262F248, sub_8262F2A0, sub_8262F330, sub_82812E20
-    // - sub_825979A8, sub_82598A20, sub_82625D60, sub_82849D40
-    // They are defined in mw05_trace_shims.cpp and mw05_boot_shims.cpp
-    // No need to manually register them here.
-
-    // CRITICAL: Wait loop breakers - these code snippets are called in an infinite loop
-    g_memory.InsertFunction(0x825CEE18, sub_825CEE18);
+    // DISABLED (2025-11-02): These functions are no longer recompiled (only 7 functions in MW05.toml)
+    // The game will use kernel imports for these functions instead
+    fprintf(stderr, "[MAIN] DISABLED manual hook overrides - using kernel imports\n");
+    // g_memory.InsertFunction(0x82625D60, sub_82625D60);
+    // g_memory.InsertFunction(0x825CEE18, sub_825CEE18);
     g_memory.InsertFunction(0x825CEE28, sub_825CEE28);
 
     // NOTE: sub_82849D40 is auto-registered by gen_ppc_overrides.py, no need to register manually

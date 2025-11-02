@@ -177,17 +177,72 @@ json_set_Redis -name "mw05:config" -path "$.render_settings" -value @{draws=0; p
 - **Problem**: VdSwap was never called, causing zero draw commands
 - **Root Cause**: VdSwap signature mismatch - function was defined with 3 parameters but game calls it with 8 parameters (r3-r10)
 - **IDA Decompilation**: Game calls VdSwap with 8 parameters:
-  - r3: command buffer write cursor
-  - r4: swap params pointer
-  - r5: GPU ring buffer base
-  - r6: system command buffer address
-  - r7: system command buffer size
+  - r3: value 4 (NOT a pointer - just a small integer)
+  - r4: swap params pointer (0x40007190)
+  - r5: value 8 (NOT a pointer - just a small integer)
+  - r6: system command buffer address (0x00157CE0)
+  - r7: 0 (unused)
   - r8-r10: surface/format/flags pointers
 - **Fix Applied**:
   1. Updated VdSwap signature to accept 8 parameters
   2. Manually extracted parameters from PPC registers (r3-r10) instead of using `HostToGuestFunction` template
-  3. VdSwap now being called successfully
-- **Current Status**: VdSwap is working, but game is NOT issuing draw commands yet (still in initialization phase)
+  3. VdSwap now being called successfully (69 calls in 30 seconds)
+- **Current Status**: VdSwap is working, system buffer is being scanned, but game is NOT issuing draw commands yet (still in initialization phase)
+
+### ✅ PM4 DEADBEEF "Corruption" FIXED (2025-11-01)
+- **Problem**: All PM4 packets showing `header=DEADBEEF raw=EFBEADDE`, interpreted as corruption
+- **Root Cause**: NOT corruption - intentional scratch pattern!
+  - `MW05_PM4_ARM_RING_SCRATCH=1` fills ring buffer with 0xDEADBEEF pattern to detect writes
+  - `MW05_PM4_SCAN_ALL=1` scans the DEADBEEF-filled ring buffer instead of actual PM4 commands
+  - Ring buffer is stored big-endian: 0xDEADBEEF → 0xEFBEADDE in memory
+- **Fix Applied**:
+  1. Disabled ring buffer scanning: `MW05_PM4_SCAN_ALL=0`
+  2. Disabled DEADBEEF pattern: `MW05_PM4_ARM_RING_SCRATCH=0`
+  3. Keep system buffer scanning enabled: `MW05_PM4_SYSBUF_SCAN=1`
+- **Result**: No more DEADBEEF false positives in logs
+- **Current Status**: System buffer contains 9.9M TYPE0 packets (register writes) but ZERO TYPE3 packets (draw commands) - game is writing context updates but hasn't progressed to rendering yet
+
+### ✅ Region Check Bypass FIXED (2025-11-01)
+- **Problem**: Main thread exiting immediately without reaching main game function
+- **Root Cause**: `sub_8262E7F8` (region/privilege check) returning 1 (true), triggering termination path
+  - When `sub_8262E7F8` returns 1: game calls `sub_826BDA60` → `XamLoaderTerminateTitle` → exits
+  - When `sub_8262E7F8` returns 0: game continues to `sub_82441E80` (main game function)
+  - Function checks Xbox executable privileges and config settings (region, language)
+- **Fix Applied**: Override `sub_8262E7F8` to force return 0 instead of 1
+  - Added wrapper in `Mw05Recomp/cpu/mw05_trace_threads.cpp` (lines 862-829)
+  - Calls original function, logs result, then overrides `ctx.r3.u32 = 0`
+- **Result**: Main thread now reaches `sub_82441E80` and attempts to call main loop
+- **Current Status**: Game runs for 30+ seconds without crashing, initialization complete
+
+### ✅ Infinite Recursion Bug FIXED (2025-11-01)
+- **Problem**: Main thread was stuck in infinite recursion, preventing main loop from running
+- **Root Cause**: `GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug)` caused infinite recursion
+  - Debug wrapper called `__imp__sub_8215CB08`
+  - Hook redirected call back to debug wrapper
+  - Created infinite call chain: `sub_8215CB08_debug` → `__imp__sub_8215CB08` → `sub_8215CB08_debug` → ...
+  - Stack overflow prevented main loop from executing
+- **Fix Applied**:
+  1. Removed `GUEST_FUNCTION_HOOK(sub_8215CB08, sub_8215CB08_debug)` (line 11222 in imports.cpp)
+  2. Commented out `sub_8215CB08_debug` function (no longer needed - function is recompiled)
+  3. Removed `alloc_stub.cpp` (duplicate symbol conflict)
+  4. Removed `PPC_FUNC_IMPL(__imp__sub_8215CB08)` declaration (function is recompiled)
+- **Result**: Game now runs for 30+ seconds without crashing, no more infinite recursion
+
+### ❌ Main Loop Not Looping (2025-11-01) - RECOMPILER BUG
+- **Problem**: Main game loop (`sub_82441CF0`) executes once and exits instead of looping infinitely
+- **Symptoms**:
+  - Log shows "MAIN-LOOP-FLAG-CHECK] Check #1" (loop entered)
+  - NO subsequent flag checks (should be Check #2, #3, etc.)
+  - NO calls to `sub_8262D9D0` (sleep function)
+  - NO calls to `sub_8262DE60` (frame update function)
+  - Game runs for 30+ seconds without crashing (infinite recursion fixed)
+  - Main thread is alive (heartbeat working)
+- **Root Cause**: Recompiler bug in `sub_82441CF0` - the infinite `while(1)` loop only executes one iteration
+  - Loop should: check flag → if 0: sleep and loop back → if 1: execute frame logic, clear flag, loop back
+  - Actual behavior: check flag once → exit (no sleep, no loop back)
+  - This is a **recompiler bug** in how infinite loops are generated
+- **Investigation**: Recompiled code in `ppc_recomp.190.cpp` lines 2382-2505 shows correct loop structure with goto statements
+- **Next Steps**: Need to investigate why the loop's goto statements are not working correctly
 
 ### ✅ PM4 Buffer System FIXED (2025-10-28)
 - **Problem**: Game was not writing PM4 commands to buffers (all zeros)

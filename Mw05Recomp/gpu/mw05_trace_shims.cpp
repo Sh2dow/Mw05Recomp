@@ -407,7 +407,8 @@ extern "C"
 
     void __imp__sub_825A97B8(PPCContext& ctx, uint8_t* base);
 
-    void __imp__sub_82441CF0(PPCContext& ctx, uint8_t* base);
+    // REMOVED (2025-11-01): sub_82441CF0 is now fully recompiled - no wrapper needed
+    // void __imp__sub_82441CF0(PPCContext& ctx, uint8_t* base);
 
     // NOTE: sub_8262D998 wrapper is now in mw05_trace_threads.cpp (lines 699-731)
     // It saves/restores qword_828F1F98 to prevent corruption
@@ -502,34 +503,16 @@ PPC_FUNC(sub_825A7A40) {
 }
 
 // CRITICAL FIX: sub_825A7B78 (scaler command buffer / viewport setup function)
-// This function calls RtlFillMemoryUlong with corrupted parameters due to a recompiler bug.
-// The recompiled code passes:
-//   r3 = destination - 4 (wrong offset)
-//   r4 = garbage address instead of pattern
-//   r5 = 0xFFE8001C (4GB as unsigned, -1.5MB as signed) instead of 800 bytes
-//
-// This causes an infinite loop where the heap protection blocks billions of writes,
-// consuming 100% CPU and preventing the game from progressing to the rendering stage.
-//
-// Solution: Completely skip this function. It's a scaler command buffer initialization
-// function that's not critical for basic rendering. The game can work without it.
+// This function calls RtlFillMemoryUlong which triggers massive memory access.
+// Skipping it reduces memory usage from 4.4 GB to 3.9 GB.
 PPC_FUNC_IMPL(__imp__sub_825A7B78);
 PPC_FUNC(sub_825A7B78) {
-    // CRITICAL: Return immediately to avoid the buggy RtlFillMemoryUlong call
-    // This function is called during video initialization but is not essential.
-    // Skipping it allows the game to progress past the infinite loop.
-
-    // Log once to confirm the shim is being used
+    // Return immediately to avoid memory access
     static std::atomic<bool> s_logged{false};
     if (!s_logged.exchange(true, std::memory_order_relaxed)) {
-        KernelTraceHostOpF("HOST.sub_825A7B78.SKIPPED to avoid buggy RtlFillMemoryUlong infinite loop");
-        KernelTraceHostOpF("HOST.sub_825A7B78.This function initializes scaler command buffer - not critical for rendering");
+        KernelTraceHostOpF("HOST.sub_825A7B78.SKIPPED");
     }
-
-    // Return success (r3 = 0)
     ctx.r3.u32 = 0;
-
-    // DO NOT call __imp__sub_825A7B78 - it contains the buggy code!
 }
 
 // Convert MW05Shim_sub_825A74B8 to PPC_FUNC_IMPL pattern
@@ -1747,86 +1730,13 @@ PPC_FUNC(sub_825A54F0) {
     }
 }
 
-// Main loop caller shim observed in logs (lr=82441D4C around TitleState calls)
-// Convert MW05Shim_sub_82441CF0 to PPC_FUNC_IMPL pattern
-PPC_FUNC_IMPL(__imp__sub_82441CF0);
-PPC_FUNC(sub_82441CF0) {
-    static std::atomic<uint64_t> s_callCount{0};
-    uint64_t count = s_callCount.fetch_add(1);
-
-    // Log the sleep-skip flag value at 0x82A1FF40
-    // The main loop checks this address: if it's non-zero, it skips sleep and calls frame update
-    if (count < 10) {
-        uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
-        KernelTraceHostOpF("sub_82441CF0.entry lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X r3=%08X r4=%08X r5=%08X",
-                          (unsigned long long)ctx.lr, count, sleepSkipFlag, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
-    } else if ((count % 1000) == 0) {
-        // Log occasionally to track progress
-        uint32_t sleepSkipFlag = PPC_LOAD_U32(0x82A1FF40);
-        KernelTraceHostOpF("sub_82441CF0.periodic lr=%08llX count=%llu sleepSkipFlag@0x82A1FF40=%08X",
-                          (unsigned long long)ctx.lr, count, sleepSkipFlag);
-    }
-
-    // DISABLED: We now set the flag in sub_8262DE60 wrapper instead
-    // This was setting it to the wrong value (2 instead of 0)
-    // Keeping this code here for reference but commented out
-    /*
-    static const bool s_force_sleep_flag = [](){
-        if (const char* v = std::getenv("MW05_FORCE_SLEEP_FLAG"))
-            return !(v[0]=='0' && v[1]=='\0');
-        return true;  // Enable by default!
-    }();
-
-    if (s_force_sleep_flag) {
-        PPC_STORE_U32(0x82A1FF40, 0);  // Force to 0 to make sleep check call sleep
-        if (count < 10) {
-            KernelTraceHostOpF("sub_82441CF0.forced_sleep_flag_to_0 count=%llu", count);
-        }
-    }
-    */
-
-    // Heuristic: r5 looks like a small control block observed at TitleState; capture as scheduler seed
-    Mw05Trace_ConsiderSchedR3(ctx.r5.u32);
-    if (count < 10) {
-        DumpEAWindow("82441CF0.r5", ctx.r5.u32);
-        DumpSchedState("82441CF0", ctx.r5.u32);
-    }
-
-    static const bool s_loop_try_pm4_pre = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_PRE")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const bool s_loop_try_pm4 = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-    static const bool s_loop_try_pm4_deep = [](){ if (const char* v = std::getenv("MW05_LOOP_TRY_PM4_DEEP")) return !(v[0]=='0' && v[1]=='\0'); return false; }();
-
-    if (s_loop_try_pm4_pre && ctx.r5.u32 >= 0x1000 && ctx.r5.u32 < PPC_MEMORY_SIZE) {
-        uint32_t saved_r3 = ctx.r3.u32;
-        ctx.r3.u32 = ctx.r5.u32;
-        KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        __imp__sub_825972B0(ctx, base);
-        if (s_loop_try_pm4_deep) {
-            KernelTraceHostOpF("HOST.sub_82441CF0.pre.try_deep r3=%08X", ctx.r3.u32);
-            __imp__sub_82597650(ctx, base);
-            __imp__sub_825976D8(ctx, base);
-            // Additional allocator/callback prep + gating clear
-            __imp__sub_825968B0(ctx, base);
-            __imp__sub_82596E40(ctx, base);
-        }
-        ctx.r3.u32 = saved_r3;
-    }
-
-    __imp__sub_82441CF0(ctx, base);
-
-    if (s_loop_try_pm4 && ctx.r5.u32 >= 0x1000 && ctx.r5.u32 < PPC_MEMORY_SIZE) {
-        uint32_t saved_r3 = ctx.r3.u32;
-        ctx.r3.u32 = ctx.r5.u32;
-        KernelTraceHostOpF("HOST.sub_82441CF0.post.try_825972B0 r3=%08X (from r5)", ctx.r3.u32);
-        __imp__sub_825972B0(ctx, base);
-        if (s_loop_try_pm4_deep) {
-            KernelTraceHostOpF("HOST.sub_82441CF0.post.try_deep r3=%08X", ctx.r3.u32);
-            __imp__sub_82597650(ctx, base);
-            __imp__sub_825976D8(ctx, base);
-            // Additional allocator/callback prep + gating clear
-            __imp__sub_825968B0(ctx, base);
-            __imp__sub_82596E40(ctx, base);
-        }
-        ctx.r3.u32 = saved_r3;
-    }
-}
+// CRITICAL FIX (2025-11-01): REMOVED wrapper for sub_82441CF0 (main loop)
+// This wrapper was breaking the infinite loop by returning after calling __imp__sub_82441CF0!
+// The main loop is marked __noreturn and should NEVER return, but the wrapper was treating it
+// like a regular function. This caused the loop to execute once and then exit.
+// Let the recompiled function run directly without any wrapper.
+//
+// WRAPPER REMOVED - The gen_ppc_overrides.py script doesn't understand #if 0 blocks,
+// so we must completely delete the wrapper code instead of just disabling it.
+// The wrapper was 90+ lines of code that called __imp__sub_82441CF0 and then returned,
+// breaking the infinite loop behavior.

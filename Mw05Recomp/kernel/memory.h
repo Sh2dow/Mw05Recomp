@@ -1,9 +1,11 @@
 #pragma once
 #include <cassert>
+#include <vector>
+#include <mutex>
 
 #ifndef _WIN32
-#define MEM_COMMIT  0x00001000  
-#define MEM_RESERVE 0x00002000  
+#define MEM_COMMIT  0x00001000
+#define MEM_RESERVE 0x00002000
 #endif
 
 struct Memory
